@@ -136,7 +136,7 @@ The sync script fetches `origin/main` and only fast-forwards the local checkout,
 
 ## Portable Windows executable
 
-Every push to `main` builds a single-file `MediaIntake.exe` on a Windows runner and publishes it as the `MediaIntake-windows-portable` workflow artifact. Download that artifact from the repository's Actions page, unzip it, and run `MediaIntake.exe`; Python and Git are not needed to run the executable. The executable stores its queue under `%USERPROFILE%\MediaIntakeData` by default.
+Every push to `main` builds a single-file `MediaIntake.exe` on a Windows runner, uploads it as a workflow artifact, and updates the private `portable-latest` GitHub release. Download the executable directly from [the latest release](https://github.com/unwit1/media-intake-prototype/releases/latest/download/MediaIntake.exe); no Actions-page navigation is needed. Python and Git are not needed to run the executable. The executable stores its queue under `%USERPROFILE%\MediaIntakeData` by default.
 
 To build it locally on Windows instead:
 
@@ -146,4 +146,3 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-portable.ps1 -Clean
 ```
 
 The build script uses PyInstaller only for packaging. The application itself has no third-party runtime dependencies.
-

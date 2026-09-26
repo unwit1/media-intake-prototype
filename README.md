@@ -4,6 +4,8 @@ A local Python 3.10+ worker for finding, queuing, downloading, renaming, and imp
 
 ## Quick start
 
+The recommended desktop entry point is the Tkinter GUI. Run `python -m media_intake gui` from the project folder, or use the Windows portable executable produced by the repository workflow.
+
 From this directory:
 
 ```bash
@@ -13,6 +15,8 @@ python -m media_intake list
 python -m media_intake download 1
 python -m media_intake import-calibre 1 --library "/path/to/Calibre Library"
 ```
+
+The GUI provides source search, result review, direct URL intake, queue status, and downloads. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.
 
 On Windows, use `py` in place of `python` if needed. Put `--root "C:\\Media Intake"` before the subcommand to choose where data lives. `search-openlibrary` uses Open Library's search API and Internet Archive's item metadata to find actual EPUB/PDF links; results are not added to the queue until selected. The live search and download were tested with *Alice's Adventures in Wonderland* from Internet Archive. Some item records will lack accessible ebook files.
 
@@ -111,3 +115,35 @@ The `selector` accepts comma-separated HTML tags, `.classes`, and `#ids`, such a
 `download` is explicit; search results never fetch themselves. Repeating `add` for the same URL preserves the queue entry. Repeating `download` reuses an existing completed file. If a named file already exists with different bytes, a short SHA-256 suffix is added. A failed download records its error and can be retried with `download ID`. Invalid EPUB/CBZ archives and PDF headers are rejected without leaving partial files. Files land under `<root>/downloads/`.
 
 `python -m unittest discover -s tests -v` runs local HTTP, source-parser, Calibre invocation, and fake IRC/DCC integration tests. These tests do not contact live ebook/IRC servers. Calibre must be installed and `calibredb` on PATH for a real import; this workspace lacked it.
+
+## Syncing to a Windows PC
+
+The repository is the shared source of truth. On the PC, install Git for Windows and Python 3, then run PowerShell from a checkout:
+
+```powershell
+git clone https://github.com/unwit1/media-intake-prototype.git "$env:USERPROFILE\GitHub\media-intake-prototype"
+Set-Location "$env:USERPROFILE\GitHub\media-intake-prototype"
+powershell -ExecutionPolicy Bypass -File .\tools\setup-pc.ps1
+```
+
+To pull later changes safely:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\sync-to-pc.ps1 -RunTests
+```
+
+The sync script fetches `origin/main` and only fast-forwards the local checkout, so it will stop instead of overwriting local commits. To sync automatically every 30 minutes, run `setup-pc.ps1 -ScheduledTask`; use `-IntervalMinutes` to change that interval. The GitHub Actions workflow runs the same test suite on Windows for every push and pull request.
+
+## Portable Windows executable
+
+Every push to `main` builds a single-file `MediaIntake.exe` on a Windows runner and publishes it as the `MediaIntake-windows-portable` workflow artifact. Download that artifact from the repository's Actions page, unzip it, and run `MediaIntake.exe`; Python and Git are not needed to run the executable. The executable stores its queue under `%USERPROFILE%\MediaIntakeData` by default.
+
+To build it locally on Windows instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build-portable.ps1 -Clean
+.\dist\MediaIntake.exe
+```
+
+The build script uses PyInstaller only for packaging. The application itself has no third-party runtime dependencies.
+

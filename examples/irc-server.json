@@ -1,0 +1,16 @@
+{
+  "server": "irc.example.org",
+  "port": 6697,
+  "tls": true,
+  "nick": "MyReaderBot",
+  "channel": "#books",
+  "bot": "BookBot",
+  "pack": 42,
+  "commands": ["/msg {bot} xdcc send #{pack}"],
+  "title": "Example Book",
+  "author": "Example Author",
+  "series": "Example Series",
+  "series_index": 1,
+  "format": ".epub",
+  "timeout": 180
+}

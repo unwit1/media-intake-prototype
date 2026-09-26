@@ -2,6 +2,8 @@
 import json
 import re
 import urllib.parse
+import urllib.request
+import urllib.error
 import html as html_module
 from html.parser import HTMLParser
 from pathlib import Path
@@ -11,6 +13,8 @@ SITE_PROFILES = {
     'annas': {'base': 'https://annas-archive.pk', 'path': '/search', 'query': 'q', 'detail': r'/md5/[a-f0-9]{32}(?:\b|/)'},
     'libgen': {'base': 'https://libgen.gl', 'path': '/index.php', 'query': 'req', 'detail': r'(?:/ads\.php\?md5=|book/index\.php\?md5=|/main/)[a-f0-9]{32}'},
 }
+SNAHP_FORUM = 'https://fora.snahp.eu'
+_THREAD_PATH = re.compile(r'^(/threads/[^/?#]*?\.\d+)(?:/|$)', re.I)
 
 
 class Anchors(HTMLParser):
@@ -31,6 +35,68 @@ class Anchors(HTMLParser):
             self.current['text'] = ' '.join(self.current['text'].split())
             self.links.append(self.current)
             self.current = None
+
+
+class ForumThreadAnchors(HTMLParser):
+    """Read only same-forum thread links from a forum search result page."""
+    def __init__(self, base_url):
+        super().__init__(convert_charrefs=True)
+        self.host = urllib.parse.urlsplit(base_url).hostname
+        self.current = None
+        self.threads = []
+        self.seen = set()
+        self.stack = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = set(attrs.get('class', '').split())
+        title_classes = {'structItem-title', 'contentRow-title'}
+        in_title = bool(classes & title_classes) or any(parent & title_classes for _, parent in self.stack)
+        if tag == 'a' and in_title:
+            href = urllib.parse.urljoin(SNAHP_FORUM + '/', attrs.get('href', ''))
+            parts = urllib.parse.urlsplit(href)
+            path_match = _THREAD_PATH.match(parts.path)
+            if (parts.scheme == 'https' and parts.hostname == self.host and parts.port in (None, 443)
+                    and not parts.username and not parts.password and path_match):
+                # Keep the canonical first-page URL; discard pagination and tracking.
+                path = path_match.group(1).rstrip('/') + '/'
+                canonical = urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, '', ''))
+                self.current = {'url': canonical, 'title_attr': attrs.get('title', '').strip(), 'text': ''}
+        self.stack.append((tag, classes))
+
+    def handle_data(self, data):
+        if self.current is not None:
+            self.current['text'] += (' ' if self.current['text'] else '') + data.strip()
+
+    def handle_endtag(self, tag):
+        if tag == 'a' and self.current is not None:
+            url = self.current['url']
+            title = ' '.join((self.current['text'] or self.current['title_attr']).split())
+            if url not in self.seen:
+                self.seen.add(url)
+                self.threads.append({
+                    'site': 'snahp_forum', 'title': title or 'Untitled thread',
+                    'author': 'Forum thread', 'format': 'thread', 'source': url,
+                    'url': url, 'forum_thread': True,
+                })
+            self.current = None
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                break
+
+
+class _SameForumRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self, hostname):
+        super().__init__()
+        self.hostname = hostname
+
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        target = urllib.parse.urlsplit(new_url)
+        if (target.scheme != 'https' or target.hostname != self.hostname
+                or target.port not in (None, 443)):
+            return None
+        return super().redirect_request(request, fp, code, message, headers, new_url)
 
 
 def search_url(site, query, base=None):
@@ -92,6 +158,46 @@ def search_site(site, query, base=None, html_path=None):
         if 'site unavailable' in html.casefold():
             raise ValueError('Source returned Site Unavailable')
     return parse_site_results(site, html, url)
+
+
+def search_forum_threads(query, base_url=SNAHP_FORUM, html_path=None):
+    """Search a XenForo-style forum and return only same-site thread records.
+
+    Search result snippets may contain file-host links; this adapter deliberately
+    discards every URL except canonical `/threads/<slug>.<id>/` links.
+    """
+    query = str(query or '').strip()
+    if not query:
+        return []
+    base = urllib.parse.urlsplit(base_url)
+    if (base.scheme != 'https' or base.hostname != 'fora.snahp.eu'
+            or base.port not in (None, 443) or base.username or base.password):
+        raise ValueError('Forum base must be https://fora.snahp.eu')
+    search_url = urllib.parse.urljoin(base_url.rstrip('/') + '/', 'search/?' + urllib.parse.urlencode({'q': query}))
+    if html_path:
+        page = Path(html_path).read_text(encoding='utf-8')
+        final_url = search_url
+    else:
+        headers = {'User-Agent': 'MediaIntakePrototype/0.1 (thread search)',
+                   'Accept': 'text/html,application/xhtml+xml'}
+        request = urllib.request.Request(search_url, headers=headers)
+        opener = urllib.request.build_opener(_SameForumRedirect(base.hostname))
+        try:
+            with opener.open(request, timeout=30) as response:
+                final_url = response.geturl()
+                page = response.read(5_000_001).decode('utf-8', errors='replace')
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise ValueError(f'Forum search returned HTTP {exc.code}; use a normal browser and load a saved results page') from exc
+            raise
+        if len(page) > 5_000_000:
+            raise ValueError('Forum search response exceeds 5 MB')
+    final = urllib.parse.urlsplit(final_url)
+    if final.scheme != 'https' or final.hostname != base.hostname or final.port not in (None, 443):
+        raise ValueError('Forum search redirected outside fora.snahp.eu')
+    parser = ForumThreadAnchors(base_url)
+    parser.feed(page)
+    return parser.threads
 
 
 def resolve_detail(site, page_url, title, author='Unknown', ext=None, html_path=None):

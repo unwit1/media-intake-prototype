@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from media_intake.core import connect, download, enqueue, file_name, import_calibre, list_items, search_opds
@@ -41,27 +42,27 @@ class PrototypeTest(unittest.TestCase):
         items = search_opds(base + '/feed', 'example book')
         self.assertEqual(len(items), 1)
         with tempfile.TemporaryDirectory() as tmp:
-            db = connect(tmp)
-            first = enqueue(db, items[0]); self.assertEqual(first['id'], enqueue(db, items[0])['id'])
-            result = download(db, first['id'], tmp)
-            self.assertEqual(result['state'], 'downloaded')
-            self.assertEqual(Path(result['file_path']).name, 'Example Book - Jane Doe.epub')
-            self.assertEqual(len(list_items(db)), 1)
-            self.assertEqual(download(db, first['id'], tmp)['file_path'], result['file_path'])
-            with patch('media_intake.core.subprocess.run') as run:
-                imported = import_calibre(db, first['id'], '/tmp/Calibre Library')
-            self.assertEqual(imported['state'], 'imported')
-            self.assertEqual(run.call_args.args[0][0:4], ['calibredb', 'add', '--with-library', '/tmp/Calibre Library'])
+            with closing(connect(tmp)) as db:
+                first = enqueue(db, items[0]); self.assertEqual(first['id'], enqueue(db, items[0])['id'])
+                result = download(db, first['id'], tmp)
+                self.assertEqual(result['state'], 'downloaded')
+                self.assertEqual(Path(result['file_path']).name, 'Example Book - Jane Doe.epub')
+                self.assertEqual(len(list_items(db)), 1)
+                self.assertEqual(download(db, first['id'], tmp)['file_path'], result['file_path'])
+                with patch('media_intake.core.subprocess.run') as run:
+                    imported = import_calibre(db, first['id'], '/tmp/Calibre Library')
+                self.assertEqual(imported['state'], 'imported')
+                self.assertEqual(run.call_args.args[0][0:4], ['calibredb', 'add', '--with-library', '/tmp/Calibre Library'])
 
     def test_invalid_file_is_failed_and_retriable(self):
         base = f'http://127.0.0.1:{self.server.server_address[1]}'
         with tempfile.TemporaryDirectory() as tmp:
-            db = connect(tmp)
-            item = enqueue(db, {'title': 'Bad file', 'url': base + '/bad.epub', 'format': '.epub', 'source': base})
-            with self.assertRaisesRegex(ValueError, 'Invalid .epub archive'):
-                download(db, item['id'], tmp)
-            self.assertEqual(list_items(db)[0]['state'], 'failed')
-            self.assertEqual(list((Path(tmp) / 'downloads').iterdir()), [])
+            with closing(connect(tmp)) as db:
+                item = enqueue(db, {'title': 'Bad file', 'url': base + '/bad.epub', 'format': '.epub', 'source': base})
+                with self.assertRaisesRegex(ValueError, 'Invalid .epub archive'):
+                    download(db, item['id'], tmp)
+                self.assertEqual(list_items(db)[0]['state'], 'failed')
+                self.assertEqual(list((Path(tmp) / 'downloads').iterdir()), [])
 
     def test_name_sanitization(self):
         self.assertEqual(file_name({'title': '../Bad: title', 'author': 'A/B', 'format': '.pdf', 'series': 'Series', 'series_index': 2}), 'Series 2 - Bad title - A B.pdf')

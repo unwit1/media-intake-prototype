@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -55,25 +56,26 @@ class SerialTest(unittest.TestCase):
         manifest = discover_feed(self.server.base + '/feed', 'fanfiction')
         self.assertEqual([x['title'] for x in manifest['chapters']], ['Chapter One', 'Chapter Two'])
         with tempfile.TemporaryDirectory() as tmp:
-            db = connect(tmp)
-            row = enqueue_serial(db, manifest)
-            result = download(db, row['id'], tmp)
-            with zipfile.ZipFile(result['file_path']) as archive:
-                self.assertIn(b'First paragraph.', archive.read('OEBPS/chapter-0001.xhtml'))
-                self.assertNotIn(b'Ignore menu', archive.read('OEBPS/chapter-0001.xhtml'))
-                self.assertIn(b'The next chapter.', archive.read('OEBPS/chapter-0002.xhtml'))
-            self.assertEqual(result['state'], 'downloaded')
+            with closing(connect(tmp)) as db:
+                row = enqueue_serial(db, manifest)
+                result = download(db, row['id'], tmp)
+                with zipfile.ZipFile(result['file_path']) as archive:
+                    self.assertIn(b'First paragraph.', archive.read('OEBPS/chapter-0001.xhtml'))
+                    self.assertNotIn(b'Ignore menu', archive.read('OEBPS/chapter-0001.xhtml'))
+                    self.assertIn(b'The next chapter.', archive.read('OEBPS/chapter-0002.xhtml'))
+                self.assertEqual(result['state'], 'downloaded')
 
     def test_webtoon_images_to_cbz(self):
         manifest = {'title': 'Drawn Story', 'author': 'Artist', 'kind': 'webtoon',
                     'selector': '.viewer', 'chapters': [{'title': '1', 'url': self.server.base + '/images'}]}
         with tempfile.TemporaryDirectory() as tmp:
-            db = connect(tmp)
-            row = enqueue_serial(db, manifest)
-            result = download(db, row['id'], tmp)
-            with zipfile.ZipFile(result['file_path']) as archive:
-                self.assertEqual(archive.namelist(), ['0001-0001.png', '0001-0002.png'])
-                self.assertEqual(archive.read('0001-0001.png'), PNG)
+            with closing(connect(tmp)) as db:
+                row = enqueue_serial(db, manifest)
+                result = download(db, row['id'], tmp)
+                with zipfile.ZipFile(result['file_path']) as archive:
+                    self.assertEqual(archive.namelist(), ['0001-0001.png', '0001-0002.png', 'ComicInfo.xml'])
+                    self.assertEqual(archive.read('0001-0001.png'), PNG)
+                    self.assertIn(b'Drawn Story', archive.read('ComicInfo.xml'))
 
     def test_bad_manifest(self):
         with self.assertRaises(ValueError):

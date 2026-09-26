@@ -5,11 +5,14 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from contextlib import closing
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import patch
 from media_intake.core import connect, download
 from media_intake.irc import enqueue_irc, parse_offer, send_user_command, parse_search_index, search_irc
-from media_intake.sources import parse_site_results, resolve_detail, search_openlibrary
+from media_intake.sources import (parse_site_results, resolve_detail, search_forum_threads,
+                                  search_openlibrary)
 
 
 def epub_bytes():
@@ -56,6 +59,36 @@ class SearchIRC(socketserver.BaseRequestHandler):
 
 
 class SourceAndIRCTest(unittest.TestCase):
+    def test_forum_search_exposes_thread_references_only(self):
+        markup = '''
+          <div class="structItem">
+            <h3 class="structItem-title"><a href="/threads/sample-book.123/page-2?ref=search" title="Sample Book">Sample Book</a></h3>
+            <div class="structItem-snippet">
+              <a href="/threads/mentioned-in-snippet.456/">mentioned thread</a>
+              <a href="https://files.example.invalid/file/secret">external file link</a>
+            </div>
+            <a href="/threads/recent-sidebar.789/">unrelated sidebar thread</a>
+            <a href="/forums/books.8/">Books forum</a>
+            <a href="https://elsewhere.example/threads/other.99/">Other forum</a>
+          </div>
+        '''
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / 'search.html'
+            html.write_text(markup, encoding='utf-8')
+            rows = search_forum_threads('sample book', html_path=html)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['title'], 'Sample Book')
+        self.assertEqual(rows[0]['url'], 'https://fora.snahp.eu/threads/sample-book.123/')
+        self.assertTrue(rows[0]['forum_thread'])
+        self.assertEqual(rows[0]['format'], 'thread')
+
+    def test_forum_403_points_to_browser_snapshot_fallback(self):
+        with patch('media_intake.sources.urllib.request.build_opener') as build_opener:
+            build_opener.return_value.open.side_effect = HTTPError(
+                'https://fora.snahp.eu/search/?q=test', 403, 'Forbidden', {}, None)
+            with self.assertRaisesRegex(ValueError, 'normal browser and load a saved results page'):
+                search_forum_threads('test')
+
     def test_site_page_and_detail_parsing(self):
         md5 = 'a' * 32
         anna = f'<a href="/md5/{md5}">Example Book</a><a href="/about">Help</a>'
@@ -103,16 +136,16 @@ class SourceAndIRCTest(unittest.TestCase):
         for t in threads: t.start()
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                db = connect(tmp)
-                config = {'server': '127.0.0.1', 'port': irc.server_address[1], 'tls': False,
-                          'nick': 'Test', 'channel': '#books', 'bot': 'BookBot', 'pack': 42,
-                          'title': 'IRC Example', 'author': 'Writer', 'format': '.epub', 'timeout': 5}
-                row = enqueue_irc(db, config)
-                result = download(db, row['id'], tmp)
-                self.assertEqual(Path(result['file_path']).read_bytes(), payload)
-                self.assertEqual(result['state'], 'downloaded')
-                self.assertIn('PRIVMSG BookBot :xdcc send #42', ''.join(irc.lines))
-                self.assertEqual(int.from_bytes(dcc.ack, 'big'), len(payload))
+                with closing(connect(tmp)) as db:
+                    config = {'server': '127.0.0.1', 'port': irc.server_address[1], 'tls': False,
+                              'nick': 'Test', 'channel': '#books', 'bot': 'BookBot', 'pack': 42,
+                              'title': 'IRC Example', 'author': 'Writer', 'format': '.epub', 'timeout': 5}
+                    row = enqueue_irc(db, config)
+                    result = download(db, row['id'], tmp)
+                    self.assertEqual(Path(result['file_path']).read_bytes(), payload)
+                    self.assertEqual(result['state'], 'downloaded')
+                    self.assertIn('PRIVMSG BookBot :xdcc send #42', ''.join(irc.lines))
+                    self.assertEqual(int.from_bytes(dcc.ack, 'big'), len(payload))
         finally:
             for s in (irc, dcc): s.shutdown(); s.server_close()
             for t in threads: t.join()
@@ -149,9 +182,9 @@ class SourceAndIRCTest(unittest.TestCase):
             self.assertEqual(result[0]['irc']['request'], '!BookBot Mary Shelley - Frankenstein.epub')
             self.assertEqual(len(result), 1)
             with tempfile.TemporaryDirectory() as tmp:
-                db = connect(tmp)
-                row = enqueue_irc(db, result[0]['irc'])
-                self.assertEqual(row['state'], 'queued')
+                with closing(connect(tmp)) as db:
+                    row = enqueue_irc(db, result[0]['irc'])
+                    self.assertEqual(row['state'], 'queued')
         finally:
             for s in (irc, dcc): s.shutdown(); s.server_close()
             for t in threads: t.join()

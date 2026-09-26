@@ -9,11 +9,15 @@ import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 
+from .comics import list_mangadex_chapters, mangadex_id_from_url
 from .core import download, enqueue, search_catalog, search_opds
 from .irc import enqueue_irc, search_irc
+from .serial import discover_feed, enqueue_serial
 from .sources import resolve_detail, search_openlibrary, search_site
 
 CHECK_INTERVAL = dt.timedelta(days=1)
+COMIC_KINDS = {'comic', 'manga', 'webcomic', 'webtoon'}
+SERIAL_KINDS = {'webfiction', 'fanfiction'}
 
 
 class GoodreadsParser(HTMLParser):
@@ -303,8 +307,8 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
     title = str(title or '').strip()
     if not title:
         raise ValueError('Enter a title or series name')
-    if kind not in ('book', 'series', 'author'):
-        raise ValueError('Watch type must be book, series, or author')
+    if kind not in ({'book', 'series', 'author'} | COMIC_KINDS | SERIAL_KINDS):
+        raise ValueError('Watch type must be book, series, author, comic, manga, webcomic, webtoon, or web serial')
     release_date = str(release_date or '').strip() or None
     if release_date:
         try:
@@ -313,9 +317,8 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
             raise ValueError('Release date must be YYYY-MM-DD') from exc
     if source_url:
         parsed = urllib.parse.urlsplit(source_url)
-        host = (parsed.hostname or '').casefold()
-        if parsed.scheme not in ('http', 'https') or not (host == 'goodreads.com' or host.endswith('.goodreads.com')):
-            raise ValueError('Enter a public Goodreads URL')
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password:
+            raise ValueError('Enter a public HTTP(S) source URL without credentials')
     state = _watch_state(release_date, kind)
     now = _now()
     next_check = None
@@ -521,6 +524,208 @@ def _process_goodreads_collection(db, watch):
     return added
 
 
+def _release_time(value):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        try:
+            parsed = dt.datetime.combine(dt.date.fromisoformat(text[:10]), dt.time.min)
+        except ValueError:
+            return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.replace(tzinfo=None)
+
+
+def _comic_chapters(watch, comic):
+    manga_id = comic.get('mangadex_id') or mangadex_id_from_url(watch.get('source_url'))
+    if manga_id:
+        return list_mangadex_chapters(manga_id, comic.get('language') or 'en'), manga_id
+    feed_url = comic.get('feed_url') or watch.get('source_url')
+    if not feed_url:
+        raise ValueError('Add a MangaDex title or an RSS/Atom chapter feed to track releases')
+    manifest = discover_feed(feed_url, watch['kind'], limit=200)
+    return manifest.get('chapters') or [], None
+
+
+def _chapter_key(chapter):
+    return str(chapter.get('mangadex_id') or chapter.get('url') or '')
+
+
+def _chapter_serial_manifest(watch, chapter, manga_id, selector):
+    number = str(chapter.get('number') or '').strip()
+    if not number:
+        match = re.search(r'\bchapter\s*([0-9]+(?:\.[0-9]+)?)\b',
+                          str(chapter.get('title') or ''), flags=re.I)
+        number = match.group(1) if match else ''
+    try:
+        series_index = float(number) if number else None
+    except ValueError:
+        series_index = None
+    title = str(chapter.get('title') or '').strip() or (f'Chapter {number}' if number else 'Latest chapter')
+    entry = dict(chapter)
+    if manga_id:
+        entry['mangadex_id'] = chapter.get('mangadex_id')
+    metadata = json.loads(watch.get('metadata') or '{}')
+    comic = metadata.get('comic') or {}
+    return {
+        'kind': watch['kind'], 'title': title, 'author': watch.get('author') or 'Unknown',
+        'series': watch['title'], 'series_index': series_index,
+        'source': chapter.get('url') or watch.get('source_url') or '',
+        'selector': selector or 'article,main', 'chapters': [entry],
+        'comic_metadata': comic.get('catalog_metadata') or {},
+    }
+
+
+def _process_comic_watch(db, watch, library_folder, source_overrides=None):
+    metadata = json.loads(watch.get('metadata') or '{}')
+    comic = dict(metadata.get('comic') or {})
+    chapters, manga_id = _comic_chapters(watch, comic)
+    seen = set(comic.get('known_chapters') or [])
+    seen_files = set(comic.get('known_files') or [])
+    initial_scan = not comic.get('feed_initialized')
+    created_at = _release_time(watch.get('created_at'))
+    now = _now()
+    cutoff = created_at or now
+    new_chapters = []
+    for chapter in chapters:
+        key = _chapter_key(chapter)
+        if not key or key in seen:
+            continue
+        released = _release_time(chapter.get('published'))
+        if released and released > now:
+            continue
+        if initial_scan and (released is None or released <= cutoff):
+            # Establish a baseline when a watch is first added. Do not pull a
+            # back catalog just because the first polling pass happened later.
+            seen.add(key)
+            continue
+        new_chapters.append((key, chapter))
+    comic['feed_initialized'] = True
+
+    downloaded = []
+    errors = []
+    # Keep the existing watch connectors in the comic workflow too. Only CBZ
+    # candidates are useful here; EPUB/PDF hits belong to book watches.
+    candidates, _ = _search_candidates(watch, source_overrides)
+    for item in candidates:
+        if str(item.get('format') or '').casefold() != '.cbz':
+            continue
+        key = str(item.get('url') or '')
+        if not key or key in seen_files:
+            continue
+        try:
+            row = enqueue_irc(db, item['irc']) if item.get('irc') else enqueue(db, item)
+            result = download(db, row['id'], Path(library_folder).parent,
+                              destination=library_folder)
+            seen_files.add(key)
+            downloaded.append(result.get('file_path'))
+        except Exception as exc:
+            errors.append(f"{item.get('title') or key}: {exc}")
+        if len(downloaded) >= 10:
+            break
+
+    for key, chapter in new_chapters[:max(0, 10 - len(downloaded))]:
+        try:
+            manifest = _chapter_serial_manifest(watch, chapter, manga_id, comic.get('selector'))
+            row = enqueue_serial(db, manifest)
+            result = download(db, row['id'], Path(library_folder).parent, destination=library_folder)
+            seen.add(key)
+            downloaded.append(result.get('file_path'))
+        except Exception as exc:
+            errors.append(f"{chapter.get('title') or key}: {exc}")
+
+    comic['known_chapters'] = sorted(seen)[-5000:]
+    comic['known_files'] = sorted(seen_files)[-1000:]
+    if manga_id:
+        comic['mangadex_id'] = manga_id
+    last_path = downloaded[-1] if downloaded else watch.get('file_path')
+    last_error = '; '.join(errors[-2:]) if errors else None
+    # Keep unprocessed releases visible to the next daily check. Failed entries
+    # remain unseen and are retried after their download error is surfaced.
+    db.execute('''UPDATE watched_items SET metadata=?,state='watching',file_path=?,
+        last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+        (json.dumps({**metadata, 'comic': comic}, ensure_ascii=False), last_path,
+         now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), last_error, watch['id']))
+    db.commit()
+    return len(downloaded)
+
+
+def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
+    metadata = json.loads(watch.get('metadata') or '{}')
+    serial = dict(metadata.get('serial') or {})
+    feed_url = serial.get('feed_url') or watch.get('source_url')
+    if not feed_url:
+        raise ValueError('Add a public RSS/Atom chapter feed to track this web serial')
+    manifest = discover_feed(feed_url, watch['kind'], limit=200)
+    chapters = manifest.get('chapters') or []
+    seen = set(serial.get('known_chapters') or [])
+    seen_files = set(serial.get('known_files') or [])
+    initial_scan = not serial.get('feed_initialized')
+    cutoff = _release_time(watch.get('created_at')) or _now()
+    now = _now()
+    new_chapters = []
+    for chapter in chapters:
+        key = _chapter_key(chapter)
+        if not key or key in seen:
+            continue
+        released = _release_time(chapter.get('published'))
+        if released and released > now:
+            continue
+        if initial_scan and (released is None or released <= cutoff):
+            seen.add(key)
+            continue
+        new_chapters.append((key, chapter))
+    serial['feed_initialized'] = True
+
+    downloaded = []
+    errors = []
+    # Search the configured ebook connectors as well as the chapter feed.
+    # Only text-book formats are relevant to this watch type.
+    candidates, _ = _search_candidates(watch, source_overrides)
+    for item in candidates:
+        if str(item.get('format') or '').casefold() not in {'.epub', '.pdf', '.mobi', '.azw3'}:
+            continue
+        key = str(item.get('url') or '')
+        if not key or key in seen_files:
+            continue
+        try:
+            row = enqueue_irc(db, item['irc']) if item.get('irc') else enqueue(db, item)
+            result = download(db, row['id'], Path(library_folder).parent,
+                              destination=library_folder)
+            seen_files.add(key)
+            downloaded.append(result.get('file_path'))
+        except Exception as exc:
+            errors.append(f"{item.get('title') or key}: {exc}")
+        if len(downloaded) >= 10:
+            break
+
+    for key, chapter in new_chapters[:max(0, 10 - len(downloaded))]:
+        try:
+            item_manifest = _chapter_serial_manifest(watch, chapter, None, serial.get('selector'))
+            row = enqueue_serial(db, item_manifest)
+            result = download(db, row['id'], Path(library_folder).parent,
+                              destination=library_folder)
+            seen.add(key)
+            downloaded.append(result.get('file_path'))
+        except Exception as exc:
+            errors.append(f"{chapter.get('title') or key}: {exc}")
+
+    serial['known_chapters'] = sorted(seen)[-5000:]
+    serial['known_files'] = sorted(seen_files)[-1000:]
+    last_path = downloaded[-1] if downloaded else watch.get('file_path')
+    last_error = '; '.join(errors[-2:]) if errors else None
+    db.execute('''UPDATE watched_items SET metadata=?,state='watching',file_path=?,
+        last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+        (json.dumps({**metadata, 'serial': serial}, ensure_ascii=False), last_path,
+         now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), last_error, watch['id']))
+    db.commit()
+    return len(downloaded)
+
+
 def process_due_watches(db, library_folder, force=False, source_options=None):
     """Check due watches. Future books stay visible and begin searching on release day."""
     now = _now()
@@ -528,7 +733,7 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
     rows = [dict(row) for row in db.execute("SELECT * FROM watched_items WHERE state NOT IN ('downloaded') ORDER BY id")]
     checked = 0
     for watch in rows:
-        if watch['kind'] == 'book' and watch.get('release_date') and watch['release_date'] > today:
+        if watch['kind'] not in ('series', 'author') and watch.get('release_date') and watch['release_date'] > today:
             due_at = f"{watch['release_date']}T00:00:00"
             if watch['state'] != 'upcoming' or watch.get('next_check_at') != due_at:
                 db.execute("UPDATE watched_items SET state='upcoming',next_check_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -544,6 +749,22 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
                 _process_goodreads_collection(db, watch)
             except Exception as exc:
                 db.execute("UPDATE watched_items SET last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
+                db.commit()
+            continue
+        if watch['kind'] in SERIAL_KINDS:
+            try:
+                _process_webfiction_watch(db, watch, library_folder, source_options)
+            except Exception as exc:
+                db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
+                db.commit()
+            continue
+        if watch['kind'] in COMIC_KINDS:
+            try:
+                _process_comic_watch(db, watch, library_folder, source_options)
+            except Exception as exc:
+                db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
                 db.commit()
             continue

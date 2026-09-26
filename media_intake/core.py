@@ -178,7 +178,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     if urllib.parse.urlsplit(item['url']).scheme in ('serial+http', 'serial+https'):
         try:
             from .serial import download_serial
-            return download_serial(db, row, root, max_bytes)
+            return download_serial(db, row, root, max_bytes, destination)
         except Exception as exc:
             db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()

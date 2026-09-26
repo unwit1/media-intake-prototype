@@ -9,6 +9,8 @@ from .core import connect, download, enqueue, list_items
 from .fmhy import candidates
 from .serial import enqueue_serial
 from .sources import resolve_detail, search_openlibrary, search_site
+from .watched import (add_from_goodreads, add_watch, get_setting, list_watches,
+                      process_due_watches, remove_watch, set_setting)
 
 
 class MediaIntakeApp:
@@ -18,6 +20,7 @@ class MediaIntakeApp:
         self.root.geometry('1050x680')
         self.data_root = Path(data_root or (Path.home() / 'MediaIntakeData'))
         self.db = connect(self.data_root)
+        self.library_folder = tk.StringVar(value=get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
         self.results = []
         self.queue_rows = []
         self.status = tk.StringVar(value='Ready')
@@ -28,8 +31,22 @@ class MediaIntakeApp:
         self.author = tk.StringVar()
         self.url = tk.StringVar()
         self.format = tk.StringVar(value='.epub')
+        self.watch_url = tk.StringVar()
+        self.watch_title = tk.StringVar()
+        self.watch_author = tk.StringVar()
+        self.watch_release_date = tk.StringVar()
+        self.watch_kind = tk.StringVar(value='Auto')
+        self.watch_openlibrary = tk.BooleanVar(value=get_setting(self.db, 'watch_openlibrary', '1') == '1')
+        self.watch_libgen = tk.BooleanVar(value=get_setting(self.db, 'watch_libgen', '1') == '1')
+        self.watch_annas = tk.BooleanVar(value=get_setting(self.db, 'watch_annas', '1') == '1')
+        self.watch_libgen_base = tk.StringVar(value=get_setting(self.db, 'watch_libgen_base', ''))
+        self.watch_annas_base = tk.StringVar(value=get_setting(self.db, 'watch_annas_base', ''))
+        self.watch_rows = []
+        self.watch_scan_running = False
         self._build()
         self.refresh_queue()
+        self.refresh_watches()
+        self.root.after(1500, self._schedule_watch_scan)
 
     def _build(self):
         toolbar = ttk.Frame(self.root, padding=8)
@@ -43,10 +60,13 @@ class MediaIntakeApp:
         tabs.pack(fill='both', expand=True, padx=8, pady=(0, 8))
         search_tab = ttk.Frame(tabs, padding=8)
         queue_tab = ttk.Frame(tabs, padding=8)
+        watched_tab = ttk.Frame(tabs, padding=8)
         tabs.add(search_tab, text='Search and add')
         tabs.add(queue_tab, text='Queue')
+        tabs.add(watched_tab, text='Watched')
         self._build_search(search_tab)
         self._build_queue(queue_tab)
+        self._build_watched(watched_tab)
 
     def choose_root(self):
         chosen = filedialog.askdirectory(initialdir=str(self.data_root), title='Choose Media Intake data folder')
@@ -54,7 +74,14 @@ class MediaIntakeApp:
         self.data_root = Path(chosen)
         self.db.close()
         self.db = connect(self.data_root)
+        self.library_folder.set(get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
+        self.watch_openlibrary.set(get_setting(self.db, 'watch_openlibrary', '1') == '1')
+        self.watch_libgen.set(get_setting(self.db, 'watch_libgen', '1') == '1')
+        self.watch_annas.set(get_setting(self.db, 'watch_annas', '1') == '1')
+        self.watch_libgen_base.set(get_setting(self.db, 'watch_libgen_base', ''))
+        self.watch_annas_base.set(get_setting(self.db, 'watch_annas_base', ''))
         self.refresh_queue()
+        self.refresh_watches()
 
     def _build_search(self, parent):
         controls = ttk.Frame(parent)
@@ -99,6 +126,56 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Refresh', command=self.refresh_queue).pack(side='left')
         ttk.Button(buttons, text='Download selected', command=self.download_selected).pack(side='left', padx=6)
 
+    def _build_watched(self, parent):
+        destination = ttk.LabelFrame(parent, text='Saved library folder')
+        destination.pack(fill='x', pady=(0, 8))
+        destination_entry = ttk.Entry(destination, textvariable=self.library_folder, width=96)
+        destination_entry.pack(side='left', fill='x', expand=True, padx=6, pady=6)
+        destination_entry.bind('<FocusOut>', lambda _event: set_setting(self.db, 'library_folder', self.library_folder.get().strip()))
+        ttk.Button(destination, text='Choose folder', command=self.choose_library_folder).pack(side='left', padx=(0, 6))
+
+        add = ttk.LabelFrame(parent, text='Watch a Goodreads book, series, or author')
+        add.pack(fill='x', pady=(0, 8))
+        first = ttk.Frame(add)
+        first.pack(fill='x', padx=6, pady=(6, 3))
+        ttk.Label(first, text='Goodreads URL').pack(side='left')
+        ttk.Entry(first, textvariable=self.watch_url, width=70).pack(side='left', padx=6, fill='x', expand=True)
+        ttk.Label(first, text='Type').pack(side='left')
+        ttk.Combobox(first, textvariable=self.watch_kind, state='readonly', width=9,
+                     values=['Auto', 'Book', 'Series', 'Author']).pack(side='left', padx=6)
+        ttk.Button(first, text='Add to watched', command=self.add_watched).pack(side='left')
+
+        second = ttk.Frame(add)
+        second.pack(fill='x', padx=6, pady=(3, 6))
+        for label, variable, width in (('Title', self.watch_title, 28), ('Author', self.watch_author, 20),
+                                       ('Release date (YYYY-MM-DD)', self.watch_release_date, 18)):
+            ttk.Label(second, text=label).pack(side='left')
+            ttk.Entry(second, textvariable=variable, width=width).pack(side='left', padx=(4, 10))
+
+        options = ttk.LabelFrame(parent, text='Sites to search when a book is due')
+        options.pack(fill='x', pady=(0, 8))
+        line = ttk.Frame(options)
+        line.pack(fill='x', padx=6, pady=5)
+        ttk.Checkbutton(line, text='Open Library', variable=self.watch_openlibrary).pack(side='left')
+        ttk.Checkbutton(line, text='LibGen', variable=self.watch_libgen).pack(side='left', padx=(10, 0))
+        ttk.Entry(line, textvariable=self.watch_libgen_base, width=27).pack(side='left', padx=5)
+        ttk.Checkbutton(line, text="Anna's Archive", variable=self.watch_annas).pack(side='left', padx=(8, 0))
+        ttk.Entry(line, textvariable=self.watch_annas_base, width=27).pack(side='left', padx=5)
+        ttk.Label(options, text='Optional site URLs let you use a current domain when a source has moved.').pack(anchor='w', padx=8, pady=(0, 5))
+
+        columns = ('title', 'author', 'release', 'status', 'checked', 'file')
+        self.watched_view = ttk.Treeview(parent, columns=columns, show='headings', selectmode='browse')
+        for col, width in (('title', 220), ('author', 145), ('release', 100), ('status', 190), ('checked', 145), ('file', 250)):
+            self.watched_view.heading(col, text={'release': 'Release date', 'checked': 'Last checked'}.get(col, col.title()))
+            self.watched_view.column(col, width=width, anchor='w')
+        self.watched_view.pack(fill='both', expand=True)
+
+        buttons = ttk.Frame(parent)
+        buttons.pack(fill='x', pady=(8, 0))
+        ttk.Button(buttons, text='Refresh', command=self.refresh_watches).pack(side='left')
+        ttk.Button(buttons, text='Check watched now', command=lambda: self._run_watch_scan(force=True)).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Remove selected', command=self.delete_watched).pack(side='left')
+
     def _busy(self, message):
         self.status.set(message)
 
@@ -111,7 +188,7 @@ class MediaIntakeApp:
             try:
                 result = action()
             except Exception as exc:
-                self.root.after(0, lambda: (self._done('Error'), messagebox.showerror('Media Intake', str(exc))))
+                self.root.after(0, lambda error=exc: (self._done('Error'), messagebox.showerror('Media Intake', str(error))))
                 return
             if callback:
                 self.root.after(0, lambda: callback(result))
@@ -174,6 +251,133 @@ class MediaIntakeApp:
             finally: db.close()
         self._worker('Adding to queue…', action, lambda _result: self._done('Queued'))
 
+    def choose_library_folder(self):
+        current = self.library_folder.get().strip() or str(self.data_root / 'downloads')
+        chosen = filedialog.askdirectory(initialdir=current, title='Choose saved library folder')
+        if not chosen:
+            return
+        self.library_folder.set(chosen)
+        set_setting(self.db, 'library_folder', chosen)
+
+    def _watch_sources(self):
+        sources = {
+            'openlibrary': self.watch_openlibrary.get(),
+            'libgen': self.watch_libgen.get(),
+            'libgen_base': self.watch_libgen_base.get().strip(),
+            'annas': self.watch_annas.get(),
+            'annas_base': self.watch_annas_base.get().strip(),
+        }
+        for key, value in sources.items():
+            set_setting(self.db, 'watch_' + key, value if isinstance(value, str) else ('1' if value else '0'))
+        return sources
+
+    def add_watched(self):
+        url = self.watch_url.get().strip()
+        title = self.watch_title.get().strip()
+        author = self.watch_author.get().strip() or 'Unknown'
+        release = self.watch_release_date.get().strip() or None
+        kind = self.watch_kind.get().casefold()
+        kind = None if kind == 'auto' else kind
+        sources = self._watch_sources()
+
+        def action():
+            db = connect(self.data_root)
+            try:
+                if url:
+                    try:
+                        return add_from_goodreads(db, url, kind, title or None, author, release, sources)
+                    except Exception:
+                        if not title:
+                            raise
+                watch_kind = kind or 'book'
+                metadata = {'sources': sources}
+                if watch_kind in ('series', 'author'):
+                    metadata['known_books'] = []
+                watch_id = add_watch(db, watch_kind, title, author, url or None, release, metadata)
+                return watch_id, None
+            finally:
+                db.close()
+
+        def added(result):
+            self.watch_url.set('')
+            self.watch_title.set('')
+            self.watch_author.set('')
+            self.watch_release_date.set('')
+            self.refresh_watches()
+            if result[1] and result[1].get('kind') == 'series':
+                self._done('Series added; upcoming books will be watched as Goodreads lists them')
+            elif result[1] and result[1].get('kind') == 'author':
+                self._done('Author added; new Goodreads books will be watched')
+            elif result[1] and result[1].get('release_date'):
+                self._done('Watched; release date saved')
+            else:
+                self._done('Added to watched')
+
+        self._worker('Reading Goodreads…' if url else 'Adding watch…', action, added)
+
+    def refresh_watches(self):
+        self.watch_rows = list_watches(self.db)
+        for row in self.watched_view.get_children():
+            self.watched_view.delete(row)
+        state_names = {'upcoming': 'Unreleased', 'watching': 'Watching', 'searching': 'Searching',
+                       'downloaded': 'Saved to library', 'failed': 'Retry scheduled', 'series': 'Watching series',
+                       'author': 'Watching author'}
+        for row in self.watch_rows:
+            state = state_names.get(row.get('state'), row.get('state', ''))
+            if row.get('last_error') and row.get('state') not in ('downloaded', 'upcoming'):
+                state += ': ' + row['last_error'][:42]
+            self.watched_view.insert('', 'end', iid=str(row['id']), values=(
+                row.get('title', ''), row.get('author', ''), row.get('release_date') or '', state,
+                row.get('last_checked_at') or '', row.get('file_path') or ''))
+
+    def delete_watched(self):
+        selected = self.watched_view.selection()
+        if not selected:
+            return
+        remove_watch(self.db, int(selected[0]))
+        self.refresh_watches()
+
+    def _schedule_watch_scan(self):
+        self._run_watch_scan(force=False, automatic=True)
+        self.root.after(60_000, self._schedule_watch_scan)
+
+    def _run_watch_scan(self, force=False, automatic=False):
+        if self.watch_scan_running:
+            return
+        self.watch_scan_running = True
+        data_root = self.data_root
+        folder = self.library_folder.get().strip() or str(self.data_root / 'downloads')
+
+        def run():
+            try:
+                db = connect(data_root)
+                try:
+                    checked = process_due_watches(db, folder, force=force)
+                    rows = list_watches(db) if checked else None
+                finally:
+                    db.close()
+                error = None
+            except Exception as exc:
+                checked, rows, error = 0, None, exc
+
+            def finish():
+                self.watch_scan_running = False
+                if error:
+                    if not automatic:
+                        self._done('Watch check failed')
+                        messagebox.showerror('Media Intake', str(error))
+                    return
+                if rows is not None:
+                    self.refresh_watches()
+                if checked:
+                    self.refresh_queue()
+                    self._done(f'Checked {checked} watched item(s)')
+                elif force:
+                    self._done('No watched items are due yet')
+            self.root.after(0, finish)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def refresh_queue(self):
         self.queue_rows = list_items(self.db)
         for row in self.queue_view.get_children(): self.queue_view.delete(row)
@@ -185,9 +389,11 @@ class MediaIntakeApp:
         selected = self.queue_view.selection()
         if not selected: return
         item_id = int(selected[0])
+        destination = self.library_folder.get().strip() or None
+        data_root = self.data_root
         def action():
-            db = connect(self.data_root)
-            try: return download(db, item_id, self.data_root)
+            db = connect(data_root)
+            try: return download(db, item_id, data_root, destination=destination)
             finally: db.close()
         self._worker('Downloading…', action, lambda _result: (self.refresh_queue(), self._done('Downloaded')))
 

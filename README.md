@@ -16,7 +16,13 @@ python -m media_intake download 1
 python -m media_intake import-calibre 1 --library "/path/to/Calibre Library"
 ```
 
-The GUI provides source search, result review, direct URL intake, queue status, and downloads. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.
+The GUI provides source search, result review, direct URL intake, queue status, downloads, and a persistent **Watched** tab. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.
+
+### Watched books, series, and authors
+
+In the **Watched** tab, paste a public Goodreads book, series, or author URL. The app reads the page's public title, author, and release date when available; you can also enter those fields manually. Pick a saved library folder and choose which supported sources to search. A book with a future release date is marked **Unreleased** and is first searched on that date. If no matching file is found, it retries daily. Matching downloads are saved into the chosen folder. The date checks and retries run while the GUI is open, and overdue checks resume the next time it starts.
+
+For a Goodreads series or author, the app remembers the books already listed and checks the page daily for new entries. It watches newly listed books, plus any upcoming books whose release dates Goodreads exposes, without queueing the existing back catalog. Goodreads may restrict or change public page markup, so a URL that cannot be read can still be added by entering its title and author; discovery requires a readable Goodreads page.
 
 On Windows, use `py` in place of `python` if needed. Put `--root "C:\\Media Intake"` before the subcommand to choose where data lives. `search-openlibrary` uses Open Library's search API and Internet Archive's item metadata to find actual EPUB/PDF links; results are not added to the queue until selected. The live search and download were tested with *Alice's Adventures in Wonderland* from Internet Archive. Some item records will lack accessible ebook files.
 

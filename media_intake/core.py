@@ -57,6 +57,16 @@ def connect(root):
         state TEXT NOT NULL DEFAULT 'queued', file_path TEXT, sha256 TEXT,
         error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS watched_items (
+        id INTEGER PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
+        author TEXT NOT NULL DEFAULT 'Unknown', source_url TEXT, release_date TEXT,
+        state TEXT NOT NULL, next_check_at TEXT, last_checked_at TEXT,
+        last_error TEXT, file_path TEXT, parent_id INTEGER, metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(parent_id) REFERENCES watched_items(id))''')
+    db.execute('''CREATE TABLE IF NOT EXISTS gui_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL)''')
     db.commit()
     return db
 
@@ -151,7 +161,7 @@ def search_opds(feed_url, query, pages=3):
     return items
 
 
-def download(db, item_id, root, max_bytes=MAX_FILE_BYTES):
+def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
     if row is None: raise ValueError('Unknown queue ID')
     if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists():
@@ -173,7 +183,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES):
             db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
             raise
-    folder = Path(root) / 'downloads'
+    folder = Path(destination) if destination else Path(root) / 'downloads'
     folder.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
     digest, total = hashlib.sha256(), 0

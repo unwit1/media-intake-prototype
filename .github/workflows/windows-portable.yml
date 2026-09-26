@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,3 +23,14 @@ jobs:
         with:
           name: MediaIntake-windows-portable
           path: dist/MediaIntake.exe
+      - name: Publish latest portable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: portable-latest
+          name: Media Intake portable app (latest)
+          body: Automatically built from the latest commit on main.
+          files: dist/MediaIntake.exe
+          overwrite_files: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

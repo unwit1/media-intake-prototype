@@ -30,6 +30,9 @@ from .watched import (add_from_goodreads, add_from_goodreads_metadata, add_watch
                       fetch_goodreads, parse_goodreads_html, parse_goodreads_search_html,
                       process_due_watches, remove_watch,
                       search_book_metadata, set_setting)
+from .media_graph import capture_graph_snapshot
+from .wikidata import (expand_watched_book_series, import_wikidata_entity,
+                       search_wikidata)
 
 
 class MediaIntakeApp:
@@ -317,6 +320,7 @@ class MediaIntakeApp:
         buttons.pack(fill='x', pady=(8, 0))
         ttk.Button(buttons, text='Refresh', command=self.refresh_watches).pack(side='left')
         ttk.Button(buttons, text='Check watched now', command=lambda: self._run_watch_scan(force=True)).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Discover related', command=self.discover_watched_relationships).pack(side='left', padx=6)
         ttk.Button(buttons, text='Remove selected', command=self.delete_watched).pack(side='left')
         ttk.Button(buttons, text='Edit rights evidence', command=self.edit_watch_rights).pack(side='left', padx=6)
         ttk.Button(buttons, text='Open rights file', command=self.open_rights_evidence).pack(side='left')
@@ -1376,6 +1380,126 @@ class MediaIntakeApp:
             return
         remove_watch(self.db, int(selected[0]))
         self.refresh_watches()
+
+    def discover_watched_relationships(self):
+        selected = self.watched_view.selection()
+        if not selected:
+            messagebox.showinfo('Discover related media', 'Select a watched item first.')
+            return
+        watch = next((item for item in self.watch_rows if str(item.get('id')) == selected[0]), None)
+        if not watch:
+            return
+        title = str(watch.get('title') or '').strip()
+        if not title:
+            return
+        self._worker(f'Searching Wikidata for {title}', lambda: search_wikidata(title),
+                     lambda results: self.show_wikidata_matches(watch, results))
+
+    def show_wikidata_matches(self, watch, results):
+        if not results:
+            self._done('No Wikidata entities found')
+            messagebox.showinfo('Discover related media',
+                                f'Wikidata returned no entity matches for {watch.get("title", "the selection")}.')
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Choose the Wikidata entity')
+        dialog.geometry('780x410')
+        dialog.transient(self.root)
+        ttk.Label(dialog, text=f'Select the Wikidata entry that represents {watch.get("title", "this watch")}.').pack(
+            anchor='w', padx=10, pady=(10, 3))
+        ttk.Label(dialog, text='Sourced relationships will be saved. Explicit book members of a watched book series can be added automatically.').pack(
+            anchor='w', padx=10, pady=(0, 6))
+        matches = ttk.Treeview(dialog, columns=('title', 'description', 'qid'),
+                               show='headings', selectmode='browse')
+        for column, heading, width in (('title', 'Entity', 230), ('description', 'Description', 440),
+                                       ('qid', 'Wikidata ID', 90)):
+            matches.heading(column, text=heading)
+            matches.column(column, width=width, anchor='w')
+        matches.pack(fill='both', expand=True, padx=10, pady=5)
+        for index, item in enumerate(results):
+            matches.insert('', 'end', iid=str(index), values=(
+                item.get('title', ''), item.get('description', ''), item.get('qid', '')))
+
+        def associate(_event=None):
+            selected_item = matches.selection()
+            if not selected_item:
+                return
+            candidate = results[int(selected_item[0])]
+            dialog.destroy()
+            data_root = self.data_root
+            watch_id = int(watch['id'])
+            entity_id = watch.get('media_entity_id')
+
+            def action():
+                db = connect(data_root)
+                try:
+                    current = db.execute('SELECT media_entity_id FROM watched_items WHERE id=?',
+                                         (watch_id,)).fetchone()
+                    linked_id = entity_id or (int(current['media_entity_id']) if current and current['media_entity_id'] else None)
+                    imported = import_wikidata_entity(db, candidate['qid'], watch_entity_id=linked_id)
+                    imported['expansion'] = expand_watched_book_series(db, watch_id, imported)
+                    imported['graph_diff'] = capture_graph_snapshot(db, imported['root_entity_id'])
+                    db.commit()
+                    return imported
+                finally:
+                    db.close()
+
+            self._worker(f'Importing Wikidata relationships for {watch.get("title", "watch")}',
+                         action, self.show_wikidata_relationships)
+
+        matches.bind('<Double-1>', associate)
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill='x', padx=10, pady=(4, 10))
+        ttk.Button(buttons, text='Use selected', command=associate).pack(side='right')
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
+        self._done(f'{len(results)} Wikidata candidate(s)')
+
+    def show_wikidata_relationships(self, result):
+        relationships = result.get('relationships') or []
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f'Related media for {result.get("title", "selection")}')
+        dialog.geometry('760x430')
+        dialog.transient(self.root)
+        diff = result.get('graph_diff') or {}
+        change_count = len(diff.get('changes') or [])
+        if diff.get('baseline'):
+            graph_status = 'Continuity baseline saved.'
+        elif diff.get('unchanged'):
+            graph_status = 'No graph changes since the previous discovery.'
+        else:
+            graph_status = f'{change_count} graph change(s) recorded.'
+        unresolved = int(result.get('unresolved_entities') or 0)
+        expansion = result.get('expansion') or {}
+        added_watches = expansion.get('added') or []
+        review_items = expansion.get('review') or []
+        message = (f"Saved {len(relationships)} sourced relationship(s) across "
+                   f"{result.get('related_entities', 0)} related item(s). {graph_status}")
+        if added_watches:
+            message += f' Added {len(added_watches)} explicit book-series member(s) to Watched.'
+        if review_items:
+            message += f' Skipped {len(review_items)} uncertain item(s) and queued them for review.'
+        if unresolved:
+            message += f' {unresolved} related entity label(s) could not be fetched and were queued for review.'
+        ttk.Label(dialog, text=message, wraplength=730).pack(anchor='w', padx=10, pady=(10, 4))
+        ttk.Label(dialog, text='Provider relationships are stored with their Wikidata IDs and evidence.').pack(
+            anchor='w', padx=10, pady=(0, 6))
+        tree = ttk.Treeview(dialog, columns=('relation', 'title', 'type', 'position'),
+                            show='headings', selectmode='browse')
+        for column, heading, width in (('relation', 'Relationship', 180), ('title', 'Related entity', 320),
+                                       ('type', 'Type', 120), ('position', 'Position', 90)):
+            tree.heading(column, text=heading)
+            tree.column(column, width=width, anchor='w')
+        tree.pack(fill='both', expand=True, padx=10, pady=5)
+        for index, item in enumerate(relationships):
+            tree.insert('', 'end', iid=str(index), values=(
+                item.get('relationship_type', '').replace('_', ' ').title(),
+                item.get('target_title', ''), item.get('target_type', '').title(),
+                item.get('series_position') or ''))
+        ttk.Button(dialog, text='Close', command=dialog.destroy).pack(anchor='e', padx=10, pady=(4, 10))
+        if added_watches:
+            self.refresh_watches()
+            self.root.after(100, self._run_added_watch_scan)
+        self._done(f'Saved {len(relationships)} Wikidata relationship(s); added {len(added_watches)} series member(s)')
 
     def open_rights_evidence(self):
         try:

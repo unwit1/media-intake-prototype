@@ -11,6 +11,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from .media_graph import initialize_media_graph
+
 EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3', '.txt', '.cbz', '.cbr', '.mp3', '.m4b'}
 ATOM = '{http://www.w3.org/2005/Atom}'
 DC = '{http://purl.org/dc/terms/}'
@@ -68,6 +70,7 @@ def connect(root):
         FOREIGN KEY(parent_id) REFERENCES watched_items(id))''')
     db.execute('''CREATE TABLE IF NOT EXISTS gui_settings (
         key TEXT PRIMARY KEY, value TEXT NOT NULL)''')
+    initialize_media_graph(db)
     db.commit()
     return db
 

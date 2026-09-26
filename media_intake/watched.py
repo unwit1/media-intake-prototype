@@ -22,6 +22,7 @@ from .media_catalogs import (discover_novelarchive_chapters, english_release_dat
                              search_ranobedb,
                              search_lnori, search_novelarchive)
 from .core import download, enqueue, http_get, search_catalog, search_opds
+from .media_graph import sync_watch_entity
 from .fanfiction import story_url_key
 from .irc import enqueue_irc, search_irc
 from .serial import discover_feed, enqueue_serial
@@ -498,6 +499,8 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
                        (title, author or 'Unknown', release_date, state, next_check,
                         payload, existing['id']))
             db.commit()
+            sync_watch_entity(db, int(existing['id']))
+            db.commit()
             return int(existing['id'])
     cursor = db.execute('''INSERT INTO watched_items
         (kind,title,author,source_url,release_date,state,next_check_at,parent_id,metadata)
@@ -505,7 +508,10 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
         (kind, title, author or 'Unknown', source_url, release_date, state, next_check,
          parent_id, payload))
     db.commit()
-    return int(cursor.lastrowid)
+    watch_id = int(cursor.lastrowid)
+    sync_watch_entity(db, watch_id)
+    db.commit()
+    return watch_id
 
 
 def add_from_goodreads(db, url, kind=None, title=None, author='Unknown', release_date=None,

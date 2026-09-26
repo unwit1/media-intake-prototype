@@ -759,15 +759,24 @@ Live providers should not be required for the normal unit test suite.
 
 ## Milestone 1 — Graph foundation
 
-- database migration
-- media entity/external-ID tables
-- normalized relationship model
-- relationship evidence/provenance
-- graph diff
-- review queue primitives
-- migration path from existing watches
+- [x] Database migration and provider-neutral entity/external-ID tables
+- [x] Normalized relationships with confidence and evidence provenance
+- [x] Graph snapshots and idempotent graph diffs
+- [x] Review queue primitives with deduplication and resolution states
+- [x] Migration path linking existing watches without merging uncertain identities
+- [x] Wikidata search/import path surfaced from the Watched tab
+
+Wikidata discovery stores linked entities and source claims in the graph. It does not
+add related items to Watched yet; watch-policy-based expansion is part of the book
+franchise proof of concept in Milestone 2.
 
 ## Milestone 2 — Book franchise proof of concept
+
+Status: In progress. Wikidata can now populate a watched book series' explicit
+`contains` relationships and add directly listed book works as child watches.
+Editions and collections are excluded from that automatic expansion; likely title
+duplicates are sent to the shared review queue. This does not yet discover sequel
+series or refresh newly announced members automatically.
 
 Use the existing book stack to prove the architecture.
 

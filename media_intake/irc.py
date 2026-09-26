@@ -124,10 +124,10 @@ def receive_offer(config, max_bytes=MAX_FILE_BYTES):
                             return
 
 
-def download_irc(db, row, root, max_bytes=MAX_FILE_BYTES):
+def download_irc(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
     item = validate_item(json.loads(row['metadata']))
     config = item['irc']
-    folder = Path(root) / 'downloads'
+    folder = Path(destination) if destination else Path(root) / 'downloads'
     folder.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
     digest, received = hashlib.sha256(), 0

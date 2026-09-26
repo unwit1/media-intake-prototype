@@ -170,7 +170,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     if urllib.parse.urlsplit(item['url']).scheme == 'irc+xdcc':
         try:
             from .irc import download_irc
-            return download_irc(db, row, root, max_bytes)
+            return download_irc(db, row, root, max_bytes, destination)
         except Exception as exc:
             db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()

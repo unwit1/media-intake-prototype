@@ -3,14 +3,15 @@ import json
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .core import connect, download, enqueue, list_items
 from .fmhy import candidates
 from .serial import enqueue_serial
 from .sources import resolve_detail, search_openlibrary, search_site
 from .watched import (add_from_goodreads, add_watch, get_setting, list_watches,
-                      process_due_watches, remove_watch, set_setting)
+                      fetch_goodreads, process_due_watches, remove_watch,
+                      search_goodreads, set_setting)
 
 
 class MediaIntakeApp:
@@ -20,6 +21,8 @@ class MediaIntakeApp:
         self.root.geometry('1050x680')
         self.data_root = Path(data_root or (Path.home() / 'MediaIntakeData'))
         self.db = connect(self.data_root)
+        self.default_irc_config = Path(__file__).resolve().parent.parent / 'examples' / 'irc-search.json'
+        irc_default = str(self.default_irc_config) if self.default_irc_config.is_file() else ''
         self.library_folder = tk.StringVar(value=get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
         self.results = []
         self.queue_rows = []
@@ -41,8 +44,12 @@ class MediaIntakeApp:
         self.watch_annas = tk.BooleanVar(value=get_setting(self.db, 'watch_annas', '1') == '1')
         self.watch_libgen_base = tk.StringVar(value=get_setting(self.db, 'watch_libgen_base', ''))
         self.watch_annas_base = tk.StringVar(value=get_setting(self.db, 'watch_annas_base', ''))
+        self.watch_opds_feeds = tk.StringVar(value=get_setting(self.db, 'watch_opds_feeds', ''))
+        self.watch_catalogs = tk.StringVar(value=get_setting(self.db, 'watch_catalogs', ''))
+        self.watch_irc_configs = tk.StringVar(value=get_setting(self.db, 'watch_irc_configs', irc_default))
         self.watch_rows = []
         self.watch_scan_running = False
+        self._saved_watch_sources = None
         self._build()
         self.refresh_queue()
         self.refresh_watches()
@@ -74,12 +81,17 @@ class MediaIntakeApp:
         self.data_root = Path(chosen)
         self.db.close()
         self.db = connect(self.data_root)
+        self._saved_watch_sources = None
         self.library_folder.set(get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
         self.watch_openlibrary.set(get_setting(self.db, 'watch_openlibrary', '1') == '1')
         self.watch_libgen.set(get_setting(self.db, 'watch_libgen', '1') == '1')
         self.watch_annas.set(get_setting(self.db, 'watch_annas', '1') == '1')
         self.watch_libgen_base.set(get_setting(self.db, 'watch_libgen_base', ''))
         self.watch_annas_base.set(get_setting(self.db, 'watch_annas_base', ''))
+        self.watch_opds_feeds.set(get_setting(self.db, 'watch_opds_feeds', ''))
+        self.watch_catalogs.set(get_setting(self.db, 'watch_catalogs', ''))
+        irc_default = str(self.default_irc_config) if self.default_irc_config.is_file() else ''
+        self.watch_irc_configs.set(get_setting(self.db, 'watch_irc_configs', irc_default))
         self.refresh_queue()
         self.refresh_watches()
 
@@ -139,7 +151,8 @@ class MediaIntakeApp:
         first = ttk.Frame(add)
         first.pack(fill='x', padx=6, pady=(6, 3))
         ttk.Label(first, text='Goodreads URL').pack(side='left')
-        ttk.Entry(first, textvariable=self.watch_url, width=70).pack(side='left', padx=6, fill='x', expand=True)
+        ttk.Entry(first, textvariable=self.watch_url, width=48).pack(side='left', padx=6, fill='x', expand=True)
+        ttk.Button(first, text='Look up Goodreads', command=self.lookup_goodreads).pack(side='left', padx=(0, 6))
         ttk.Label(first, text='Type').pack(side='left')
         ttk.Combobox(first, textvariable=self.watch_kind, state='readonly', width=9,
                      values=['Auto', 'Book', 'Series', 'Author']).pack(side='left', padx=6)
@@ -155,13 +168,42 @@ class MediaIntakeApp:
         options = ttk.LabelFrame(parent, text='Sites to search when a book is due')
         options.pack(fill='x', pady=(0, 8))
         line = ttk.Frame(options)
-        line.pack(fill='x', padx=6, pady=5)
-        ttk.Checkbutton(line, text='Open Library', variable=self.watch_openlibrary).pack(side='left')
-        ttk.Checkbutton(line, text='LibGen', variable=self.watch_libgen).pack(side='left', padx=(10, 0))
-        ttk.Entry(line, textvariable=self.watch_libgen_base, width=27).pack(side='left', padx=5)
-        ttk.Checkbutton(line, text="Anna's Archive", variable=self.watch_annas).pack(side='left', padx=(8, 0))
-        ttk.Entry(line, textvariable=self.watch_annas_base, width=27).pack(side='left', padx=5)
-        ttk.Label(options, text='Optional site URLs let you use a current domain when a source has moved.').pack(anchor='w', padx=8, pady=(0, 5))
+        line.pack(fill='x', padx=6, pady=(5, 2))
+        ttk.Checkbutton(line, text='Open Library', variable=self.watch_openlibrary,
+                        command=self._watch_sources).pack(side='left')
+        ttk.Checkbutton(line, text='LibGen', variable=self.watch_libgen,
+                        command=self._watch_sources).pack(side='left', padx=(10, 0))
+        ttk.Label(line, text='Base URL').pack(side='left', padx=(4, 0))
+        libgen_base_entry = ttk.Entry(line, textvariable=self.watch_libgen_base, width=27)
+        libgen_base_entry.pack(side='left', padx=5)
+        libgen_base_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
+        ttk.Checkbutton(line, text="Anna's Archive", variable=self.watch_annas,
+                        command=self._watch_sources).pack(side='left', padx=(8, 0))
+        ttk.Label(line, text='Base URL').pack(side='left', padx=(4, 0))
+        annas_base_entry = ttk.Entry(line, textvariable=self.watch_annas_base, width=27)
+        annas_base_entry.pack(side='left', padx=5)
+        annas_base_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
+
+        line = ttk.Frame(options)
+        line.pack(fill='x', padx=6, pady=2)
+        ttk.Label(line, text='OPDS feeds (; separated)').pack(side='left')
+        opds_entry = ttk.Entry(line, textvariable=self.watch_opds_feeds, width=46)
+        opds_entry.pack(side='left', padx=5, fill='x', expand=True)
+        opds_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
+        ttk.Label(line, text='JSON catalogs').pack(side='left', padx=(8, 0))
+        catalogs_entry = ttk.Entry(line, textvariable=self.watch_catalogs, width=34)
+        catalogs_entry.pack(side='left', padx=5)
+        catalogs_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
+        ttk.Button(line, text='Choose', command=self.choose_watch_catalogs).pack(side='left')
+
+        line = ttk.Frame(options)
+        line.pack(fill='x', padx=6, pady=(2, 5))
+        ttk.Label(line, text='IRC configs (; separated)').pack(side='left')
+        irc_configs_entry = ttk.Entry(line, textvariable=self.watch_irc_configs, width=80)
+        irc_configs_entry.pack(side='left', padx=5, fill='x', expand=True)
+        irc_configs_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
+        ttk.Button(line, text='Choose', command=self.choose_irc_configs).pack(side='left')
+        ttk.Label(options, text='Enter the IRC server/channel JSON used for search. FMHY is a discovery directory and does not return files to auto-download.').pack(anchor='w', padx=8, pady=(0, 5))
 
         columns = ('title', 'author', 'release', 'status', 'checked', 'file')
         self.watched_view = ttk.Treeview(parent, columns=columns, show='headings', selectmode='browse')
@@ -259,17 +301,101 @@ class MediaIntakeApp:
         self.library_folder.set(chosen)
         set_setting(self.db, 'library_folder', chosen)
 
+    def choose_watch_catalogs(self):
+        paths = filedialog.askopenfilenames(
+            initialdir=str(self.data_root), title='Choose JSON catalogs',
+            filetypes=[('JSON catalogs', '*.json'), ('All files', '*.*')])
+        if paths:
+            self.watch_catalogs.set(';'.join(paths))
+            self._watch_sources()
+
+    def choose_irc_configs(self):
+        chosen = filedialog.askopenfilenames(
+            initialdir=str(self.data_root), title='Choose IRC search configurations',
+            filetypes=[('JSON configuration', '*.json'), ('All files', '*.*')])
+        if chosen:
+            self.watch_irc_configs.set(';'.join(chosen))
+            self._watch_sources()
+
     def _watch_sources(self):
+        opds_feeds = [value.strip() for value in self.watch_opds_feeds.get().split(';') if value.strip()]
+        catalogs = [value.strip() for value in self.watch_catalogs.get().split(';') if value.strip()]
+        irc_configs = [value.strip() for value in self.watch_irc_configs.get().split(';') if value.strip()]
         sources = {
             'openlibrary': self.watch_openlibrary.get(),
             'libgen': self.watch_libgen.get(),
             'libgen_base': self.watch_libgen_base.get().strip(),
             'annas': self.watch_annas.get(),
             'annas_base': self.watch_annas_base.get().strip(),
+            'opds_feeds': opds_feeds,
+            'catalogs': catalogs,
+            'irc_configs': irc_configs,
         }
-        for key, value in sources.items():
-            set_setting(self.db, 'watch_' + key, value if isinstance(value, str) else ('1' if value else '0'))
+        if sources != self._saved_watch_sources:
+            for key, value in sources.items():
+                if isinstance(value, bool):
+                    stored = '1' if value else '0'
+                elif isinstance(value, list):
+                    stored = ';'.join(value)
+                else:
+                    stored = value
+                set_setting(self.db, 'watch_' + key, stored)
+            self._saved_watch_sources = {key: list(value) if isinstance(value, list) else value
+                                         for key, value in sources.items()}
         return sources
+
+    def lookup_goodreads(self):
+        query = self.watch_title.get().strip()
+        if not query:
+            query = simpledialog.askstring('Look up Goodreads', 'Search for a book, series, or author:') or ''
+        query = query.strip()
+        if not query:
+            return
+        self._worker(f'Searching Goodreads for {query}…',
+                     lambda: search_goodreads(query), self.show_goodreads_matches)
+
+    def show_goodreads_matches(self, results):
+        if not results:
+            self._done('No Goodreads matches found')
+            messagebox.showinfo('Goodreads lookup', 'No books, series, or authors matched that search.')
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Choose a Goodreads entry')
+        dialog.geometry('650x400')
+        dialog.transient(self.root)
+        ttk.Label(dialog, text='Choose the Goodreads entry whose metadata you want to use.').pack(anchor='w', padx=10, pady=(10, 5))
+        matches = ttk.Treeview(dialog, columns=('kind', 'title'), show='headings', selectmode='browse')
+        matches.heading('kind', text='Type')
+        matches.heading('title', text='Goodreads title')
+        matches.column('kind', width=95, anchor='w')
+        matches.column('title', width=510, anchor='w')
+        matches.pack(fill='both', expand=True, padx=10, pady=5)
+        for index, item in enumerate(results):
+            matches.insert('', 'end', iid=str(index), values=(item['kind'].title(), item['title']))
+
+        def associate(_event=None):
+            selected = matches.selection()
+            if not selected:
+                return
+            result = results[int(selected[0])]
+            dialog.destroy()
+            self._worker('Loading Goodreads metadata…',
+                         lambda: fetch_goodreads(result['source_url']), self.associate_goodreads_metadata)
+
+        matches.bind('<Double-1>', associate)
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill='x', padx=10, pady=(5, 10))
+        ttk.Button(buttons, text='Use selected', command=associate).pack(side='right')
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
+        self._done(f'{len(results)} Goodreads match(es)')
+
+    def associate_goodreads_metadata(self, metadata):
+        self.watch_url.set(metadata.get('source_url', ''))
+        self.watch_title.set(metadata.get('title', ''))
+        self.watch_author.set('' if metadata.get('author') == 'Unknown' else metadata.get('author', ''))
+        self.watch_release_date.set(metadata.get('release_date') or '')
+        self.watch_kind.set(metadata.get('kind', 'book').title())
+        self._done('Goodreads metadata filled in; review and add it to Watched')
 
     def add_watched(self):
         url = self.watch_url.get().strip()
@@ -347,12 +473,13 @@ class MediaIntakeApp:
         self.watch_scan_running = True
         data_root = self.data_root
         folder = self.library_folder.get().strip() or str(self.data_root / 'downloads')
+        source_options = self._watch_sources()
 
         def run():
             try:
                 db = connect(data_root)
                 try:
-                    checked = process_due_watches(db, folder, force=force)
+                    checked = process_due_watches(db, folder, force=force, source_options=source_options)
                     rows = list_watches(db) if checked else None
                 finally:
                     db.close()

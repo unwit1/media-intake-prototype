@@ -9,7 +9,8 @@ import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .core import download, enqueue
+from .core import download, enqueue, search_catalog, search_opds
+from .irc import enqueue_irc, search_irc
 from .sources import resolve_detail, search_openlibrary, search_site
 
 CHECK_INTERVAL = dt.timedelta(days=1)
@@ -232,6 +233,51 @@ def fetch_goodreads(url):
     return parse_goodreads_page(final_url, raw.decode('utf-8', errors='replace'))
 
 
+def search_goodreads(query, limit=80):
+    """Search Goodreads book, series, and author result pages for selectable entries."""
+    from .core import http_get
+    query = str(query or '').strip()
+    if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
+        raise ValueError('Enter a Goodreads search up to 150 characters')
+    results, seen, errors = [], set(), []
+    for search_type in ('books', 'authors', 'series'):
+        url = 'https://www.goodreads.com/search?' + urllib.parse.urlencode(
+            {'q': query, 'search_type': search_type})
+        try:
+            raw, final_url = http_get(url)
+            parser = GoodreadsParser()
+            parser.feed(raw.decode('utf-8', errors='replace'))
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        for anchor in parser.anchors:
+            href = anchor.get('href', '')
+            path = urllib.parse.urlsplit(href).path.casefold()
+            if '/book/show/' in path:
+                kind = 'book'
+                result_url = _canonical_book_url(urllib.parse.urljoin(final_url, href))
+            elif '/author/show/' in path:
+                kind = 'author'
+                result_url = urllib.parse.urljoin(final_url, href).split('?', 1)[0].split('#', 1)[0]
+            elif '/series/' in path and '/series/list/' not in path:
+                kind = 'series'
+                result_url = urllib.parse.urljoin(final_url, href).split('?', 1)[0].split('#', 1)[0]
+            else:
+                continue
+            title = ' '.join((anchor.get('title') or anchor.get('text') or '').split())
+            title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+            key = (kind, result_url)
+            if not title or key in seen:
+                continue
+            seen.add(key)
+            results.append({'kind': kind, 'title': title, 'source_url': result_url})
+            if len(results) >= limit:
+                return results
+    if not results and errors:
+        raise ValueError('Goodreads search failed: ' + '; '.join(errors[-2:]))
+    return results
+
+
 def _now():
     return dt.datetime.now().replace(microsecond=0)
 
@@ -375,15 +421,26 @@ def _is_match(candidate, watch):
     return True
 
 
-def _search_candidates(watch):
+def _search_candidates(watch, source_overrides=None):
     query = ' '.join(part for part in (watch['title'], watch.get('author')) if part and part != 'Unknown')
-    options = json.loads(watch.get('metadata') or '{}').get('sources') or {}
+    options = dict(json.loads(watch.get('metadata') or '{}').get('sources') or {})
+    options.update(source_overrides or {})
     results, errors = [], []
     if options.get('openlibrary', True):
         try:
             results.extend(search_openlibrary(query, limit=15))
         except Exception as exc:
             errors.append(f'Open Library: {exc}')
+    for feed_url in options.get('opds_feeds', []):
+        try:
+            results.extend(search_opds(feed_url, query))
+        except Exception as exc:
+            errors.append(f'OPDS {feed_url}: {exc}')
+    for catalog_path in options.get('catalogs', []):
+        try:
+            results.extend(search_catalog(catalog_path, query))
+        except Exception as exc:
+            errors.append(f'Catalog {catalog_path}: {exc}')
     for site in ('libgen', 'annas'):
         if not options.get(site, True):
             continue
@@ -400,14 +457,21 @@ def _search_candidates(watch):
                     errors.append(f'{site}: {exc}')
         except Exception as exc:
             errors.append(f'{site}: {exc}')
+    irc_configs = options.get('irc_configs') or ([options['irc_config']] if options.get('irc_config') else [])
+    for irc_config_path in irc_configs:
+        try:
+            config = json.loads(Path(irc_config_path).read_text(encoding='utf-8'))
+            results.extend(search_irc(query, config, limit=100))
+        except Exception as exc:
+            errors.append(f'IRC: {exc}')
     return [item for item in results if _is_match(item, watch)], errors
 
 
-def _search_book(db, watch, library_folder):
-    results, errors = _search_candidates(watch)
+def _search_book(db, watch, library_folder, source_overrides=None):
+    results, errors = _search_candidates(watch, source_overrides)
     for item in results:
         try:
-            row = enqueue(db, item)
+            row = enqueue_irc(db, item['irc']) if item.get('irc') else enqueue(db, item)
             row = download(db, row['id'], Path(library_folder).parent,
                            destination=library_folder)
             db.execute("UPDATE watched_items SET state='downloaded',file_path=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -457,7 +521,7 @@ def _process_goodreads_collection(db, watch):
     return added
 
 
-def process_due_watches(db, library_folder, force=False):
+def process_due_watches(db, library_folder, force=False, source_options=None):
     """Check due watches. Future books stay visible and begin searching on release day."""
     now = _now()
     today = now.date().isoformat()
@@ -486,5 +550,5 @@ def process_due_watches(db, library_folder, force=False):
         db.execute("UPDATE watched_items SET state='searching',last_checked_at=?,next_check_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                    (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), watch['id']))
         db.commit()
-        _search_book(db, watch, library_folder)
+        _search_book(db, watch, library_folder, source_options)
     return checked

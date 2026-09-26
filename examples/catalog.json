@@ -1,0 +1,11 @@
+[
+  {
+    "title": "Example Book",
+    "author": "Example Author",
+    "series": "Example Series",
+    "series_index": 1,
+    "source": "Example catalog or forum page URL",
+    "url": "https://example.org/files/example-book.epub",
+    "format": ".epub"
+  }
+]

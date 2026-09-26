@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+media-intake-data/
+*.sqlite3
+.partial-*
+downloads/
+irc-results.json
+my-serial.json

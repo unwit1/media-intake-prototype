@@ -21,6 +21,7 @@ def main():
     fr = sub.add_parser('refresh-fmhy'); fr.add_argument('--out', required=True); fr.add_argument('--html')
     a = sub.add_parser('add'); a.add_argument('--title', required=True); a.add_argument('--author', default='Unknown'); a.add_argument('--url', required=True); a.add_argument('--format', required=True); a.add_argument('--source', required=True); a.add_argument('--series'); a.add_argument('--series-index', type=float)
     ai = sub.add_parser('add-irc'); ai.add_argument('config', help='JSON file describing IRC server, bot, pack and metadata')
+    sub.add_parser('gui', help='Open the desktop interface')
     si = sub.add_parser('search-irc'); si.add_argument('query'); si.add_argument('--config', required=True, help='JSON server/channel configuration'); si.add_argument('--limit', type=int, default=100)
     air = sub.add_parser('add-irc-result'); air.add_argument('file', help='JSON output from search-irc'); air.add_argument('--index', type=int, default=0)
     sf = sub.add_parser('discover-feed'); sf.add_argument('url'); sf.add_argument('--kind', required=True, choices=sorted(KINDS)); sf.add_argument('--limit', type=int, default=100)
@@ -41,6 +42,10 @@ def main():
     elif args.action == 'refresh-fmhy': result = refresh_directory(args.out, args.html)
     elif args.action == 'search-irc': result = search_irc(args.query, json.loads(open(args.config, encoding='utf-8').read()), args.limit)
     elif args.action == 'discover-feed': result = discover_feed(args.url, args.kind, args.limit)
+    elif args.action == 'gui':
+        from .gui import main as gui_main
+        gui_main(args.root)
+        return
     else:
         db = connect(args.root)
         if args.action == 'add': result = enqueue(db, {k: v for k, v in vars(args).items() if k in ('title','author','url','format','source','series','series_index') and v is not None})
@@ -59,3 +64,4 @@ if __name__ == '__main__':
     except (ValueError, OSError) as exc:
         print(f'Error: {exc}', file=sys.stderr)
         sys.exit(1)
+

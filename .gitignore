@@ -1,5 +1,8 @@
 __pycache__/
 *.py[cod]
+build/
+dist/
+*.spec
 media-intake-data/
 *.sqlite3
 .partial-*

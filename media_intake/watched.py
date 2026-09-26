@@ -4,13 +4,21 @@ import difflib
 import html
 import json
 import logging
+import os
 import re
 import unicodedata
 import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .comics import list_mangadex_chapters, mangadex_id_from_url
+from .comics import list_comicvine_issues, list_mangadex_chapters, mangadex_id_from_url
+from .comic_sources import (resolve_getcomics_post, search_getcomics,
+                            search_public_domain_comic_mirror)
+from .rights_evidence import (effective_work_rights, load_rights_evidence,
+                              source_download_rights)
+from .media_catalogs import (discover_novelarchive_chapters, english_release_date,
+                             ranobedb_series, resolve_catalog_file_links,
+                             search_lnori, search_novelarchive)
 from .core import download, enqueue, search_catalog, search_opds
 from .fanfiction import story_url_key
 from .irc import enqueue_irc, search_irc
@@ -368,8 +376,8 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
     title = str(title or '').strip()
     if not title:
         raise ValueError('Enter a title or series name')
-    if kind not in ({'book', 'series', 'author'} | COMIC_KINDS | SERIAL_KINDS):
-        raise ValueError('Watch type must be book, series, author, comic, manga, webcomic, webtoon, or web serial')
+    if kind not in ({'book', 'series', 'author', 'lightnovel', 'comic_issue'} | COMIC_KINDS | SERIAL_KINDS):
+        raise ValueError('Watch type must be book, series, author, light novel, comic, manga, webcomic, webtoon, or web serial')
     release_date = str(release_date or '').strip() or None
     if release_date:
         try:
@@ -491,28 +499,56 @@ def _is_match(candidate, watch):
     return True
 
 
+def _approved_source_record(options, source_key, watch=None, db=None):
+    """Read the one local yes/no record; a work-specific NO wins over a site YES."""
+    path = options.get('rights_evidence_path')
+    if not path:
+        return {'approved_for_download': True, 'status': 'test_or_library_caller'}
+    document = load_rights_evidence(path)
+    if watch is not None:
+        work_record = effective_work_rights(document, watch, db)
+        if work_record:
+            return work_record if work_record.get('approved_for_download') is True else None
+    return source_download_rights(document, source_key)
+
+
 def _search_candidates(watch, source_overrides=None):
     query = ' '.join(part for part in (watch['title'], watch.get('author')) if part and part != 'Unknown')
     options = dict(json.loads(watch.get('metadata') or '{}').get('sources') or {})
     options.update(source_overrides or {})
     results, errors = [], []
-    if options.get('openlibrary', True):
+
+    def add_results(items, source_key, approval=None):
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            item.setdefault('source_key', source_key)
+            if options.get('rights_evidence_path'):
+                item.setdefault('rights_evidence_path', options['rights_evidence_path'])
+            if approval and approval.get('rights_work_key'):
+                item.setdefault('rights_work_key', approval['rights_work_key'])
+            results.append(item)
+
+    if options.get('openlibrary', True) and _approved_source_record(options, 'openlibrary'):
         try:
-            results.extend(search_openlibrary(query, limit=15))
+            add_results(search_openlibrary(query, limit=15), 'openlibrary')
         except Exception as exc:
             errors.append(f'Open Library: {exc}')
-    for feed_url in options.get('opds_feeds', []):
+    for feed_url in (options.get('opds_feeds', []) if _approved_source_record(
+            options, 'opds_feeds') else []):
         try:
-            results.extend(search_opds(feed_url, query))
+            add_results(search_opds(feed_url, query), 'opds_feeds')
         except Exception as exc:
             errors.append(f'OPDS {feed_url}: {exc}')
-    for catalog_path in options.get('catalogs', []):
+    for catalog_path in (options.get('catalogs', []) if _approved_source_record(
+            options, 'json_catalogs') else []):
         try:
-            results.extend(search_catalog(catalog_path, query))
+            add_results(search_catalog(catalog_path, query), 'json_catalogs')
         except Exception as exc:
             errors.append(f'Catalog {catalog_path}: {exc}')
     for site in ('libgen', 'annas'):
-        if not options.get(site, True):
+        source_key = 'annas_archive' if site == 'annas' else 'libgen'
+        if (not options.get(site, True) or not _approved_source_record(options, source_key)):
             continue
         try:
             found = search_site(site, query, base=options.get(site + '_base') or None)
@@ -520,20 +556,60 @@ def _search_candidates(watch, source_overrides=None):
                 if not hit.get('detail_url') or not _is_match(hit, watch):
                     continue
                 try:
-                    results.extend(resolve_detail(site, hit['detail_url'], hit.get('title') or watch['title'],
-                                                  hit.get('author') or watch.get('author') or 'Unknown',
-                                                  hit.get('format')))
+                    add_results(resolve_detail(site, hit['detail_url'], hit.get('title') or watch['title'],
+                                               hit.get('author') or watch.get('author') or 'Unknown',
+                                               hit.get('format')), source_key)
                 except Exception as exc:
                     errors.append(f'{site}: {exc}')
         except Exception as exc:
             errors.append(f'{site}: {exc}')
     irc_configs = options.get('irc_configs') or ([options['irc_config']] if options.get('irc_config') else [])
+    if not _approved_source_record(options, 'irc'):
+        irc_configs = []
     for irc_config_path in irc_configs:
         try:
             config = json.loads(Path(irc_config_path).read_text(encoding='utf-8'))
-            results.extend(search_irc(query, config, limit=100))
+            add_results(search_irc(query, config, limit=100), 'irc')
         except Exception as exc:
             errors.append(f'IRC: {exc}')
+    if options.get('comic_mirror_base') and watch.get('kind') in COMIC_KINDS | {'comic_issue'}:
+        try:
+            rights = _approved_source_record(options, 'public_domain_comic_mirror', watch)
+            if rights:
+                add_results(search_public_domain_comic_mirror(
+                    query, options['comic_mirror_base'], limit=20, manual_rights=rights),
+                    'public_domain_comic_mirror')
+        except Exception as exc:
+            errors.append(f'Comic mirror / rights evidence: {exc}')
+    if watch.get('kind') in COMIC_KINDS | {'comic_issue'}:
+        approval = _approved_source_record(options, 'getcomics.org', watch)
+        if approval:
+            try:
+                posts = search_getcomics(query, limit=20)
+                for post in posts:
+                    add_results(resolve_getcomics_post(post, approval), 'getcomics.org', approval)
+            except Exception as exc:
+                errors.append(f'GetComics / rights evidence: {exc}')
+    if watch.get('kind') in {'book', 'lightnovel'}:
+        for source_key, searcher in (('lnori.com', search_lnori),
+                                     ('novelarchive.cc', search_novelarchive)):
+            approval = _approved_source_record(options, source_key)
+            if not approval:
+                continue
+            try:
+                for item in searcher(query, limit=10):
+                    add_results(resolve_catalog_file_links(item, approval), source_key, approval)
+            except Exception as exc:
+                errors.append(f'{source_key} / rights evidence: {exc}')
+    if watch.get('kind') in {'webfiction', 'fanfiction'}:
+        approval = _approved_source_record(options, 'novelarchive.cc')
+        if approval:
+            try:
+                item = {'provider': 'NovelArchive', 'title': watch['title'],
+                        'author': watch.get('author'), 'url': watch.get('source_url')}
+                add_results(resolve_catalog_file_links(item, approval), 'novelarchive.cc', approval)
+            except Exception as exc:
+                errors.append(f'NovelArchive / rights evidence: {exc}')
     return [item for item in results if _is_match(item, watch)], errors
 
 
@@ -631,18 +707,164 @@ def _comic_chapters(watch, comic):
     manga_id = comic.get('mangadex_id') or mangadex_id_from_url(watch.get('source_url'))
     if manga_id:
         return list_mangadex_chapters(manga_id, comic.get('language') or 'en'), manga_id
+    if comic.get('comicvine_id'):
+        return [], None
     feed_url = comic.get('feed_url') or watch.get('source_url')
     if not feed_url:
-        raise ValueError('Add a MangaDex title or an RSS/Atom chapter feed to track releases')
+        return [], None
+    host = (urllib.parse.urlsplit(feed_url).hostname or '').casefold()
+    if host in {'getcomics.info', 'www.getcomics.info', 'getcomics.org',
+                'www.getcomics.org', 'comicvine.gamespot.com', 'anilist.co',
+                'www.anilist.co', 'lnori.com', 'novelarchive.cc'}:
+        # These are metadata/release pages, not RSS feeds. Their file or
+        # chapter connectors are handled independently by the approved search.
+        return [], None
     manifest = discover_feed(feed_url, watch['kind'], limit=200)
     return manifest.get('chapters') or [], None
+
+
+def _process_comic_issue_watch(db, watch, library_folder, source_overrides=None):
+    """Download a due issue through an explicitly approved comic connector."""
+    metadata = json.loads(watch.get('metadata') or '{}')
+    options = dict(metadata.get('sources') or {})
+    options.update(source_overrides or {})
+    rights_document = load_rights_evidence(options.get('rights_evidence_path'))
+    rights = effective_work_rights(rights_document, watch, db)
+    now = _now()
+    has_rights_file = bool(options.get('rights_evidence_path'))
+    mirror_approval = (rights if rights else
+                       source_download_rights(rights_document, 'public_domain_comic_mirror'))
+    getcomics_approval = (rights if rights else
+                          source_download_rights(rights_document, 'getcomics.org'))
+    if not has_rights_file:
+        # Keep direct library/test callers usable; the GUI always supplies the
+        # local file and therefore always follows its explicit yes/no values.
+        mirror_approval = mirror_approval or {'approved_for_download': True}
+        getcomics_approval = getcomics_approval or {'approved_for_download': True}
+    if (has_rights_file and not any(
+            item and item.get('approved_for_download') is True
+            for item in (mirror_approval, getcomics_approval))):
+        error = 'Local rights record is NO; automatic downloads are paused.'
+        db.execute("UPDATE watched_items SET state='rights_hold',last_checked_at=?,next_check_at=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (now.isoformat(sep='T'), error, watch['id']))
+        db.commit()
+        return 0
+    results = []
+    connector_errors = []
+    mirror_base = options.get('comic_mirror_base')
+    if mirror_base and mirror_approval:
+        mirror_results = search_public_domain_comic_mirror(
+            watch['title'], mirror_base, limit=20,
+            manual_rights=mirror_approval if has_rights_file else None)
+        for item in mirror_results:
+            item.setdefault('source_key', 'public_domain_comic_mirror')
+            if has_rights_file:
+                item.setdefault('rights_evidence_path', options['rights_evidence_path'])
+            if mirror_approval.get('rights_work_key'):
+                item.setdefault('rights_work_key', mirror_approval['rights_work_key'])
+        results.extend(mirror_results)
+    if getcomics_approval:
+        comic_candidates, connector_errors = _search_candidates(watch, source_overrides)
+        for message in connector_errors:
+            logger.warning('Comic issue watch %s connector error: %s', watch['id'], message)
+        results.extend(item for item in comic_candidates
+                       if item.get('source_key') == 'getcomics.org')
+    requested_number = str((metadata.get('comic_issue') or {}).get('issue_number') or '').strip()
+    candidate = next((item for item in results
+                      if str(item.get('format') or '').casefold() in ('.cbz', '.cbr', '.pdf')
+                      and (item.get('site') == 'public_domain_comic_mirror'
+                           or item.get('source_key') == 'getcomics.org')
+                      and _is_match(item, watch)
+                      and _comic_issue_number_matches(item.get('title'), requested_number)), None)
+    if candidate is None:
+        error = 'No matching downloadable issue file was found from an approved connector.'
+        if connector_errors:
+            error += ' ' + '; '.join(connector_errors[-2:])
+        db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), error, watch['id']))
+        db.commit()
+        return 0
+    if rights.get('rights_work_key'):
+        candidate.setdefault('rights_work_key', rights['rights_work_key'])
+    if has_rights_file:
+        candidate.setdefault('rights_evidence_path', options['rights_evidence_path'])
+    row = enqueue(db, candidate)
+    saved = download(db, row['id'], Path(library_folder).parent, destination=library_folder)
+    db.execute("UPDATE watched_items SET state='downloaded',file_path=?,last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+               (saved.get('file_path'), now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), watch['id']))
+    db.commit()
+    return 1
+
+
+def _comic_issue_number_matches(title, requested_number):
+    if not requested_number:
+        return True
+    match = re.search(r'(?:#|\bissue\s*(?:no\.?\s*)?)(\d+(?:\.\d+)?)\b',
+                      str(title or ''), flags=re.I)
+    if not match:
+        return True
+    try:
+        return float(match.group(1)) == float(requested_number)
+    except ValueError:
+        return match.group(1) == requested_number
+
+
+def _sync_comicvine_issues(db, watch, comic, source_overrides=None):
+    """Create upcoming issue watches from Comic Vine store dates."""
+    volume_id = str(comic.get('comicvine_id') or '')
+    api_key = str((source_overrides or {}).get('comicvine_api_key')
+                  or os.environ.get('COMICVINE_API_KEY') or '').strip()
+    if not api_key:
+        raise ValueError('Set COMICVINE_API_KEY to keep Comic Vine release tracking active')
+    issues = list_comicvine_issues(volume_id, api_key, limit=100)
+    known = dict(comic.get('known_issues') or {})
+    initialized = bool(comic.get('issues_initialized'))
+    options = dict(json.loads(watch.get('metadata') or '{}').get('sources') or {})
+    options.update(source_overrides or {})
+    # API keys are needed only for the current request; never copy them into
+    # newly persisted child watch metadata.
+    options.pop('comicvine_api_key', None)
+    today = _now().date().isoformat()
+    for issue in issues:
+        issue_id = str(issue.get('comicvine_id') or '')
+        if not issue_id:
+            continue
+        release = _release_time(issue.get('release_date'))
+        release_date = release.date().isoformat() if release else None
+        previous_date = known.get(issue_id)
+        is_new = issue_id not in known
+        known[issue_id] = release_date
+        changed_date = previous_date != release_date
+        if initialized:
+            should_watch = is_new or (changed_date and bool(release_date))
+        else:
+            # First poll does not enqueue old issues; it only schedules announced issues.
+            should_watch = bool(release_date and release_date > today)
+        if not should_watch or not release_date:
+            continue
+        number = str(issue.get('number') or '').strip()
+        issue_title = f"{watch['title']} #{number}" if number else f"{watch['title']} - {issue.get('title') or 'Issue'}"
+        issue_url = issue.get('source_url') or f'https://comicvine.gamespot.com/issue/{issue_id}/'
+        child_id = add_watch(db, 'comic_issue', issue_title, watch.get('author') or 'Unknown',
+                             issue_url, release_date,
+                             {'sources': options, 'comic_issue': {
+                                 'comicvine_id': issue_id, 'volume_id': volume_id,
+                                 'issue_number': number, 'issue_title': issue.get('title'),
+                                 'store_date': issue.get('store_date'),
+                             }}, watch['id'])
+    comic['known_issues'] = known
+    comic['issues_initialized'] = True
+    # Due child rows are picked up on the next normal watch scan, which runs
+    # shortly after the parent index refresh. This keeps one folder path owner.
+    return 0
 
 
 def _chapter_key(chapter):
     return str(chapter.get('mangadex_id') or chapter.get('url') or '')
 
 
-def _chapter_serial_manifest(watch, chapter, manga_id, selector):
+def _chapter_serial_manifest(watch, chapter, manga_id, selector, source_key=None,
+                             rights_evidence_path=None, rights_work_key=None):
     number = str(chapter.get('number') or '').strip()
     if not number:
         match = re.search(r'\bchapter\s*([0-9]+(?:\.[0-9]+)?)\b',
@@ -658,22 +880,53 @@ def _chapter_serial_manifest(watch, chapter, manga_id, selector):
         entry['mangadex_id'] = chapter.get('mangadex_id')
     metadata = json.loads(watch.get('metadata') or '{}')
     comic = metadata.get('comic') or {}
-    return {
+    manifest = {
         'kind': watch['kind'], 'title': title, 'author': watch.get('author') or 'Unknown',
         'series': watch['title'], 'series_index': series_index,
         'source': chapter.get('url') or watch.get('source_url') or '',
         'selector': selector or 'article,main', 'chapters': [entry],
         'comic_metadata': comic.get('catalog_metadata') or {},
     }
+    if source_key:
+        manifest['source_key'] = source_key
+    if rights_evidence_path:
+        manifest['rights_evidence_path'] = rights_evidence_path
+    if rights_work_key:
+        manifest['rights_work_key'] = rights_work_key
+    return manifest
 
 
 def _process_comic_watch(db, watch, library_folder, source_overrides=None):
     metadata = json.loads(watch.get('metadata') or '{}')
     comic = dict(metadata.get('comic') or {})
-    chapters, manga_id = _comic_chapters(watch, comic)
+    options = dict(metadata.get('sources') or {})
+    options.update(source_overrides or {})
+    rights_document = load_rights_evidence(options.get('rights_evidence_path'))
+    rights = effective_work_rights(rights_document, watch, db)
+    # A per-work NO is authoritative for every connector. With no work-level
+    # choice, each source's own yes/no entry gates only that source below.
+    restricted = bool(rights) and rights.get('approved_for_download') is not True
+    errors = []
+    if comic.get('comicvine_id'):
+        try:
+            _sync_comicvine_issues(db, watch, comic, source_overrides)
+        except Exception as exc:
+            logger.exception('Comic Vine issue lookup failed for comic watch %s', watch['id'])
+            errors.append(f'Comic Vine: {exc}')
+    comic_source = ('mangadex' if comic.get('mangadex_id') or
+                    mangadex_id_from_url(watch.get('source_url')) else
+                    'taddy' if comic.get('taddy_id') or comic.get('sss_url') else 'comic_rss_atom')
+    chapter_approval = _approved_source_record(options, comic_source, watch, db)
+    if not chapter_approval:
+        chapters, manga_id = [], None
+        errors.append(f'{comic_source} download source is NO in rights-evidence.json.')
+        can_read_chapters = False
+    else:
+        chapters, manga_id = _comic_chapters(watch, comic)
+        can_read_chapters = True
     seen = set(comic.get('known_chapters') or [])
     seen_files = set(comic.get('known_files') or [])
-    initial_scan = not comic.get('feed_initialized')
+    initial_scan = can_read_chapters and not comic.get('feed_initialized')
     created_at = _release_time(watch.get('created_at'))
     now = _now()
     cutoff = created_at or now
@@ -691,18 +944,29 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
             seen.add(key)
             continue
         new_chapters.append((key, chapter))
-    comic['feed_initialized'] = True
+    if can_read_chapters:
+        comic['feed_initialized'] = True
 
     downloaded = []
-    errors = []
     # Keep the existing watch connectors in the comic workflow too. Only CBZ
     # candidates are useful here; EPUB/PDF hits belong to book watches.
-    candidates, connector_errors = _search_candidates(watch, source_overrides)
+    if restricted:
+        candidates, connector_errors = [], []
+        errors.append('Local rights record is NO; automatic downloads are paused.')
+    elif comic.get('comicvine_id') and not comic.get('mangadex_id') and not comic.get('feed_url'):
+        # The issue child watches handle date-gated downloads; do not search the
+        # series-level query early and accidentally pick up an unreleased issue.
+        candidates, connector_errors = [], []
+    else:
+        candidates, connector_errors = _search_candidates(watch, source_overrides)
     errors.extend(connector_errors)
     for error in connector_errors:
         logger.warning('Comic watch %s connector error: %s', watch['id'], error)
     for item in candidates:
-        if str(item.get('format') or '').casefold() != '.cbz':
+        item_format = str(item.get('format') or '').casefold()
+        if item_format not in {'.cbz', '.cbr'} and not (
+                item_format == '.pdf' and item.get('source_key') in {
+                    'public_domain_comic_mirror', 'getcomics.org'}):
             continue
         key = str(item.get('url') or '')
         if not key or key in seen_files:
@@ -719,9 +983,11 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
         if len(downloaded) >= 10:
             break
 
-    for key, chapter in new_chapters[:max(0, 10 - len(downloaded))]:
+    for key, chapter in ([] if restricted or not can_read_chapters else new_chapters[:max(0, 10 - len(downloaded))]):
         try:
-            manifest = _chapter_serial_manifest(watch, chapter, manga_id, comic.get('selector'))
+            manifest = _chapter_serial_manifest(
+                watch, chapter, manga_id, comic.get('selector'), comic_source,
+                options.get('rights_evidence_path'), chapter_approval.get('rights_work_key'))
             row = enqueue_serial(db, manifest)
             result = download(db, row['id'], Path(library_folder).parent, destination=library_folder)
             seen.add(key)
@@ -749,10 +1015,25 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
 def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
     metadata = json.loads(watch.get('metadata') or '{}')
     serial = dict(metadata.get('serial') or {})
+    options = dict(metadata.get('sources') or {})
+    options.update(source_overrides or {})
     feed_url = serial.get('feed_url') or watch.get('source_url')
     if not feed_url:
         raise ValueError('Add a public RSS/Atom chapter feed to track this web serial')
-    manifest = discover_feed(feed_url, watch['kind'], limit=200)
+    feed_host = (urllib.parse.urlsplit(feed_url).hostname or '').casefold()
+    chapter_source_key = 'novelarchive.cc' if feed_host == 'novelarchive.cc' else 'webfiction_rss_atom'
+    chapter_approval = _approved_source_record(options, chapter_source_key, watch, db)
+    if not chapter_approval:
+        now = _now()
+        error = f'{chapter_source_key} download source is NO in rights-evidence.json.'
+        db.execute("UPDATE watched_items SET state='rights_hold',last_checked_at=?,next_check_at=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (now.isoformat(sep='T'), error, watch['id']))
+        db.commit()
+        return 0
+    if chapter_source_key == 'novelarchive.cc':
+        manifest = discover_novelarchive_chapters(feed_url, limit=200)
+    else:
+        manifest = discover_feed(feed_url, watch['kind'], limit=200)
     chapters = manifest.get('chapters') or []
     seen = set(serial.get('known_chapters') or [])
     seen_files = set(serial.get('known_files') or [])
@@ -801,7 +1082,9 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
 
     for key, chapter in new_chapters[:max(0, 10 - len(downloaded))]:
         try:
-            item_manifest = _chapter_serial_manifest(watch, chapter, None, serial.get('selector'))
+            item_manifest = _chapter_serial_manifest(
+                watch, chapter, None, serial.get('selector'), chapter_source_key,
+                options.get('rights_evidence_path'), chapter_approval.get('rights_work_key'))
             row = enqueue_serial(db, item_manifest)
             result = download(db, row['id'], Path(library_folder).parent,
                               destination=library_folder)
@@ -855,6 +1138,90 @@ def _process_fanfiction_watch(db, watch, library_folder):
     return 1
 
 
+def _process_lightnovel_watch(db, watch, library_folder, source_overrides=None):
+    """Track RanobeDB volume dates and schedule searches only for English editions.
+
+    Existing English backlist is used as a baseline when the watch is created;
+    only upcoming or subsequently added English releases become child watches.
+    """
+    metadata = json.loads(watch.get('metadata') or '{}')
+    profile = dict(metadata.get('lightnovel') or {})
+    series_id = profile.get('ranobedb_id')
+    if not series_id:
+        match = re.search(r'/series/(\d+)(?:/|$)', urllib.parse.urlsplit(
+            str(watch.get('source_url') or '')).path)
+        series_id = match.group(1) if match else None
+    if not series_id:
+        # LNORI and NovelArchive can be watched directly when the user has a
+        # source URL but no RanobeDB release-date record.
+        return int(_search_book(db, watch, library_folder, source_overrides))
+    series = ranobedb_series(series_id)
+    books = series.get('books') or []
+    seen = dict(profile.get('known_volumes') or {})
+    initialized = bool(profile.get('series_initialized'))
+    created_at = _release_time(watch.get('created_at')) or _now()
+    today = _now().date()
+    known = {}
+    new_release_ids = []
+    upcoming_count = 0
+    available_count = 0
+    for book in books:
+        if not isinstance(book, dict) or book.get('id') is None:
+            continue
+        book_id = str(book['id'])
+        release_dates = book.get('c_release_dates') or {}
+        english_date = english_release_date(release_dates.get('en'))
+        old = seen.get(book_id)
+        known[book_id] = english_date
+        if english_date:
+            release = dt.date.fromisoformat(english_date)
+            if release > today:
+                upcoming_count += 1
+            else:
+                available_count += 1
+            # The first read establishes the old catalog as a baseline. Keep
+            # future English dates so they can start searching on release day.
+            is_new_release = initialized and old != english_date
+            if not initialized and release > today:
+                is_new_release = True
+            if is_new_release:
+                new_release_ids.append((book, english_date))
+
+    profile['ranobedb_id'] = str(series_id)
+    profile['known_volumes'] = known
+    profile['series_initialized'] = True
+    if upcoming_count:
+        profile['english_release_status'] = 'upcoming'
+    elif available_count:
+        profile['english_release_status'] = 'available'
+    else:
+        profile['english_release_status'] = 'not_listed'
+    profile['english_available_volumes'] = available_count
+    profile['english_upcoming_volumes'] = upcoming_count
+    sources = metadata.get('sources') or {}
+    downloaded = 0
+    for book, release_date in new_release_ids:
+        title = str(book.get('title') or f"{watch['title']} volume")
+        book_url = f"https://ranobedb.org/book/{book['id']}"
+        child_id = add_watch(
+            db, 'book', title, watch.get('author') or 'Unknown', book_url,
+            release_date, {'sources': sources, 'lightnovel_release': {
+                'ranobedb_series_id': str(series_id), 'ranobedb_book_id': str(book['id']),
+                'english_official': True,
+            }}, watch['id'])
+        child = db.execute('SELECT * FROM watched_items WHERE id=?', (child_id,)).fetchone()
+        if child and child['state'] != 'downloaded' and release_date <= today.isoformat():
+            downloaded += int(bool(_search_book(db, dict(child), library_folder, source_overrides)))
+
+    now = _now()
+    db.execute('''UPDATE watched_items SET metadata=?,state='watching',last_checked_at=?,
+        next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+        (json.dumps({**metadata, 'lightnovel': profile}, ensure_ascii=False),
+         now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), watch['id']))
+    db.commit()
+    return downloaded
+
+
 def process_due_watches(db, library_folder, force=False, source_options=None):
     """Check due watches. Future books stay visible and begin searching on release day."""
     now = _now()
@@ -873,6 +1240,15 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
         if not force and next_check and next_check > now.isoformat(sep='T'):
             continue
         checked += 1
+        if watch['kind'] == 'lightnovel':
+            try:
+                _process_lightnovel_watch(db, watch, library_folder, source_options)
+            except Exception as exc:
+                logger.exception('Light-novel watch %s (%s) failed', watch['id'], watch['title'])
+                db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
+                db.commit()
+            continue
         if watch['kind'] in ('series', 'author'):
             try:
                 _process_goodreads_collection(db, watch)
@@ -900,6 +1276,23 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
                 _process_comic_watch(db, watch, library_folder, source_options)
             except Exception as exc:
                 logger.exception('Comic watch %s (%s) failed', watch['id'], watch['title'])
+                db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
+                db.commit()
+            continue
+        if watch['kind'] == 'comic_issue':
+            try:
+                metadata = json.loads(watch.get('metadata') or '{}')
+                options = dict(metadata.get('sources') or {})
+                options.update(source_options or {})
+                rights_document = load_rights_evidence(options.get('rights_evidence_path'))
+                rights = effective_work_rights(rights_document, watch, db)
+                if not force and watch['state'] == 'rights_hold' and (
+                        rights.get('status') == 'restricted' or rights.get('approved_for_download') is False):
+                    continue
+                _process_comic_issue_watch(db, watch, library_folder, source_options)
+            except Exception as exc:
+                logger.exception('Comic issue watch %s (%s) failed', watch['id'], watch['title'])
                 db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
                 db.commit()

@@ -2,6 +2,9 @@
 import json
 import logging
 import os
+import re
+import subprocess
+import sys
 import threading
 import traceback
 import tkinter as tk
@@ -12,8 +15,14 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from logging.handlers import RotatingFileHandler
 
 from .core import connect, download, enqueue, list_items
-from .comics import mangadex_id_from_url, search_anilist, search_mangadex, search_taddy
+from .comics import (list_comicvine_issues, mangadex_id_from_url, search_anilist,
+                     search_comicvine, search_mangadex, search_taddy)
+from .comic_sources import search_getcomics, search_public_domain_comic_mirror
 from .fmhy import candidates
+from .media_catalogs import (search_lnori, search_mangaupdates, search_novelarchive,
+                             search_ranobedb)
+from .rights_evidence import (effective_work_rights, ensure_rights_evidence,
+                              load_rights_evidence, set_work_rights)
 from .serial import discover_feed, enqueue_serial
 from .sources import resolve_detail, search_forum_threads, search_openlibrary, search_site
 from .watched import (add_from_goodreads, add_from_goodreads_metadata, add_watch, get_setting, list_watches,
@@ -27,7 +36,8 @@ class MediaIntakeApp:
         self.root = root
         self.root.title('Media Intake')
         self.root.geometry('1050x680')
-        self.data_root = Path(data_root or (Path.home() / 'MediaIntakeData'))
+        self.data_root = Path(data_root or _default_data_root())
+        self.rights_evidence_path = ensure_rights_evidence(self.data_root / 'rights-evidence.json')
         self._configure_logging()
         self.db = connect(self.data_root)
         self.default_irc_config = Path(__file__).resolve().parent.parent / 'examples' / 'irc-search.json'
@@ -51,6 +61,9 @@ class MediaIntakeApp:
         self.watch_feed_url = tk.StringVar()
         self.watch_selector = tk.StringVar(value='article,main')
         self.watch_comic_profile = {}
+        self.watch_lightnovel_profile = {}
+        self.watch_comic_mirror_base = tk.StringVar(value=get_setting(self.db, 'watch_comic_mirror_base', ''))
+        self.comicvine_api_key = os.environ.get('COMICVINE_API_KEY', '').strip()
         self.watch_goodreads_profile = {}
         self.watch_openlibrary = tk.BooleanVar(value=get_setting(self.db, 'watch_openlibrary', '1') == '1')
         self.watch_libgen = tk.BooleanVar(value=get_setting(self.db, 'watch_libgen', '1') == '1')
@@ -64,8 +77,10 @@ class MediaIntakeApp:
         self.watch_scan_running = False
         self._saved_watch_sources = None
         self._forum_download_watch = False
+        self._forum_download_folders = []
         self._forum_download_baseline = {}
         self._forum_download_stability = {}
+        self._embedded_browser_process = None
         self._forum_import_in_progress = False
         self._forum_query = ''
         self._forum_last_query = ''
@@ -117,6 +132,7 @@ class MediaIntakeApp:
         chosen = filedialog.askdirectory(initialdir=str(self.data_root), title='Choose Media Intake data folder')
         if not chosen: return
         self.data_root = Path(chosen)
+        self.rights_evidence_path = ensure_rights_evidence(self.data_root / 'rights-evidence.json')
         self._configure_logging()
         self.db.close()
         self.db = connect(self.data_root)
@@ -129,6 +145,7 @@ class MediaIntakeApp:
         self.watch_annas_base.set(get_setting(self.db, 'watch_annas_base', ''))
         self.watch_opds_feeds.set(get_setting(self.db, 'watch_opds_feeds', ''))
         self.watch_catalogs.set(get_setting(self.db, 'watch_catalogs', ''))
+        self.watch_comic_mirror_base.set(get_setting(self.db, 'watch_comic_mirror_base', ''))
         irc_default = str(self.default_irc_config) if self.default_irc_config.is_file() else ''
         self.watch_irc_configs.set(get_setting(self.db, 'watch_irc_configs', irc_default))
         self.refresh_queue()
@@ -143,11 +160,12 @@ class MediaIntakeApp:
         entry.bind('<Return>', lambda _event: self.search())
         ttk.Combobox(controls, textvariable=self.source, state='readonly', width=20,
                      values=['Open Library', 'LibGen', "Anna's Archive", 'FMHY directory',
-                             'Snahp forum threads']).pack(side='left')
+                             'Snahp forum threads', 'NovelArchive', 'LNORI', 'RanobeDB',
+                             'MangaUpdates', 'GetComics', 'Public-domain comic mirror']).pack(side='left')
         ttk.Entry(controls, textvariable=self.site_base, width=28).pack(side='left', padx=6)
         ttk.Button(controls, text='Search', command=self.search).pack(side='left')
         ttk.Button(controls, text='Snahp browser helper', command=self.open_forum_helper).pack(side='left', padx=6)
-        ttk.Label(parent, text='Optional site base URL (for LibGen or Anna’s Archive)').pack(anchor='w', pady=(4, 6))
+        ttk.Label(parent, text='Optional site base URL (LibGen, Anna’s Archive, or a separate public-domain comic mirror)').pack(anchor='w', pady=(4, 6))
 
         columns = ('title', 'author', 'format', 'source')
         self.results_view = ttk.Treeview(parent, columns=columns, show='headings', selectmode='browse')
@@ -159,7 +177,7 @@ class MediaIntakeApp:
         buttons = ttk.Frame(parent)
         buttons.pack(fill='x', pady=(8, 0))
         ttk.Button(buttons, text='Queue selected result', command=self.queue_result).pack(side='left')
-        ttk.Button(buttons, text='Open selected thread', command=self.open_selected_thread).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Open selected link', command=self.open_selected_link).pack(side='left', padx=6)
 
         add = ttk.LabelFrame(parent, text='Add a direct file')
         add.pack(fill='x', pady=(12, 0))
@@ -208,7 +226,7 @@ class MediaIntakeApp:
             ttk.Entry(second, textvariable=variable, width=width).pack(side='left', padx=(4, 10))
         ttk.Label(second, text='Type').pack(side='left')
         ttk.Combobox(second, textvariable=self.watch_kind, state='readonly', width=12,
-                     values=['Auto', 'Book', 'Series', 'Author', 'Manga', 'Comic', 'Webcomic', 'Webtoon',
+                     values=['Auto', 'Book', 'Series', 'Author', 'Light novel', 'Manga', 'Comic', 'Webcomic', 'Webtoon',
                              'Web serial', 'Fanfiction']).pack(side='left', padx=6)
         ttk.Button(second, text='Add to watched', command=self.add_watched).pack(side='left')
 
@@ -219,6 +237,15 @@ class MediaIntakeApp:
         ttk.Label(feed, text='HTML selector').pack(side='left', padx=(6, 2))
         ttk.Entry(feed, textvariable=self.watch_selector, width=18).pack(side='left')
         ttk.Label(add, text='Fanfiction: enter a story URL for one EPUB that updates daily (FanFicFare). Web serials use RSS/Atom chapter feeds; comics can use RSS/Atom or Taddy SSS.').pack(anchor='w', padx=8, pady=(0, 5))
+
+        catalogs = ttk.Frame(add)
+        catalogs.pack(fill='x', padx=6, pady=(0, 6))
+        ttk.Label(catalogs, text='Catalog lookup').pack(side='left')
+        ttk.Button(catalogs, text='NovelArchive', command=self.lookup_novelarchive).pack(side='left', padx=(6, 3))
+        ttk.Button(catalogs, text='LNORI', command=self.lookup_lnori).pack(side='left', padx=3)
+        ttk.Button(catalogs, text='RanobeDB', command=self.lookup_ranobedb).pack(side='left', padx=3)
+        ttk.Button(catalogs, text='MangaUpdates English status', command=self.lookup_mangaupdates).pack(side='left', padx=3)
+        ttk.Button(catalogs, text='Comic Vine releases', command=self.lookup_comicvine).pack(side='left', padx=3)
 
         options = ttk.LabelFrame(parent, text='Connected sites to search for watched items')
         options.pack(fill='x', pady=(0, 8))
@@ -258,7 +285,13 @@ class MediaIntakeApp:
         irc_configs_entry.pack(side='left', padx=5, fill='x', expand=True)
         irc_configs_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
         ttk.Button(line, text='Choose', command=self.choose_irc_configs).pack(side='left')
-        ttk.Label(options, text='Comic watches search these connectors for CBZ files; web serials search for ebook files and check their chapter feeds. FMHY is discovery-only.').pack(anchor='w', padx=8, pady=(0, 5))
+        line = ttk.Frame(options)
+        line.pack(fill='x', padx=6, pady=(2, 5))
+        ttk.Label(line, text='Public-domain comic mirror base').pack(side='left')
+        mirror_entry = ttk.Entry(line, textvariable=self.watch_comic_mirror_base, width=72)
+        mirror_entry.pack(side='left', padx=6, fill='x', expand=True)
+        mirror_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
+        ttk.Label(options, text='Comic watches search this separate mirror for CBZ/PDF pages marked Public Domain or CC0. GetComics results open in a browser.').pack(anchor='w', padx=8, pady=(0, 5))
 
         columns = ('kind', 'title', 'author', 'release', 'status', 'checked', 'file')
         self.watched_view = ttk.Treeview(parent, columns=columns, show='headings', selectmode='browse')
@@ -273,6 +306,8 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Refresh', command=self.refresh_watches).pack(side='left')
         ttk.Button(buttons, text='Check watched now', command=lambda: self._run_watch_scan(force=True)).pack(side='left', padx=6)
         ttk.Button(buttons, text='Remove selected', command=self.delete_watched).pack(side='left')
+        ttk.Button(buttons, text='Edit rights evidence', command=self.edit_watch_rights).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Open rights file', command=self.open_rights_evidence).pack(side='left')
 
     def _busy(self, message):
         self.status.set(message)
@@ -344,6 +379,20 @@ class MediaIntakeApp:
                 return [{'title': f"Search {site['name']}", 'author': site['section'],
                          'format': 'link', 'source': site['search_url'], 'url': site['search_url'],
                          'fmhy': True} for site in candidates(query, limit=30)]
+            if source == 'NovelArchive':
+                return search_novelarchive(query)
+            if source == 'LNORI':
+                return search_lnori(query)
+            if source == 'RanobeDB':
+                return search_ranobedb(query)
+            if source == 'MangaUpdates':
+                return search_mangaupdates(query)
+            if source == 'GetComics':
+                return search_getcomics(query)
+            if source == 'Public-domain comic mirror':
+                if not base:
+                    raise ValueError('Enter your separate public-domain comic mirror base URL above')
+                return search_public_domain_comic_mirror(query, base)
             site = 'libgen' if source == 'LibGen' else 'annas'
             found = search_site(site, query, base=base)
             resolved = []
@@ -365,13 +414,13 @@ class MediaIntakeApp:
         window.transient(self.root)
         ttk.Label(
             window,
-            text=('Start the helper, then sign in and search in your normal browser. Save the results page to Downloads; '
-                  'Media Intake will detect the new HTML file and import same-site thread titles and URLs. '
-                  'It never receives or stores your password. You can also load an HTML file manually.'),
+            text=('Open the embedded browser, sign in manually, then search the forum. Click “Import thread titles” '
+                  'on the page; Media Intake will parse only same-forum topic titles and links. The browser profile '
+                  'stays in this app’s data folder. You can also load a saved HTML page manually.'),
             wraplength=465, justify='left').pack(fill='x', padx=14, pady=(14, 10))
         controls = ttk.Frame(window)
         controls.pack(fill='x', padx=14, pady=(0, 12))
-        ttk.Button(controls, text='Open sign-in and watch Downloads',
+        ttk.Button(controls, text='Open embedded sign-in browser',
                    command=self.start_forum_download_watch).pack(side='left')
         ttk.Button(controls, text='Load saved HTML', command=self.load_saved_forum_results).pack(side='left', padx=8)
         ttk.Button(controls, text='Close', command=window.destroy).pack(side='right')
@@ -390,44 +439,73 @@ class MediaIntakeApp:
         self._forum_query = query
         self._forum_download_baseline = {}
         self._forum_download_stability = {}
-        for path in downloads.glob('*'):
-            if path.is_file() and path.suffix.casefold() in ('.html', '.htm'):
-                try:
-                    stat = path.stat()
-                    self._forum_download_baseline[str(path.resolve())] = (stat.st_mtime_ns, stat.st_size)
-                except OSError:
-                    continue
-        self._forum_download_folder = downloads
+        capture_folder = self.data_root / 'browser-captures'
+        capture_folder.mkdir(parents=True, exist_ok=True)
+        self._forum_download_folders = [capture_folder, downloads]
+        for folder in self._forum_download_folders:
+            for path in folder.glob('*'):
+                if path.is_file() and path.suffix.casefold() in ('.html', '.htm'):
+                    try:
+                        stat = path.stat()
+                        self._forum_download_baseline[str(path.resolve())] = (stat.st_mtime_ns, stat.st_size)
+                    except OSError:
+                        continue
         self._forum_download_watch = True
-        opened = webbrowser.open('https://fora.snahp.eu/ucp.php?mode=login', new=1)
+        opened = self.open_embedded_browser('https://fora.snahp.eu/ucp.php?mode=login')
         if opened:
-            self._done('Snahp helper is watching Downloads for a saved results page')
+            self._done('Embedded browser ready; sign in and click Import thread titles on the search page')
             self.root.after(1800, self._poll_forum_downloads)
         else:
             self._forum_download_watch = False
-            messagebox.showerror('Snahp forum', 'Could not open the default browser.')
+            messagebox.showerror('Snahp forum', 'Could not start the embedded browser.')
+
+    def open_embedded_browser(self, url):
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != 'https' or parts.hostname != 'fora.snahp.eu':
+            messagebox.showerror('Embedded browser', 'This sign-in helper is restricted to the Snahp forum host.')
+            return False
+        if self._embedded_browser_process and self._embedded_browser_process.poll() is None:
+            self._done('Embedded browser is already open; use its current tab')
+            return True
+        profile = self.data_root / 'browser-profile'
+        captures = self.data_root / 'browser-captures'
+        if getattr(sys, 'frozen', False):
+            command = [sys.executable, '--embedded-browser', url, str(profile), str(captures)]
+        else:
+            script = Path(__file__).resolve().parents[1] / 'run_gui.py'
+            command = [sys.executable, str(script), '--embedded-browser', url, str(profile), str(captures)]
+        try:
+            flags = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            self._embedded_browser_process = subprocess.Popen(
+                command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags)
+            return True
+        except OSError:
+            self.logger.exception('Could not launch embedded browser')
+            return False
 
     def _poll_forum_downloads(self):
         if not self._forum_download_watch:
             return
         ready = []
         try:
-            for path in self._forum_download_folder.glob('*'):
-                if not path.is_file() or path.suffix.casefold() not in ('.html', '.htm'):
-                    continue
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                signature = (stat.st_mtime_ns, stat.st_size)
-                key = str(path.resolve())
-                if key in self._forum_download_baseline and self._forum_download_baseline[key] == signature:
-                    continue
-                prior, count = self._forum_download_stability.get(key, (None, 0))
-                count = count + 1 if prior == signature else 1
-                self._forum_download_stability[key] = (signature, count)
-                if count >= 2 and stat.st_size <= 5_000_000:
-                    ready.append((path, signature))
+            for folder in self._forum_download_folders:
+                for path in folder.glob('*'):
+                    if not path.is_file() or path.suffix.casefold() not in ('.html', '.htm'):
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    signature = (stat.st_mtime_ns, stat.st_size)
+                    key = str(path.resolve())
+                    if key in self._forum_download_baseline and self._forum_download_baseline[key] == signature:
+                        continue
+                    prior, count = self._forum_download_stability.get(key, (None, 0))
+                    count = count + 1 if prior == signature else 1
+                    self._forum_download_stability[key] = (signature, count)
+                    if count >= 2 and stat.st_size <= 5_000_000:
+                        ready.append((path, signature))
         except OSError as exc:
             self.logger.exception('Could not check Downloads for saved Snahp pages')
             self._done(f'Snahp import watch error: {exc}')
@@ -446,6 +524,11 @@ class MediaIntakeApp:
                         self.logger.error('Could not import saved forum page %s: %s\n%s',
                                           path, exc, traceback.format_exc())
                         imported.append((str(path), signature, [], str(exc)))
+                    if path.parent.resolve() == (self.data_root / 'browser-captures').resolve():
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            self.logger.exception('Could not remove temporary embedded-browser capture %s', path)
                 self.root.after(0, lambda: self._finish_forum_auto_import(query, imported))
 
             threading.Thread(target=run, daemon=True).start()
@@ -510,6 +593,9 @@ class MediaIntakeApp:
         if item.get('fmhy'):
             messagebox.showinfo('FMHY directory result', 'This is a discovery link. Open it in a browser and add a resolved direct file URL.')
             return
+        if item.get('discovery_only'):
+            messagebox.showinfo('Catalog discovery result', 'This source provides a catalog or release-page link, not a verified downloadable file. Open the link to review it.')
+            return
         def action():
             db = connect(self.data_root)
             try: return enqueue(db, item)
@@ -518,10 +604,27 @@ class MediaIntakeApp:
 
     def activate_result(self):
         selected = self.results_view.selection()
-        if selected and self.results[int(selected[0])].get('forum_thread'):
-            self.open_selected_thread()
+        if selected and (self.results[int(selected[0])].get('forum_thread')
+                         or self.results[int(selected[0])].get('discovery_only')
+                         or self.results[int(selected[0])].get('fmhy')):
+            self.open_selected_link()
         else:
             self.queue_result()
+
+    def open_selected_link(self):
+        selected = self.results_view.selection()
+        if not selected:
+            return
+        item = self.results[int(selected[0])]
+        url = item.get('url') or item.get('source')
+        if not url or not (item.get('forum_thread') or item.get('discovery_only') or item.get('fmhy')):
+            messagebox.showinfo('Open result', 'Select a catalog or discovery result first.')
+            return
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password:
+            messagebox.showerror('Open result', 'The selected result does not contain a safe HTTPS page link.')
+            return
+        webbrowser.open(url)
 
     def open_selected_thread(self):
         selected = self.results_view.selection()
@@ -571,6 +674,7 @@ class MediaIntakeApp:
         catalogs = [value.strip() for value in self.watch_catalogs.get().split(';') if value.strip()]
         irc_configs = [value.strip() for value in self.watch_irc_configs.get().split(';') if value.strip()]
         sources = {
+            'rights_evidence_path': str(self.rights_evidence_path),
             'openlibrary': self.watch_openlibrary.get(),
             'libgen': self.watch_libgen.get(),
             'libgen_base': self.watch_libgen_base.get().strip(),
@@ -579,6 +683,7 @@ class MediaIntakeApp:
             'opds_feeds': opds_feeds,
             'catalogs': catalogs,
             'irc_configs': irc_configs,
+            'comic_mirror_base': self.watch_comic_mirror_base.get().strip(),
         }
         if sources != self._saved_watch_sources:
             for key, value in sources.items():
@@ -654,6 +759,118 @@ class MediaIntakeApp:
                      lambda: search_taddy(query, user_id, api_key),
                      lambda results: self.show_comic_matches('Taddy', results))
 
+    def _lookup_catalog(self, provider, searcher):
+        query = self.watch_title.get().strip()
+        if not query:
+            query = simpledialog.askstring(f'Look up {provider}', f'Search {provider}:') or ''
+        query = query.strip()
+        if query:
+            self._worker(f'Searching {provider} for {query}…', lambda: searcher(query),
+                         lambda results: self.show_catalog_matches(provider, results))
+
+    def lookup_novelarchive(self):
+        self._lookup_catalog('NovelArchive', search_novelarchive)
+
+    def lookup_lnori(self):
+        self._lookup_catalog('LNORI', search_lnori)
+
+    def lookup_ranobedb(self):
+        self._lookup_catalog('RanobeDB', search_ranobedb)
+
+    def lookup_mangaupdates(self):
+        self._lookup_catalog('MangaUpdates', search_mangaupdates)
+
+    def lookup_comicvine(self):
+        query = self.watch_title.get().strip()
+        if not query:
+            query = simpledialog.askstring('Look up Comic Vine', 'Search a comic series:') or ''
+        query = query.strip()
+        if not query:
+            return
+        api_key = os.environ.get('COMICVINE_API_KEY', '').strip()
+        if not api_key:
+            api_key = simpledialog.askstring(
+                'Comic Vine API key',
+                'Enter your Comic Vine API key for this session. To keep scheduled tracking after restart, set COMICVINE_API_KEY in the app environment.',
+                show='*') or ''
+        if not api_key:
+            return
+        self.comicvine_api_key = api_key
+        self._worker(f'Searching Comic Vine for {query}…',
+                     lambda: search_comicvine(query, api_key),
+                     lambda results: self.show_comic_matches('Comic Vine', results))
+
+    def show_catalog_matches(self, provider, results):
+        if not results:
+            self._done(f'No {provider} matches found')
+            messagebox.showinfo(f'{provider} lookup', f'No catalog matches found in {provider}.')
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f'Choose a {provider} entry')
+        dialog.geometry('760x430')
+        dialog.transient(self.root)
+        ttk.Label(dialog, text=f'Choose a {provider} metadata result. Catalog page links do not download files.').pack(anchor='w', padx=10, pady=(10, 5))
+        matches = ttk.Treeview(dialog, columns=('title', 'author', 'details'), show='headings', selectmode='browse')
+        for column, heading, width in (('title', 'Title', 310), ('author', 'Author', 180),
+                                       ('details', 'Catalog details', 230)):
+            matches.heading(column, text=heading)
+            matches.column(column, width=width, anchor='w')
+        matches.pack(fill='both', expand=True, padx=10, pady=5)
+        for index, item in enumerate(results):
+            detail = item.get('metadata') or {}
+            if provider == 'MangaUpdates':
+                licensing = detail.get('english_licensed')
+                status = ('English licensed' if licensing is True else
+                          'No English license listed' if licensing is False else 'English status unknown')
+                details = status
+            elif provider == 'RanobeDB':
+                details = f"{detail.get('book_count') or '?'} volumes · {detail.get('status') or 'status unknown'}"
+            elif provider == 'LNORI':
+                details = f"{detail.get('publication_year') or ''} · {detail.get('volumes') or '?'} volumes"
+            else:
+                details = f"{detail.get('chapters') or '?'} chapters · {detail.get('release_status') or ''}"
+            matches.insert('', 'end', iid=str(index), values=(item.get('title', ''), item.get('author', ''), details))
+
+        def associate(_event=None):
+            selected = matches.selection()
+            if not selected:
+                return
+            item = results[int(selected[0])]
+            dialog.destroy()
+            if provider == 'RanobeDB':
+                metadata = item.get('metadata') or {}
+                self.watch_lightnovel_profile = {'ranobedb_id': metadata.get('catalog_id')}
+                self.watch_comic_profile = {}
+                self.watch_url.set(item.get('url') or '')
+                self.watch_title.set(item.get('title') or '')
+                self.watch_author.set(item.get('author') or '')
+                self.watch_kind.set('Light novel')
+                self._done('RanobeDB series selected; English release dates will be checked daily')
+            elif provider == 'MangaUpdates':
+                metadata = item.get('metadata') or {}
+                item.update(metadata)
+                item['provider'] = 'MangaUpdates'
+                item['kind'] = 'manga'
+                item['source_url'] = item.get('url')
+                self.associate_comic_metadata(item)
+            else:
+                self.watch_url.set(item.get('url') or '')
+                self.watch_title.set(item.get('title') or '')
+                self.watch_author.set(item.get('author') or '')
+                if provider == 'NovelArchive':
+                    self.watch_kind.set('Web serial')
+                    self._done('Metadata filled in; add an authorized RSS/Atom feed to enable chapter tracking')
+                else:
+                    self.watch_kind.set('Light novel' if provider == 'LNORI' else 'Auto')
+                    self._done(f'{provider} metadata filled in; select the matching RanobeDB series to track English volume release dates')
+
+        matches.bind('<Double-1>', associate)
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill='x', padx=10, pady=(5, 10))
+        ttk.Button(buttons, text='Use selected', command=associate).pack(side='right')
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
+        self._done(f'{len(results)} {provider} match(es)')
+
     def show_comic_matches(self, provider, results):
         if not results:
             self._done(f'No {provider} matches found')
@@ -664,16 +881,20 @@ class MediaIntakeApp:
         dialog.geometry('760x430')
         dialog.transient(self.root)
         ttk.Label(dialog, text=f'Choose the {provider} entry to associate its metadata with this watch.').pack(anchor='w', padx=10, pady=(10, 5))
-        matches = ttk.Treeview(dialog, columns=('title', 'author', 'kind', 'release'), show='headings', selectmode='browse')
-        for column, heading, width in (('title', 'Title', 330), ('author', 'Creator', 190),
-                                       ('kind', 'Type', 90), ('release', 'Start date', 95)):
+        matches = ttk.Treeview(dialog, columns=('title', 'author', 'kind', 'release', 'english'), show='headings', selectmode='browse')
+        for column, heading, width in (('title', 'Title', 280), ('author', 'Creator', 170),
+                                       ('kind', 'Type', 75), ('release', 'Start date', 90),
+                                       ('english', 'English status', 125)):
             matches.heading(column, text=heading)
             matches.column(column, width=width, anchor='w')
         matches.pack(fill='both', expand=True, padx=10, pady=5)
         for index, item in enumerate(results):
+            licensed = item.get('english_licensed')
+            english = ('English licensed' if licensed is True else
+                       'No English license listed' if licensed is False else '')
             matches.insert('', 'end', iid=str(index), values=(
                 item.get('title', ''), item.get('author', ''), item.get('kind', '').title(),
-                item.get('release_date') or ''))
+                item.get('release_date') or '', english))
 
         def associate(_event=None):
             selected = matches.selection()
@@ -697,11 +918,16 @@ class MediaIntakeApp:
             'anilist_id': item.get('anilist_id'),
             'mangadex_id': item.get('mangadex_id'),
             'taddy_id': item.get('taddy_id'),
+            'comicvine_id': item.get('comicvine_id'),
+            'english_licensed': item.get('english_licensed'),
+            'english_publishers': item.get('english_publishers') or [],
             'sss_url': item.get('sss_url'),
             'catalog_metadata': {key: value for key, value in item.items()
                                  if key not in ('provider', 'kind', 'title', 'author',
                                                 'release_date', 'source_url',
                                                 'anilist_id', 'mangadex_id', 'taddy_id',
+                                                'comicvine_id', 'english_licensed',
+                                                'english_publishers', 'metadata', 'url',
                                                 'sss_url', 'catalog_metadata')},
         }
         self.watch_url.set(item.get('source_url', ''))
@@ -711,7 +937,9 @@ class MediaIntakeApp:
         self.watch_author.set('' if item.get('author') == 'Unknown' else item.get('author', ''))
         self.watch_release_date.set(item.get('release_date') or '')
         self.watch_kind.set(item.get('kind', 'manga').title())
-        if not item.get('mangadex_id') and not item.get('sss_url'):
+        if item.get('comicvine_id'):
+            self._done('Comic Vine volume selected; set COMICVINE_API_KEY for scheduled issue-date tracking')
+        elif not item.get('mangadex_id') and not item.get('sss_url'):
             self._done(f"{item.get('provider', 'Catalog')} metadata filled in; add a chapter feed to enable automatic downloads")
         else:
             source_name = 'Taddy SSS' if item.get('sss_url') else 'MangaDex'
@@ -814,7 +1042,7 @@ class MediaIntakeApp:
         author = self.watch_author.get().strip() or 'Unknown'
         release = self.watch_release_date.get().strip() or None
         kind = self.watch_kind.get().casefold()
-        kind = {'web serial': 'webfiction'}.get(kind, kind)
+        kind = {'web serial': 'webfiction', 'light novel': 'lightnovel'}.get(kind, kind)
         kind = None if kind == 'auto' else kind
         if kind is None and mangadex_id_from_url(self.watch_url.get().strip()):
             kind = 'manga'
@@ -822,6 +1050,7 @@ class MediaIntakeApp:
         feed_url = self.watch_feed_url.get().strip()
         selector = self.watch_selector.get().strip() or 'article,main'
         comic_profile = dict(self.watch_comic_profile)
+        lightnovel_profile = dict(self.watch_lightnovel_profile)
         goodreads_profile = dict(self.watch_goodreads_profile)
 
         def action():
@@ -864,17 +1093,28 @@ class MediaIntakeApp:
                     comic_profile.update({'feed_url': comic_feed, 'selector': selector,
                                           'language': comic_profile.get('language') or 'en',
                                           'known_chapters': []})
-                    if not comic_profile.get('mangadex_id') and not comic_profile.get('feed_url'):
-                        raise ValueError('Choose a MangaDex/Taddy title or enter an RSS/Atom/SSS chapter feed URL')
+                    # A title-only comic watch searches the enabled comic
+                    # sources (including GetComics) on each scheduled scan.
                     metadata['comic'] = comic_profile
+                if watch_kind == 'lightnovel':
+                    if not lightnovel_profile.get('ranobedb_id'):
+                        match = re.search(r'/series/(\d+)(?:/|$)', urllib.parse.urlsplit(watch_url).path)
+                        if match:
+                            lightnovel_profile['ranobedb_id'] = match.group(1)
+                    if (not lightnovel_profile.get('ranobedb_id')
+                            and urllib.parse.urlsplit(watch_url).hostname not in {'lnori.com', 'novelarchive.cc'}):
+                        raise ValueError('Look up a RanobeDB series for English release dates, or use an LNORI/NovelArchive series URL')
+                    metadata['lightnovel'] = lightnovel_profile
                 if watch_kind == 'webfiction':
                     serial_feed = feed_url or watch_url
                     if not serial_feed:
-                        raise ValueError('Enter a public RSS/Atom chapter feed URL for this web serial')
-                    discovered = discover_feed(serial_feed, watch_kind, limit=200)
-                    watch_title = watch_title or discovered.get('title') or ''
-                    if watch_author == 'Unknown':
-                        watch_author = discovered.get('author') or 'Unknown'
+                        raise ValueError('Enter a public RSS/Atom feed or a NovelArchive series URL')
+                    is_novelarchive = urllib.parse.urlsplit(serial_feed).hostname == 'novelarchive.cc'
+                    if not is_novelarchive:
+                        discovered = discover_feed(serial_feed, watch_kind, limit=200)
+                        watch_title = watch_title or discovered.get('title') or ''
+                        if watch_author == 'Unknown':
+                            watch_author = discovered.get('author') or 'Unknown'
                     metadata['serial'] = {'feed_url': serial_feed, 'selector': selector,
                                           'known_chapters': [], 'known_files': []}
                     watch_url = watch_url or serial_feed
@@ -903,6 +1143,7 @@ class MediaIntakeApp:
             self.watch_release_date.set('')
             self.watch_feed_url.set('')
             self.watch_comic_profile = {}
+            self.watch_lightnovel_profile = {}
             self.watch_goodreads_profile = {}
             self.refresh_watches()
             if goodreads_metadata.get('kind') == 'series':
@@ -911,6 +1152,8 @@ class MediaIntakeApp:
                 self._done('Author added; new Goodreads books will be watched')
             elif kind in ('comic', 'manga', 'webcomic', 'webtoon'):
                 self._done('Comic watch added; new chapters will be checked daily')
+            elif kind == 'lightnovel':
+                self._done('Light-novel series added; English volumes will be searched on their release dates')
             elif kind in ('webfiction', 'fanfiction'):
                 self._done('Fanfiction watch added; its EPUB will update with new chapters daily' if kind == 'fanfiction'
                            else 'Web serial watch added; new chapters will be checked daily and saved as EPUBs')
@@ -932,6 +1175,18 @@ class MediaIntakeApp:
             state = state_names.get(row.get('state'), row.get('state', ''))
             if row.get('kind') in ('comic', 'manga', 'webcomic', 'webtoon') and row.get('state') == 'watching':
                 state = 'Watching ' + row['kind']
+            if row.get('kind') == 'lightnovel':
+                try:
+                    profile = json.loads(row.get('metadata') or '{}').get('lightnovel') or {}
+                    release_status = profile.get('english_release_status')
+                    if release_status == 'not_listed':
+                        state = 'No English release listed'
+                    elif release_status == 'upcoming':
+                        state = f"English release upcoming ({profile.get('english_upcoming_volumes', 0)})"
+                    elif release_status == 'available':
+                        state = f"English listed ({profile.get('english_available_volumes', 0)})"
+                except (TypeError, ValueError):
+                    pass
             if row.get('last_error') and row.get('state') not in ('downloaded', 'upcoming'):
                 state += ': ' + row['last_error'][:42]
             self.watched_view.insert('', 'end', iid=str(row['id']), values=(
@@ -945,6 +1200,81 @@ class MediaIntakeApp:
         remove_watch(self.db, int(selected[0]))
         self.refresh_watches()
 
+    def open_rights_evidence(self):
+        try:
+            ensure_rights_evidence(self.rights_evidence_path)
+            if hasattr(os, 'startfile'):
+                os.startfile(str(self.rights_evidence_path))
+            else:
+                webbrowser.open(self.rights_evidence_path.resolve().as_uri())
+        except Exception as exc:
+            self.logger.exception('Could not open local rights evidence file')
+            messagebox.showerror('Rights evidence', f'Could not open {self.rights_evidence_path}: {exc}')
+
+    def edit_watch_rights(self):
+        selected = self.watched_view.selection()
+        if not selected:
+            messagebox.showinfo('Rights evidence', 'Select a comic series or issue watch first.')
+            return
+        row = next((item for item in self.watch_rows if str(item.get('id')) == selected[0]), None)
+        if not row or row.get('kind') not in ('comic', 'comic_issue', 'manga', 'webcomic', 'webtoon'):
+            messagebox.showinfo('Rights evidence', 'Select a comic, manga, webcomic, webtoon, or comic issue watch.')
+            return
+        try:
+            document = load_rights_evidence(self.rights_evidence_path)
+            rights = effective_work_rights(document, row, self.db)
+        except Exception as exc:
+            self.logger.exception('Could not read local rights evidence')
+            messagebox.showerror('Rights evidence', str(exc))
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Edit local rights evidence')
+        dialog.geometry('620x310')
+        dialog.transient(self.root)
+        ttk.Label(dialog, text=f"Local approval for {row.get('title', 'selected comic')}",
+                  font=('', 10, 'bold')).pack(anchor='w', padx=12, pady=(12, 4))
+        ttk.Label(dialog, text=('The YES/NO value and evidence are saved in rights-evidence.json. '
+                                'A YES authorizes downloads for this comic watch. Issue watches inherit '
+                                'the series record unless you edit the issue itself.'),
+                  wraplength=585, justify='left').pack(anchor='w', padx=12, pady=(0, 10))
+        form = ttk.Frame(dialog)
+        form.pack(fill='x', padx=12)
+        ttk.Label(form, text='Approval').grid(row=0, column=0, sticky='w', pady=4)
+        choice_map = {
+            'No - not reviewed': 'not_reviewed',
+            'Yes - public domain': 'public_domain',
+            'Yes - permission granted': 'permission_granted',
+            'No - restricted': 'restricted',
+        }
+        reverse_map = {value: label for label, value in choice_map.items()}
+        choice = tk.StringVar(value=reverse_map.get((rights or {}).get('status'), 'No - not reviewed'))
+        ttk.Combobox(form, textvariable=choice, state='readonly', width=32,
+                     values=list(choice_map)).grid(row=0, column=1, sticky='w', pady=4)
+        ttk.Label(form, text='Evidence note').grid(row=1, column=0, sticky='w', pady=4)
+        evidence = tk.StringVar(value=(rights or {}).get('evidence', ''))
+        ttk.Entry(form, textvariable=evidence, width=68).grid(row=1, column=1, sticky='ew', pady=4)
+        ttk.Label(form, text='Evidence URL').grid(row=2, column=0, sticky='w', pady=4)
+        reference = tk.StringVar(value=(rights or {}).get('reference', ''))
+        ttk.Entry(form, textvariable=reference, width=68).grid(row=2, column=1, sticky='ew', pady=4)
+        form.columnconfigure(1, weight=1)
+
+        def save():
+            try:
+                set_work_rights(self.rights_evidence_path, row, choice_map[choice.get()],
+                                evidence.get(), reference.get())
+            except Exception as exc:
+                messagebox.showerror('Rights evidence', str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self.refresh_watches()
+            self._done('Local rights evidence saved')
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill='x', padx=12, pady=(16, 12))
+        ttk.Button(buttons, text='Save', command=save).pack(side='right')
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
+
     def _schedule_watch_scan(self):
         self._run_watch_scan(force=False, automatic=True)
         self.root.after(60_000, self._schedule_watch_scan)
@@ -956,6 +1286,8 @@ class MediaIntakeApp:
         data_root = self.data_root
         folder = self.library_folder.get().strip() or str(self.data_root / 'downloads')
         source_options = self._watch_sources()
+        if self.comicvine_api_key:
+            source_options['comicvine_api_key'] = self.comicvine_api_key
 
         def run():
             try:
@@ -1012,6 +1344,15 @@ def main(data_root=None):
     root = tk.Tk()
     MediaIntakeApp(root, data_root)
     root.mainloop()
+
+
+def _default_data_root(is_frozen=None, executable=None, home=None):
+    """Keep a frozen portable build's queue, browser profile, and logs beside its EXE."""
+    if is_frozen is None:
+        is_frozen = getattr(sys, 'frozen', False)
+    if is_frozen:
+        return Path(executable or sys.executable).resolve().parent / 'MediaIntakeData'
+    return Path(home or Path.home()) / 'MediaIntakeData'
 
 
 if __name__ == '__main__':

@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3', '.txt', '.cbz', '.mp3', '.m4b'}
+EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3', '.txt', '.cbz', '.cbr', '.mp3', '.m4b'}
 ATOM = '{http://www.w3.org/2005/Atom}'
 DC = '{http://purl.org/dc/terms/}'
 MAX_FILE_BYTES = 1024 * 1024 * 1024
@@ -166,6 +166,22 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
     if row is None: raise ValueError('Unknown queue ID')
     item = validate_item(json.loads(row['metadata']))
+    explicit_rights_path = item.get('rights_evidence_path')
+    rights_path = explicit_rights_path or (Path(root) / 'rights-evidence.json')
+    if explicit_rights_path and not Path(rights_path).is_file():
+        raise ValueError(f'Local rights evidence file is missing: {rights_path}')
+    if Path(rights_path).is_file():
+        from .rights_evidence import load_rights_evidence, source_download_rights, source_key_for_item
+        document = load_rights_evidence(rights_path)
+        work_key = str(item.get('rights_work_key') or '')
+        work_record = (document.get('works') or {}).get(work_key) if work_key else None
+        if isinstance(work_record, dict):
+            approved = work_record.get('approved_for_download') is True
+        else:
+            approved = source_download_rights(document, source_key_for_item(item)) is not None
+        if not approved:
+            source = source_key_for_item(item)
+            raise ValueError(f'Download not approved: set {source}.approved_for_download to true in {rights_path}')
     if urllib.parse.urlsplit(item['url']).scheme in ('fanfic+http', 'fanfic+https'):
         try:
             from .fanfiction import download_fanfiction

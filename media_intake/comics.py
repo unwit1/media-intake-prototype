@@ -11,6 +11,7 @@ from .core import http_get
 
 ANILIST_URL = 'https://graphql.anilist.co'
 TADDY_URL = 'https://api.taddy.org'
+COMICVINE_API = 'https://comicvine.gamespot.com/api'
 MANGADEX_API = 'https://api.mangadex.org'
 MANGADEX_SITE = 'https://mangadex.org'
 MANGADEX_ID_RE = re.compile(r'/title/([0-9a-f-]{36})(?:/|$)', re.I)
@@ -223,6 +224,92 @@ def search_taddy(query, user_id, api_key, limit=20):
             'sss_url': feed_url, 'catalog_metadata': metadata,
         })
     return results
+
+
+def search_comicvine(query, api_key, limit=20):
+    """Search Comic Vine's issue-series catalog. The API key is used only in memory."""
+    query = _query_text(query)
+    api_key = str(api_key or '').strip()
+    if not api_key or len(api_key) > 500:
+        raise ValueError('Set COMICVINE_API_KEY or enter a Comic Vine API key')
+    limit = max(1, min(int(limit), 50))
+    params = urllib.parse.urlencode({
+        'api_key': api_key, 'format': 'json', 'resources': 'volume',
+        'query': query, 'limit': limit,
+    })
+    request = urllib.request.Request(
+        COMICVINE_API + '/search/?' + params,
+        headers={'Accept': 'application/json', 'User-Agent': 'MediaIntakePrototype/0.3'},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise ValueError('Comic Vine response exceeds size limit')
+    payload = json.loads(raw.decode('utf-8'))
+    if payload.get('error') not in (None, 'OK'):
+        raise ValueError('Comic Vine search failed: ' + str(payload.get('error'))[:200])
+    results = []
+    for row in (payload.get('results') or [])[:limit]:
+        volume_id = row.get('id')
+        title = str(row.get('name') or '').strip()
+        if not volume_id or not title:
+            continue
+        source_url = row.get('site_detail_url') or f'https://comicvine.gamespot.com/{volume_id}/'
+        parts = urllib.parse.urlsplit(source_url)
+        if parts.scheme != 'https' or parts.hostname not in ('comicvine.gamespot.com', 'www.comicvine.gamespot.com'):
+            continue
+        results.append({
+            'provider': 'Comic Vine', 'kind': 'comic', 'title': title,
+            'author': 'Unknown', 'source_url': source_url,
+            'comicvine_id': str(volume_id), 'start_year': row.get('start_year'),
+            'issue_count': row.get('count_of_issues'), 'format': 'catalog',
+        })
+    return results
+
+
+def list_comicvine_issues(volume_id, api_key, limit=100):
+    """List the most recent scheduled issues in a volume, including store dates."""
+    volume_id = str(volume_id or '').strip()
+    api_key = str(api_key or '').strip()
+    if not re.fullmatch(r'\d{1,12}', volume_id):
+        raise ValueError('Invalid Comic Vine volume ID')
+    if not api_key or len(api_key) > 500:
+        raise ValueError('Set COMICVINE_API_KEY or enter a Comic Vine API key')
+    limit = max(1, min(int(limit), 100))
+    params = urllib.parse.urlencode({
+        'api_key': api_key, 'format': 'json', 'filter': f'volume:{volume_id}',
+        'sort': 'store_date:desc', 'limit': limit,
+        'field_list': 'id,name,issue_number,store_date,cover_date,site_detail_url',
+    })
+    request = urllib.request.Request(
+        COMICVINE_API + '/issues/?' + params,
+        headers={'Accept': 'application/json', 'User-Agent': 'MediaIntakePrototype/0.3'},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read(4_000_001)
+    if len(raw) > 4_000_000:
+        raise ValueError('Comic Vine issue response exceeds size limit')
+    payload = json.loads(raw.decode('utf-8'))
+    if payload.get('error') not in (None, 'OK'):
+        raise ValueError('Comic Vine issue lookup failed: ' + str(payload.get('error'))[:200])
+    issues = []
+    for row in payload.get('results') or []:
+        issue_id = row.get('id')
+        if issue_id is None:
+            continue
+        store_date = str(row.get('store_date') or '').strip() or None
+        cover_date = str(row.get('cover_date') or '').strip() or None
+        title = str(row.get('name') or '').strip()
+        number = str(row.get('issue_number') or '').strip()
+        if not title:
+            title = f'Issue #{number}' if number else 'Comic issue'
+        issues.append({
+            'provider': 'Comic Vine', 'comicvine_id': str(issue_id),
+            'title': title, 'number': number, 'store_date': store_date,
+            'cover_date': cover_date, 'release_date': store_date or cover_date,
+            'source_url': row.get('site_detail_url') or f'https://comicvine.gamespot.com/issue/{issue_id}/',
+        })
+    return issues
 
 
 def mangadex_id_from_url(url):

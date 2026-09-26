@@ -11,7 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from media_intake.comics import list_mangadex_chapters, search_anilist, search_mangadex, search_taddy
+from media_intake.comics import (list_comicvine_issues, list_mangadex_chapters,
+                                 search_anilist, search_comicvine, search_mangadex,
+                                 search_taddy)
 from media_intake.core import connect, list_items
 from media_intake.serial import discover_feed
 from media_intake.watched import add_watch, process_due_watches
@@ -62,6 +64,29 @@ class FeedPages(BaseHTTPRequestHandler):
 
 
 class ComicCatalogTest(unittest.TestCase):
+    def test_comicvine_search_and_issue_lookup_use_api_key_and_release_dates(self):
+        class Response:
+            def __init__(self, payload): self.payload = payload
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self, _limit): return json.dumps(self.payload).encode()
+
+        volume = {'id': 123, 'name': 'Public Comic', 'start_year': 1939,
+                  'count_of_issues': 27, 'site_detail_url': 'https://comicvine.gamespot.com/public-comic/4050-123/'}
+        issue = {'id': 456, 'name': 'Public Comic #27', 'issue_number': '27',
+                 'store_date': '2026-10-01 00:00:00', 'cover_date': '2026-10-01 00:00:00',
+                 'site_detail_url': 'https://comicvine.gamespot.com/public-comic-27/4000-456/'}
+        with patch('media_intake.comics.urllib.request.urlopen',
+                   side_effect=[Response({'error': 'OK', 'results': [volume]}),
+                                Response({'error': 'OK', 'results': [issue]})]) as open_url:
+            volumes = search_comicvine('Public Comic', 'fixture-key')
+            issues = list_comicvine_issues('123', 'fixture-key')
+        self.assertEqual(volumes[0]['comicvine_id'], '123')
+        self.assertEqual(volumes[0]['format'], 'catalog')
+        self.assertIn('fixture-key', open_url.call_args_list[0].args[0].full_url)
+        self.assertEqual(issues[0]['number'], '27')
+        self.assertEqual(issues[0]['release_date'], '2026-10-01 00:00:00')
+
     def test_mangadex_feed_keeps_latest_translation_and_group(self):
         payload = {'data': [
             {'id': 'newest-chapter-2', 'attributes': {'chapter': '2', 'volume': '1',

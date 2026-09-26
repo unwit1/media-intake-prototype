@@ -1,0 +1,4 @@
+# Small Python host around the Windows WebView2 runtime. The Chromium engine
+# is provided by the user's auto-updating WebView2 Runtime, not copied into the
+# portable executable.
+pywebview>=6.2,<7

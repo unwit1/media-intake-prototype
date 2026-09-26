@@ -1,0 +1,8 @@
+{
+  "server": "irc.irchighway.net",
+  "port": 6697,
+  "tls": true,
+  "nick": "MediaIntakeReader",
+  "channel": "#ebooks",
+  "timeout": 60
+}

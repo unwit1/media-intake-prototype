@@ -1,19 +1,24 @@
 """Small Tkinter desktop front end for the media intake queue."""
 import json
+import logging
 import os
 import threading
+import traceback
 import tkinter as tk
+import urllib.parse
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from logging.handlers import RotatingFileHandler
 
 from .core import connect, download, enqueue, list_items
 from .comics import mangadex_id_from_url, search_anilist, search_mangadex, search_taddy
 from .fmhy import candidates
 from .serial import discover_feed, enqueue_serial
 from .sources import resolve_detail, search_forum_threads, search_openlibrary, search_site
-from .watched import (add_from_goodreads, add_watch, get_setting, list_watches,
-                      fetch_goodreads, process_due_watches, remove_watch,
+from .watched import (add_from_goodreads, add_from_goodreads_metadata, add_watch, get_setting, list_watches,
+                      fetch_goodreads, parse_goodreads_html, parse_goodreads_search_html,
+                      process_due_watches, remove_watch,
                       search_goodreads, set_setting)
 
 
@@ -23,6 +28,7 @@ class MediaIntakeApp:
         self.root.title('Media Intake')
         self.root.geometry('1050x680')
         self.data_root = Path(data_root or (Path.home() / 'MediaIntakeData'))
+        self._configure_logging()
         self.db = connect(self.data_root)
         self.default_irc_config = Path(__file__).resolve().parent.parent / 'examples' / 'irc-search.json'
         irc_default = str(self.default_irc_config) if self.default_irc_config.is_file() else ''
@@ -45,6 +51,7 @@ class MediaIntakeApp:
         self.watch_feed_url = tk.StringVar()
         self.watch_selector = tk.StringVar(value='article,main')
         self.watch_comic_profile = {}
+        self.watch_goodreads_profile = {}
         self.watch_openlibrary = tk.BooleanVar(value=get_setting(self.db, 'watch_openlibrary', '1') == '1')
         self.watch_libgen = tk.BooleanVar(value=get_setting(self.db, 'watch_libgen', '1') == '1')
         self.watch_annas = tk.BooleanVar(value=get_setting(self.db, 'watch_annas', '1') == '1')
@@ -56,10 +63,34 @@ class MediaIntakeApp:
         self.watch_rows = []
         self.watch_scan_running = False
         self._saved_watch_sources = None
+        self._forum_download_watch = False
+        self._forum_download_baseline = {}
+        self._forum_download_stability = {}
+        self._forum_import_in_progress = False
+        self._forum_query = ''
+        self._forum_last_query = ''
+        self._goodreads_pending_search_query = ''
+        self._goodreads_pending_search_url = ''
         self._build()
         self.refresh_queue()
         self.refresh_watches()
         self.root.after(1500, self._schedule_watch_scan)
+
+    def _configure_logging(self):
+        self.log_folder = self.data_root / 'logs'
+        self.log_folder.mkdir(parents=True, exist_ok=True)
+        self.log_file = self.log_folder / 'media-intake.log'
+        self.logger = logging.getLogger('media_intake')
+        self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
+        for handler in list(self.logger.handlers):
+            self.logger.removeHandler(handler)
+            handler.close()
+        handler = RotatingFileHandler(self.log_file, maxBytes=2_000_000,
+                                      backupCount=4, encoding='utf-8')
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s %(name)s: %(message)s'))
+        self.logger.addHandler(handler)
 
     def _build(self):
         toolbar = ttk.Frame(self.root, padding=8)
@@ -67,6 +98,7 @@ class MediaIntakeApp:
         ttk.Label(toolbar, text='Data folder:').pack(side='left')
         ttk.Entry(toolbar, textvariable=tk.StringVar(value=str(self.data_root)), width=58, state='readonly').pack(side='left', padx=6)
         ttk.Button(toolbar, text='Choose…', command=self.choose_root).pack(side='left')
+        ttk.Button(toolbar, text='Open logs', command=self.open_logs).pack(side='left', padx=6)
         ttk.Label(toolbar, textvariable=self.status).pack(side='right')
 
         tabs = ttk.Notebook(self.root)
@@ -85,6 +117,7 @@ class MediaIntakeApp:
         chosen = filedialog.askdirectory(initialdir=str(self.data_root), title='Choose Media Intake data folder')
         if not chosen: return
         self.data_root = Path(chosen)
+        self._configure_logging()
         self.db.close()
         self.db = connect(self.data_root)
         self._saved_watch_sources = None
@@ -162,6 +195,7 @@ class MediaIntakeApp:
         ttk.Label(first, text='Metadata URL').pack(side='left')
         ttk.Entry(first, textvariable=self.watch_url, width=44).pack(side='left', padx=6, fill='x', expand=True)
         ttk.Button(first, text='Goodreads', command=self.lookup_goodreads).pack(side='left', padx=(0, 4))
+        ttk.Button(first, text='Import Goodreads HTML', command=self.load_goodreads_html).pack(side='left', padx=(0, 4))
         ttk.Button(first, text='AniList', command=self.lookup_anilist).pack(side='left', padx=(0, 4))
         ttk.Button(first, text='MangaDex', command=self.lookup_mangadex).pack(side='left', padx=(0, 4))
         ttk.Button(first, text='Taddy', command=self.lookup_taddy).pack(side='left')
@@ -184,7 +218,7 @@ class MediaIntakeApp:
         ttk.Entry(feed, textvariable=self.watch_feed_url, width=66).pack(side='left', padx=6, fill='x', expand=True)
         ttk.Label(feed, text='HTML selector').pack(side='left', padx=(6, 2))
         ttk.Entry(feed, textvariable=self.watch_selector, width=18).pack(side='left')
-        ttk.Label(add, text='Web serial feeds save new chapters as EPUB. Comics accept RSS/Atom with an image selector or a Taddy SSS feed; Taddy search needs API credentials.').pack(anchor='w', padx=8, pady=(0, 5))
+        ttk.Label(add, text='Fanfiction: enter a story URL for one EPUB that updates daily (FanFicFare). Web serials use RSS/Atom chapter feeds; comics can use RSS/Atom or Taddy SSS.').pack(anchor='w', padx=8, pady=(0, 5))
 
         options = ttk.LabelFrame(parent, text='Connected sites to search for watched items')
         options.pack(fill='x', pady=(0, 8))
@@ -246,19 +280,52 @@ class MediaIntakeApp:
     def _done(self, message):
         self.status.set(message)
 
-    def _worker(self, message, action, callback=None):
+    def _worker(self, message, action, callback=None, on_error=None):
         self._busy(message)
         def run():
             try:
                 result = action()
             except Exception as exc:
-                self.root.after(0, lambda error=exc: (self._done('Error'), messagebox.showerror('Media Intake', str(error))))
+                self.logger.error('Background operation failed: %s: %s\n%s',
+                                  message, exc, traceback.format_exc())
+                def failed(error=exc):
+                    self._done('Error — details saved in logs')
+                    if on_error:
+                        try:
+                            on_error(error)
+                        except Exception as callback_error:
+                            self.logger.exception('Error handler failed after %s', message)
+                            messagebox.showerror('Media Intake',
+                                                 f'{callback_error}\n\nDetails saved to {self.log_file}')
+                    else:
+                        messagebox.showerror('Media Intake',
+                                             f'{error}\n\nDetails saved to {self.log_file}')
+                self.root.after(0, failed)
                 return
             if callback:
-                self.root.after(0, lambda: callback(result))
+                def completed():
+                    try:
+                        callback(result)
+                    except Exception as callback_error:
+                        self.logger.error('Completion handler failed after %s: %s\n%s',
+                                          message, callback_error, traceback.format_exc())
+                        self._done('Error — details saved in logs')
+                        messagebox.showerror('Media Intake',
+                                             f'{callback_error}\n\nDetails saved to {self.log_file}')
+                self.root.after(0, completed)
             else:
                 self.root.after(0, lambda: self._done('Ready'))
         threading.Thread(target=run, daemon=True).start()
+
+    def open_logs(self):
+        try:
+            if hasattr(os, 'startfile'):
+                os.startfile(str(self.log_file))
+            else:
+                webbrowser.open(self.log_file.resolve().as_uri())
+        except Exception as exc:
+            self.logger.exception('Could not open diagnostics log')
+            messagebox.showerror('Media Intake', f'Could not open the log: {exc}\n{self.log_file}')
 
     def search(self):
         query = self.query.get().strip()
@@ -266,6 +333,9 @@ class MediaIntakeApp:
             messagebox.showinfo('Media Intake', 'Enter a title, author, or search term.')
             return
         source = self.source.get()
+        if source == 'Snahp forum threads':
+            self.open_forum_helper()
+            return
         base = self.site_base.get().strip() or None
         def action():
             if source == 'Open Library':
@@ -274,8 +344,6 @@ class MediaIntakeApp:
                 return [{'title': f"Search {site['name']}", 'author': site['section'],
                          'format': 'link', 'source': site['search_url'], 'url': site['search_url'],
                          'fmhy': True} for site in candidates(query, limit=30)]
-            if source == 'Snahp forum threads':
-                return search_forum_threads(query)
             site = 'libgen' if source == 'LibGen' else 'annas'
             found = search_site(site, query, base=base)
             resolved = []
@@ -284,6 +352,7 @@ class MediaIntakeApp:
                 try:
                     resolved.extend(resolve_detail(site, result['detail_url'], result.get('title', query), result.get('author', 'Unknown'), result.get('format')))
                 except Exception:
+                    self.logger.exception('Could not resolve a %s result detail page', site)
                     continue
             return resolved
         self._worker(f'Searching {source}…', action, self.show_results)
@@ -291,27 +360,124 @@ class MediaIntakeApp:
     def open_forum_helper(self):
         window = tk.Toplevel(self.root)
         window.title('Snahp forum browser helper')
-        window.geometry('460x190')
+        window.geometry('500x220')
         window.resizable(False, False)
         window.transient(self.root)
         ttk.Label(
             window,
-            text=('Sign in and search in your normal browser. Media Intake never receives or stores your password. '
-                  'Save the search results page as HTML, then import it here; the importer keeps thread titles and '
-                  'same-site thread URLs only.'),
-            wraplength=430, justify='left').pack(fill='x', padx=14, pady=(14, 10))
+            text=('Start the helper, then sign in and search in your normal browser. Save the results page to Downloads; '
+                  'Media Intake will detect the new HTML file and import same-site thread titles and URLs. '
+                  'It never receives or stores your password. You can also load an HTML file manually.'),
+            wraplength=465, justify='left').pack(fill='x', padx=14, pady=(14, 10))
         controls = ttk.Frame(window)
         controls.pack(fill='x', padx=14, pady=(0, 12))
-        ttk.Button(controls, text='Open forum sign-in', command=self.open_forum_login).pack(side='left')
-        ttk.Button(controls, text='Load saved search HTML', command=self.load_saved_forum_results).pack(side='left', padx=8)
+        ttk.Button(controls, text='Open sign-in and watch Downloads',
+                   command=self.start_forum_download_watch).pack(side='left')
+        ttk.Button(controls, text='Load saved HTML', command=self.load_saved_forum_results).pack(side='left', padx=8)
         ttk.Button(controls, text='Close', command=window.destroy).pack(side='right')
 
-    def open_forum_login(self):
+    def start_forum_download_watch(self):
+        query = self.query.get().strip()
+        if not query:
+            messagebox.showinfo('Snahp forum', 'Enter the search term before starting the helper.')
+            return
+        downloads = Path.home() / 'Downloads'
+        if not downloads.is_dir():
+            chosen = filedialog.askdirectory(title='Choose the folder where you save forum pages')
+            if not chosen:
+                return
+            downloads = Path(chosen)
+        self._forum_query = query
+        self._forum_download_baseline = {}
+        self._forum_download_stability = {}
+        for path in downloads.glob('*'):
+            if path.is_file() and path.suffix.casefold() in ('.html', '.htm'):
+                try:
+                    stat = path.stat()
+                    self._forum_download_baseline[str(path.resolve())] = (stat.st_mtime_ns, stat.st_size)
+                except OSError:
+                    continue
+        self._forum_download_folder = downloads
+        self._forum_download_watch = True
         opened = webbrowser.open('https://fora.snahp.eu/ucp.php?mode=login', new=1)
         if opened:
-            self._done('Sign in and search in your browser, then import the saved results page')
+            self._done('Snahp helper is watching Downloads for a saved results page')
+            self.root.after(1800, self._poll_forum_downloads)
         else:
+            self._forum_download_watch = False
             messagebox.showerror('Snahp forum', 'Could not open the default browser.')
+
+    def _poll_forum_downloads(self):
+        if not self._forum_download_watch:
+            return
+        ready = []
+        try:
+            for path in self._forum_download_folder.glob('*'):
+                if not path.is_file() or path.suffix.casefold() not in ('.html', '.htm'):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                signature = (stat.st_mtime_ns, stat.st_size)
+                key = str(path.resolve())
+                if key in self._forum_download_baseline and self._forum_download_baseline[key] == signature:
+                    continue
+                prior, count = self._forum_download_stability.get(key, (None, 0))
+                count = count + 1 if prior == signature else 1
+                self._forum_download_stability[key] = (signature, count)
+                if count >= 2 and stat.st_size <= 5_000_000:
+                    ready.append((path, signature))
+        except OSError as exc:
+            self.logger.exception('Could not check Downloads for saved Snahp pages')
+            self._done(f'Snahp import watch error: {exc}')
+        if ready and not self._forum_import_in_progress:
+            self._forum_import_in_progress = True
+            query = self._forum_query
+            self._busy('Importing saved Snahp results…')
+
+            def run():
+                imported = []
+                for path, signature in ready:
+                    try:
+                        results = search_forum_threads(query, html_path=str(path))
+                        imported.append((str(path), signature, results, None))
+                    except Exception as exc:
+                        self.logger.error('Could not import saved forum page %s: %s\n%s',
+                                          path, exc, traceback.format_exc())
+                        imported.append((str(path), signature, [], str(exc)))
+                self.root.after(0, lambda: self._finish_forum_auto_import(query, imported))
+
+            threading.Thread(target=run, daemon=True).start()
+        elif self._forum_download_watch:
+            self.root.after(1800, self._poll_forum_downloads)
+
+    def _finish_forum_auto_import(self, query, imported):
+        self._forum_import_in_progress = False
+        self._forum_download_watch = False
+        combined = []
+        errors = []
+        for path, signature, results, error in imported:
+            self._forum_download_baseline[path] = signature
+            if error:
+                errors.append(error)
+            else:
+                combined.extend(results)
+        if query != self._forum_last_query or not all(row.get('forum_thread') for row in self.results):
+            existing = []
+        else:
+            existing = list(self.results)
+        merged = {row.get('url'): row for row in existing if row.get('url')}
+        merged.update({row.get('url'): row for row in combined if row.get('url')})
+        self._forum_last_query = query
+        self.source.set('Snahp forum threads')
+        self.show_results(list(merged.values()))
+        if errors:
+            messagebox.showwarning('Snahp import', '\n'.join(errors[-2:]) + f'\n\nDetails saved to {self.log_file}')
+        elif not combined:
+            self._done('Saved Snahp page imported; no thread links were found')
+        else:
+            self._done(f'Imported {len(combined)} Snahp thread result(s)')
 
     def load_saved_forum_results(self):
         path = filedialog.askopenfilename(
@@ -434,8 +600,20 @@ class MediaIntakeApp:
         query = query.strip()
         if not query:
             return
+        self._goodreads_pending_search_query = query
+        self._goodreads_pending_search_url = 'https://www.goodreads.com/search?' + urllib.parse.urlencode({'q': query})
         self._worker(f'Searching Goodreads for {query}…',
-                     lambda: search_goodreads(query), self.show_goodreads_matches)
+                     lambda: search_goodreads(query), self.show_goodreads_matches,
+                     on_error=lambda error: self.goodreads_search_unavailable(query, error))
+
+    def goodreads_search_unavailable(self, query, error):
+        self._done('Goodreads search blocked; save its results page to import')
+        opened = webbrowser.open(self._goodreads_pending_search_url, new=1)
+        message = (f'{error}\n\nThe search phrase “{query}” is ready. Save the opened Goodreads search page '
+                   'as HTML, then click Import Goodreads HTML to load its book, series, or author matches.')
+        if not opened:
+            message += '\n\nThe Goodreads page could not be opened automatically.'
+        messagebox.showwarning('Goodreads search unavailable', message)
 
     def _lookup_comic_catalog(self, provider):
         query = self.watch_title.get().strip()
@@ -513,6 +691,7 @@ class MediaIntakeApp:
         self._done(f'{len(results)} {provider} match(es)')
 
     def associate_comic_metadata(self, item):
+        self.watch_goodreads_profile = {}
         self.watch_comic_profile = {
             'provider': item.get('provider'),
             'anilist_id': item.get('anilist_id'),
@@ -563,8 +742,17 @@ class MediaIntakeApp:
                 return
             result = results[int(selected[0])]
             dialog.destroy()
+            self.watch_goodreads_profile = {}
+            self._goodreads_pending_search_query = ''
+            self._goodreads_pending_search_url = result['source_url']
+            self.watch_url.set(result['source_url'])
+            self.watch_title.set(result['title'])
+            self.watch_author.set('')
+            self.watch_release_date.set('')
+            self.watch_kind.set(result['kind'].title())
             self._worker('Loading Goodreads metadata…',
-                         lambda: fetch_goodreads(result['source_url']), self.associate_goodreads_metadata)
+                         lambda: fetch_goodreads(result['source_url']), self.associate_goodreads_metadata,
+                         on_error=lambda error: self.goodreads_page_unavailable(result, error))
 
         matches.bind('<Double-1>', associate)
         buttons = ttk.Frame(dialog)
@@ -575,12 +763,50 @@ class MediaIntakeApp:
 
     def associate_goodreads_metadata(self, metadata):
         self.watch_comic_profile = {}
+        self.watch_goodreads_profile = dict(metadata)
         self.watch_url.set(metadata.get('source_url', ''))
         self.watch_title.set(metadata.get('title', ''))
         self.watch_author.set('' if metadata.get('author') == 'Unknown' else metadata.get('author', ''))
         self.watch_release_date.set(metadata.get('release_date') or '')
         self.watch_kind.set(metadata.get('kind', 'book').title())
         self._done('Goodreads metadata filled in; review and add it to Watched')
+
+    def goodreads_page_unavailable(self, result, error):
+        self._goodreads_pending_search_query = ''
+        self._goodreads_pending_search_url = result['source_url']
+        self._done('Goodreads name and URL filled in; page import is available')
+        opened = webbrowser.open(result['source_url'], new=1)
+        message = (f'{error}\n\nI filled in {result["kind"]} “{result["title"]}” and its Goodreads URL. '
+                   'You can still add it now; its first successful page check will establish a safe baseline. '
+                   'To import the author’s book list now, save the opened page as HTML and click '
+                   'Import Goodreads HTML.')
+        if not opened:
+            message += '\n\nThe Goodreads page could not be opened automatically.'
+        messagebox.showwarning('Goodreads page unavailable', message)
+
+    def load_goodreads_html(self):
+        if self._goodreads_pending_search_query and self._goodreads_pending_search_url:
+            url = self._goodreads_pending_search_url
+        else:
+            url = self.watch_url.get().strip()
+        if not url:
+            url = simpledialog.askstring('Import Goodreads HTML',
+                                         'Goodreads search, profile, series, or book URL:') or ''
+        if not url.strip():
+            return
+        path = filedialog.askopenfilename(
+            initialdir=str(Path.home() / 'Downloads'), title='Choose saved Goodreads page HTML',
+            filetypes=[('HTML pages', '*.html *.htm'), ('All files', '*.*')])
+        if not path:
+            return
+        if urllib.parse.urlsplit(url.strip()).path.casefold() == '/search':
+            query = self._goodreads_pending_search_query or self.watch_title.get().strip()
+            self._worker('Reading saved Goodreads search…',
+                         lambda: parse_goodreads_search_html(query, path, url.strip()),
+                         self.show_goodreads_matches)
+        else:
+            self._worker('Reading saved Goodreads page…',
+                         lambda: parse_goodreads_html(url.strip(), path), self.associate_goodreads_metadata)
 
     def add_watched(self):
         url = self.watch_url.get().strip()
@@ -596,6 +822,7 @@ class MediaIntakeApp:
         feed_url = self.watch_feed_url.get().strip()
         selector = self.watch_selector.get().strip() or 'article,main'
         comic_profile = dict(self.watch_comic_profile)
+        goodreads_profile = dict(self.watch_goodreads_profile)
 
         def action():
             db = connect(self.data_root)
@@ -604,15 +831,25 @@ class MediaIntakeApp:
                 watch_url = url
                 watch_author = author
                 watch_kind = kind or 'book'
+                goodreads_failed = False
                 if watch_url and watch_kind in ('book', 'series', 'author'):
+                    if goodreads_profile and goodreads_profile.get('source_url') == watch_url:
+                        return add_from_goodreads_metadata(
+                            db, goodreads_profile, watch_url, kind, watch_title or None,
+                            watch_author, release, sources)
                     try:
                         return add_from_goodreads(db, watch_url, kind, watch_title or None, watch_author, release, sources)
-                    except Exception:
+                    except Exception as exc:
+                        goodreads_failed = True
+                        self.logger.warning('Goodreads metadata fetch failed for %s; retaining entered metadata: %s',
+                                            watch_url, exc)
                         if not watch_title:
                             raise
                 metadata = {'sources': sources}
                 if watch_kind in ('series', 'author'):
                     metadata['known_books'] = []
+                    if goodreads_failed:
+                        metadata['goodreads_baseline_pending'] = True
                 if watch_kind in ('comic', 'manga', 'webcomic', 'webtoon'):
                     comic_profile['mangadex_id'] = (comic_profile.get('mangadex_id') or
                                                      mangadex_id_from_url(watch_url))
@@ -630,7 +867,7 @@ class MediaIntakeApp:
                     if not comic_profile.get('mangadex_id') and not comic_profile.get('feed_url'):
                         raise ValueError('Choose a MangaDex/Taddy title or enter an RSS/Atom/SSS chapter feed URL')
                     metadata['comic'] = comic_profile
-                if watch_kind in ('webfiction', 'fanfiction'):
+                if watch_kind == 'webfiction':
                     serial_feed = feed_url or watch_url
                     if not serial_feed:
                         raise ValueError('Enter a public RSS/Atom chapter feed URL for this web serial')
@@ -641,6 +878,16 @@ class MediaIntakeApp:
                     metadata['serial'] = {'feed_url': serial_feed, 'selector': selector,
                                           'known_chapters': [], 'known_files': []}
                     watch_url = watch_url or serial_feed
+                elif watch_kind == 'fanfiction':
+                    if not watch_url:
+                        raise ValueError('Enter a public story URL for this fanfiction watch')
+                    from .fanfiction import story_url_key
+                    story_url_key(watch_url)
+                    metadata['fanfiction'] = {'story_url': watch_url}
+                    if not watch_title:
+                        last_segment = Path(urllib.parse.urlsplit(watch_url).path.rstrip('/')).name
+                        watch_title = urllib.parse.unquote(last_segment).replace('-', ' ').replace('_', ' ').strip()
+                    watch_title = watch_title or 'Watched fanfiction'
                 watch_id = add_watch(db, watch_kind, watch_title, watch_author, watch_url or feed_url or None,
                                      release, metadata)
                 return watch_id, None
@@ -648,22 +895,26 @@ class MediaIntakeApp:
                 db.close()
 
         def added(result):
+            goodreads_metadata = (result[1] if isinstance(result, tuple) and len(result) > 1
+                                  and isinstance(result[1], dict) else {})
             self.watch_url.set('')
             self.watch_title.set('')
             self.watch_author.set('')
             self.watch_release_date.set('')
             self.watch_feed_url.set('')
             self.watch_comic_profile = {}
+            self.watch_goodreads_profile = {}
             self.refresh_watches()
-            if result[1] and result[1].get('kind') == 'series':
+            if goodreads_metadata.get('kind') == 'series':
                 self._done('Series added; upcoming books will be watched as Goodreads lists them')
-            elif result[1] and result[1].get('kind') == 'author':
+            elif goodreads_metadata.get('kind') == 'author':
                 self._done('Author added; new Goodreads books will be watched')
             elif kind in ('comic', 'manga', 'webcomic', 'webtoon'):
                 self._done('Comic watch added; new chapters will be checked daily')
             elif kind in ('webfiction', 'fanfiction'):
-                self._done('Web serial watch added; new chapters will be checked daily and saved as EPUBs')
-            elif result[1] and result[1].get('release_date'):
+                self._done('Fanfiction watch added; its EPUB will update with new chapters daily' if kind == 'fanfiction'
+                           else 'Web serial watch added; new chapters will be checked daily and saved as EPUBs')
+            elif goodreads_metadata.get('release_date'):
                 self._done('Watched; release date saved')
             else:
                 self._done('Added to watched')
@@ -716,6 +967,7 @@ class MediaIntakeApp:
                     db.close()
                 error = None
             except Exception as exc:
+                self.logger.error('Watch scan failed: %s\n%s', exc, traceback.format_exc())
                 checked, rows, error = 0, None, exc
 
             def finish():

@@ -1,0 +1,2 @@
+# Optional fanfiction download engine used by Watched.
+FanFicFare>=4.61.0

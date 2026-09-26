@@ -40,8 +40,9 @@ def validate_item(item):
     if ext not in EXTENSIONS:
         raise ValueError(f'Unsupported format: {ext}')
     url = urllib.parse.urlsplit(item['url'])
-    if url.scheme not in ('http', 'https', 'irc+xdcc', 'serial+https', 'serial+http') or not url.netloc or url.username or url.password:
-        raise ValueError('Expected an HTTP(S), IRC, or serial URL without embedded credentials')
+    if url.scheme not in ('http', 'https', 'irc+xdcc', 'serial+https', 'serial+http',
+                          'fanfic+https', 'fanfic+http') or not url.netloc or url.username or url.password:
+        raise ValueError('Expected an HTTP(S), IRC, serial, or fanfiction URL without embedded credentials')
     item['format'] = ext
     item.setdefault('author', 'Unknown')
     return item
@@ -164,9 +165,17 @@ def search_opds(feed_url, query, pages=3):
 def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
     if row is None: raise ValueError('Unknown queue ID')
+    item = validate_item(json.loads(row['metadata']))
+    if urllib.parse.urlsplit(item['url']).scheme in ('fanfic+http', 'fanfic+https'):
+        try:
+            from .fanfiction import download_fanfiction
+            return download_fanfiction(db, row, root, max_bytes, destination)
+        except Exception as exc:
+            db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+            db.commit()
+            raise
     if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists():
         return dict(row)
-    item = validate_item(json.loads(row['metadata']))
     if urllib.parse.urlsplit(item['url']).scheme == 'irc+xdcc':
         try:
             from .irc import download_irc

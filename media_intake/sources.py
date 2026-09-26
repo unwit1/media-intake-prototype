@@ -177,7 +177,10 @@ def search_forum_threads(query, base_url=SNAHP_FORUM, html_path=None):
         raise ValueError('Forum base must be https://fora.snahp.eu')
     search_url = urllib.parse.urljoin(base_url.rstrip('/') + '/', 'search.php?' + urllib.parse.urlencode({'keywords': query}))
     if html_path:
-        page = Path(html_path).read_text(encoding='utf-8')
+        saved_page = Path(html_path)
+        if not saved_page.is_file() or saved_page.stat().st_size > 5_000_000:
+            raise ValueError('Saved forum search HTML must be a file smaller than 5 MB')
+        page = saved_page.read_text(encoding='utf-8', errors='replace')
         final_url = search_url
     else:
         headers = {'User-Agent': 'MediaIntakePrototype/0.1 (thread search)',

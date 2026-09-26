@@ -1,6 +1,6 @@
 # Media Intake prototype
 
-A local Python 3.10+ worker for finding, queuing, downloading, renaming, and importing ebook files. It has no third-party Python dependencies. Queue and provenance are stored in SQLite under `--root`; downloaded files are checked, hashed, and named from title, author, and optional series. It can import one completed file into Calibre with `calibredb add`. There is no account automation, background daemon, or copyright classification in this prototype.
+A local Python 3.10+ worker for finding, queuing, downloading, renaming, and importing ebook files. Most features use the Python standard library; watched fanfiction downloads use the optional FanFicFare package. Queue and provenance are stored in SQLite under `--root`; downloaded files are checked, hashed, and named from title, author, and optional series. It can import one completed file into Calibre with `calibredb add`.
 
 ## Quick start
 
@@ -18,13 +18,17 @@ python -m media_intake import-calibre 1 --library "/path/to/Calibre Library"
 
 The GUI provides source search, result review, direct URL intake, queue status, downloads, and a persistent **Watched** tab. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.
 
+GUI errors and background watch failures are saved in a rotating diagnostics log at `<data folder>/logs/media-intake.log` (four 2 MB backups). Use **Open logs** in the toolbar to inspect it. Download and watch errors are also retained on their queue/watch rows so they can be retried and diagnosed later.
+
 ### Watched books, series, authors, manga, and comics
 
 In the **Watched** tab, use **Goodreads** to search books, series, and authors. Use **AniList** for manga metadata, **MangaDex** for tracked chapter releases, or **Taddy** to search comic, manga, and webtoon metadata backed by a public 3S feed. Taddy requires an API user ID and key from [its GraphQL API](https://taddy.org/developers/intro-to-taddy-graphql-api); enter them when prompted or set `TADDY_USER_ID` and `TADDY_API_KEY` for the running app. Credentials are not stored in the library database. Taddy can only track series that expose an SSS/3S feed; it is not a catalog of every webcomic on the internet. For other sites, enter a public RSS/Atom chapter feed and the CSS selector containing the chapter images. Metadata URLs, feed URLs, and manually entered titles are also supported.
 
 A saved library folder and the existing connected searches apply to comic watches too. They search Open Library, LibGen, Anna's Archive, OPDS feeds, local JSON catalogs, and IRC for CBZ files. MangaDex chapter checks request English, safe-rated releases and select one current translation per chapter number. Every new release is saved as a CBZ with a `ComicInfo.xml` containing available source and creator credits. Taddy's public SSS issue images are packaged as CBZ files; issues with an exclusive-release date are ignored until that date. Other sites can use RSS/Atom feeds; the feed items link to chapter pages and the selector identifies the page image container.
 
-Choose **Web serial** or **Fanfiction** to watch a public RSS/Atom feed. The app establishes a baseline on the first check, then searches connected ebook sources and saves each new chapter as an EPUB in the saved library folder. The feed itself remains the release index, so chapter pages must expose readable text to the configured selector.
+Choose **Web serial** for a public RSS/Atom feed. The app establishes a baseline on the first check, then searches connected ebook sources and saves new chapter pages as EPUBs in the saved library folder. The feed remains the release index, so chapter pages must expose readable text to the configured selector.
+
+Choose **Fanfiction** and enter a story URL to use [FanFicFare](https://github.com/JimmXinu/FanFicFare). It supports more than 100 sites, including AO3, SpaceBattles, Questionable Questing, Sufficient Velocity, and Fiction.Live. The first check downloads the story to one EPUB; later checks update that EPUB with newly published chapters. The open-source GUI run needs the optional dependency installed with `python -m pip install -r requirements-fanfiction.txt`. The portable Windows build bundles the FanFicFare command. Downloads run non-interactively without browser cookies, browser cache, or Cloudflare workarounds; stories requiring a login, age confirmation, or blocked by a site may fail and will show the source error in Watched and in the local log.
 
 The first chapter-feed check establishes a baseline so adding an existing series does not download the whole back catalog. Later releases are downloaded automatically, up to 10 new files or chapters per watch check. Checks run while the GUI is open and overdue checks resume on the next start. A book with a future release date is marked **Unreleased** and is first searched on that date. FMHY is a discovery directory rather than a direct-result connector, so its search links still need manual resolution.
 
@@ -44,7 +48,9 @@ The prototype supports these discovery paths:
 | Anna's Archive | `search-site annas QUERY --base SITE_URL` | HTML adapter fixture tested; live site returned HTTP 403 in this workspace |
 | Library Genesis | `search-site libgen QUERY --base SITE_URL` | Search, detail link resolution, and EPUB download tested on `libgen.gl`; other domains may differ |
 
-The GUI also has a **Snahp forum threads** search source. Its adapter is deliberately limited to thread titles and same-site topic URLs; it discards post snippets, file-host URLs, and other links, and thread results cannot be queued as downloads. The public index identifies phpBB, with forum pages and topics linked through `viewforum.php` and `viewtopic.php?t=...`. The search page says guests cannot use search. A normal browser first showed Cloudflare's security verification and then loaded the public index; direct requests returned HTTP 403. The initial adapter expects phpBB's `search.php?keywords=...` results with `.topictitle` links. The **Snahp browser helper** opens the login page in your normal browser, where you can sign in and search manually, then save the results page as HTML and import it. The app never receives your password or browser session, and its importer extracts only same-site topic-title links from the local file.
+The GUI also has a **Snahp forum threads** search source. Its adapter is limited to thread titles and same-site topic URLs; it discards post snippets, file-host URLs, and other links, and thread results cannot be queued as downloads. The public index identifies phpBB, with forum pages and topics linked through `viewforum.php` and `viewtopic.php?t=...`. The search page says guests cannot use search. A normal browser first showed Cloudflare's security verification and then loaded the public index; direct requests returned HTTP 403. The initial adapter expects phpBB's `search.php?keywords=...` results with `.topictitle` links. The **Snahp browser helper** opens the login page in your normal browser and watches Downloads for the next saved HTML page; it imports same-site topic-title links automatically. It never receives your password or browser session. A manual file picker remains available.
+
+Goodreads can also redirect or deny the app's public-page request. If that happens, the Goodreads lookup opens the corresponding page in your browser and preserves the selected name and URL. Save the search or author page as HTML and use **Import Goodreads HTML**; imported author metadata is stored as the baseline so old books are not treated as new releases.
 
 ## FMHY fallback directory
 
@@ -105,7 +111,7 @@ The client connects to that server (TLS by default), joins the channel, sends th
 
 ## Comics, manga, webtoons, web fiction, and fanfiction
 
-For a direct EPUB, PDF, or CBZ file, use `add --url` as above. For chapter pages, use an ordered manifest. Supported `kind` values are `comic`, `manga`, `webcomic`, `webtoon`, `webfiction`, and `fanfiction`. The first four fetch chapter images and build a numbered CBZ; the last two extract text paragraphs and build an EPUB with a table of contents. Files then use the same queue, naming, hashing, and Calibre import commands.
+For a direct EPUB, PDF, or CBZ file, use `add --url` as above. For chapter pages, use an ordered manifest. Supported `kind` values are `comic`, `manga`, `webcomic`, `webtoon`, `webfiction`, and `fanfiction`. The first four fetch chapter images and build a numbered CBZ; `webfiction` extracts text paragraphs from feed-linked pages and builds EPUBs. Watched fanfiction URLs use FanFicFare to create and update a single EPUB per story.
 
 ```bash
 cp examples/serial.json my-serial.json
@@ -130,7 +136,7 @@ AniList offers a public GraphQL API for manga metadata and does not require auth
 
 `download` is explicit; search results never fetch themselves. Repeating `add` for the same URL preserves the queue entry. Repeating `download` reuses an existing completed file. If a named file already exists with different bytes, a short SHA-256 suffix is added. A failed download records its error and can be retried with `download ID`. Invalid EPUB/CBZ archives and PDF headers are rejected without leaving partial files. Files land under `<root>/downloads/`.
 
-`python -m unittest discover -s tests -v` runs local HTTP, source-parser, Calibre invocation, and fake IRC/DCC integration tests. These tests do not contact live ebook/IRC servers. Calibre must be installed and `calibredb` on PATH for a real import; this workspace lacked it.
+`python -m unittest discover -s tests -v` runs local HTTP, source-parser, Calibre invocation, fake IRC/DCC, Goodreads saved-page, and mocked FanFicFare update tests. These tests do not contact live ebook/IRC/fanfiction servers. Calibre must be installed and `calibredb` on PATH for a real import.
 
 ## Syncing to a Windows PC
 
@@ -161,4 +167,4 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-portable.ps1 -Clean
 .\dist\MediaIntake.exe
 ```
 
-The build script uses PyInstaller only for packaging. The application itself has no third-party runtime dependencies.
+The build script uses PyInstaller and bundles FanFicFare so the portable app can create and update watched fanfiction EPUBs.

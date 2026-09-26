@@ -3,6 +3,7 @@ import datetime as dt
 import difflib
 import html
 import json
+import logging
 import re
 import unicodedata
 import urllib.parse
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from .comics import list_mangadex_chapters, mangadex_id_from_url
 from .core import download, enqueue, search_catalog, search_opds
+from .fanfiction import story_url_key
 from .irc import enqueue_irc, search_irc
 from .serial import discover_feed, enqueue_serial
 from .sources import resolve_detail, search_openlibrary, search_site
@@ -18,6 +20,7 @@ from .sources import resolve_detail, search_openlibrary, search_site
 CHECK_INTERVAL = dt.timedelta(days=1)
 COMIC_KINDS = {'comic', 'manga', 'webcomic', 'webtoon'}
 SERIAL_KINDS = {'webfiction', 'fanfiction'}
+logger = logging.getLogger(__name__)
 
 
 class GoodreadsParser(HTMLParser):
@@ -233,8 +236,83 @@ def fetch_goodreads(url):
         raise ValueError('Enter a public Goodreads book, series, or author URL')
     if parsed.username or parsed.password:
         raise ValueError('Goodreads URL must not contain login credentials')
-    raw, final_url = http_get(url)
+    try:
+        raw, final_url = http_get(url)
+    except Exception as exc:
+        raise _goodreads_access_error(exc) from exc
     return parse_goodreads_page(final_url, raw.decode('utf-8', errors='replace'))
+
+
+def parse_goodreads_html(url, html_path):
+    """Parse a Goodreads page the user saved from their regular browser."""
+    parsed = urllib.parse.urlsplit(str(url or '').strip())
+    host = (parsed.hostname or '').casefold()
+    if (parsed.scheme not in ('http', 'https') or
+            not (host == 'goodreads.com' or host.endswith('.goodreads.com')) or
+            parsed.username or parsed.password):
+        raise ValueError('Enter the public Goodreads profile, series, or book URL first')
+    path = Path(html_path)
+    if not path.is_file() or path.stat().st_size > 10_000_000:
+        raise ValueError('Saved Goodreads HTML must be a file smaller than 10 MB')
+    return parse_goodreads_page(url, path.read_text(encoding='utf-8', errors='replace'))
+
+
+def _goodreads_access_error(exc):
+    from urllib.error import HTTPError
+    if isinstance(exc, HTTPError) and exc.code == 302:
+        return ValueError('Goodreads redirected the automated page request repeatedly (HTTP 302). '
+                          'Open the Goodreads page in your browser, save it as HTML, then use Import Goodreads HTML.')
+    if isinstance(exc, HTTPError) and exc.code in (401, 403, 429):
+        return ValueError(f'Goodreads declined the automated page request (HTTP {exc.code}). '
+                          'Open the Goodreads page in your browser, save it as HTML, then use Import Goodreads HTML.')
+    return ValueError(f'Could not read the Goodreads page: {exc}')
+
+
+def _goodreads_results_from_html(query, page_url, content, limit):
+    parser = GoodreadsParser()
+    parser.feed(content)
+    results, seen = [], set()
+    for anchor in parser.anchors:
+        href = anchor.get('href', '')
+        path = urllib.parse.urlsplit(href).path.casefold()
+        if '/book/show/' in path:
+            kind = 'book'
+            result_url = _canonical_book_url(urllib.parse.urljoin(page_url, href))
+        elif '/author/show/' in path:
+            kind = 'author'
+            result_url = urllib.parse.urljoin(page_url, href).split('?', 1)[0].split('#', 1)[0]
+        elif '/series/' in path and '/series/list/' not in path:
+            kind = 'series'
+            result_url = urllib.parse.urljoin(page_url, href).split('?', 1)[0].split('#', 1)[0]
+        else:
+            continue
+        title = ' '.join((anchor.get('title') or anchor.get('text') or '').split())
+        title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+        key = (kind, result_url)
+        if title and key not in seen:
+            seen.add(key)
+            results.append({'kind': kind, 'title': title, 'source_url': result_url})
+            if len(results) >= limit:
+                break
+    return results
+
+
+def parse_goodreads_search_html(query, html_path, page_url):
+    """Read Goodreads search results saved from the user's normal browser."""
+    parsed = urllib.parse.urlsplit(str(page_url or '').strip())
+    host = (parsed.hostname or '').casefold()
+    if (parsed.scheme not in ('http', 'https') or
+            not (host == 'goodreads.com' or host.endswith('.goodreads.com')) or
+            parsed.username or parsed.password or parsed.path.casefold() != '/search'):
+        raise ValueError('Enter the Goodreads search page URL before importing saved results')
+    query = str(query or '').strip()
+    if not query or len(query) > 150:
+        raise ValueError('Enter the Goodreads search phrase before importing saved results')
+    path = Path(html_path)
+    if not path.is_file() or path.stat().st_size > 10_000_000:
+        raise ValueError('Saved Goodreads HTML must be a file smaller than 10 MB')
+    return _goodreads_results_from_html(query, page_url,
+                                        path.read_text(encoding='utf-8', errors='replace'), 80)
 
 
 def search_goodreads(query, limit=80):
@@ -243,40 +321,23 @@ def search_goodreads(query, limit=80):
     query = str(query or '').strip()
     if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
         raise ValueError('Enter a Goodreads search up to 150 characters')
-    results, seen, errors = [], set(), []
+    results, errors = [], []
     for search_type in ('books', 'authors', 'series'):
         url = 'https://www.goodreads.com/search?' + urllib.parse.urlencode(
             {'q': query, 'search_type': search_type})
         try:
             raw, final_url = http_get(url)
-            parser = GoodreadsParser()
-            parser.feed(raw.decode('utf-8', errors='replace'))
+            results.extend(_goodreads_results_from_html(query, final_url,
+                                                        raw.decode('utf-8', errors='replace'), limit))
         except Exception as exc:
-            errors.append(str(exc))
+            errors.append(str(_goodreads_access_error(exc)))
             continue
-        for anchor in parser.anchors:
-            href = anchor.get('href', '')
-            path = urllib.parse.urlsplit(href).path.casefold()
-            if '/book/show/' in path:
-                kind = 'book'
-                result_url = _canonical_book_url(urllib.parse.urljoin(final_url, href))
-            elif '/author/show/' in path:
-                kind = 'author'
-                result_url = urllib.parse.urljoin(final_url, href).split('?', 1)[0].split('#', 1)[0]
-            elif '/series/' in path and '/series/list/' not in path:
-                kind = 'series'
-                result_url = urllib.parse.urljoin(final_url, href).split('?', 1)[0].split('#', 1)[0]
-            else:
-                continue
-            title = ' '.join((anchor.get('title') or anchor.get('text') or '').split())
-            title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
-            key = (kind, result_url)
-            if not title or key in seen:
-                continue
-            seen.add(key)
-            results.append({'kind': kind, 'title': title, 'source_url': result_url})
-            if len(results) >= limit:
-                return results
+        deduplicated = {}
+        for result in results:
+            deduplicated[(result['kind'], result['source_url'])] = result
+        results = list(deduplicated.values())[:limit]
+        if len(results) >= limit:
+            return results
     if not results and errors:
         raise ValueError('Goodreads search failed: ' + '; '.join(errors[-2:]))
     return results
@@ -353,6 +414,12 @@ def add_from_goodreads(db, url, kind=None, title=None, author='Unknown', release
     parsed = {}
     if url:
         parsed = fetch_goodreads(url)
+    return add_from_goodreads_metadata(db, parsed, url, kind, title, author, release_date, sources)
+
+
+def add_from_goodreads_metadata(db, parsed, url, kind=None, title=None, author='Unknown',
+                                release_date=None, sources=None):
+    """Add a Goodreads watch from parsed live or user-saved page metadata."""
     detected_kind = kind or parsed.get('kind') or 'book'
     name = title or parsed.get('title')
     if not name or name == 'Untitled Goodreads entry':
@@ -472,6 +539,8 @@ def _search_candidates(watch, source_overrides=None):
 
 def _search_book(db, watch, library_folder, source_overrides=None):
     results, errors = _search_candidates(watch, source_overrides)
+    for error in errors:
+        logger.warning('Book watch %s connector error: %s', watch['id'], error)
     for item in results:
         try:
             row = enqueue_irc(db, item['irc']) if item.get('irc') else enqueue(db, item)
@@ -482,6 +551,8 @@ def _search_book(db, watch, library_folder, source_overrides=None):
             db.commit()
             return True
         except Exception as exc:
+            logger.exception('Book download candidate failed for watch %s: %s',
+                             watch['id'], item.get('title') or item.get('url'))
             errors.append(str(exc))
     reason = '; '.join(errors[-3:]) if errors else 'No matching downloadable result found.'
     db.execute("UPDATE watched_items SET state='watching',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -497,6 +568,21 @@ def _process_goodreads_collection(db, watch):
     current = {book.get('source_url'): book for book in page.get('books', []) if book.get('source_url')}
     sources = metadata.get('sources') or {}
     added = 0
+    if metadata.pop('goodreads_baseline_pending', False):
+        # When direct access was blocked, establish a baseline on the first
+        # successful fetch so old books are not mistaken for new releases.
+        for book in current.values():
+            if book.get('release_date') and book['release_date'] > dt.date.today().isoformat():
+                book_author = book.get('author') or (watch['title'] if watch['kind'] == 'author' else watch.get('author'))
+                add_watch(db, 'book', book['title'], book_author,
+                          book.get('source_url'), book['release_date'], {'sources': sources}, watch['id'])
+        metadata['known_books'] = sorted(current)
+        now = _now()
+        db.execute("UPDATE watched_items SET metadata=?,last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (json.dumps(metadata, ensure_ascii=False), now.isoformat(sep='T'),
+                    _next_day(now).isoformat(sep='T'), watch['id']))
+        db.commit()
+        return 0
     for url, book in current.items():
         if url in known:
             if book.get('release_date') and book['release_date'] > dt.date.today().isoformat():
@@ -506,7 +592,8 @@ def _process_goodreads_collection(db, watch):
             continue
         try:
             detail = fetch_goodreads(url)
-        except Exception:
+        except Exception as exc:
+            logger.info('Goodreads book detail lookup failed for %s; using author-page metadata: %s', url, exc)
             detail = book
         add_watch(db, 'book', detail.get('title') or book['title'],
                   detail.get('author') or book.get('author') or
@@ -610,7 +697,10 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
     errors = []
     # Keep the existing watch connectors in the comic workflow too. Only CBZ
     # candidates are useful here; EPUB/PDF hits belong to book watches.
-    candidates, _ = _search_candidates(watch, source_overrides)
+    candidates, connector_errors = _search_candidates(watch, source_overrides)
+    errors.extend(connector_errors)
+    for error in connector_errors:
+        logger.warning('Comic watch %s connector error: %s', watch['id'], error)
     for item in candidates:
         if str(item.get('format') or '').casefold() != '.cbz':
             continue
@@ -624,6 +714,7 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
             seen_files.add(key)
             downloaded.append(result.get('file_path'))
         except Exception as exc:
+            logger.exception('Comic connector result failed for watch %s: %s', watch['id'], item.get('title') or key)
             errors.append(f"{item.get('title') or key}: {exc}")
         if len(downloaded) >= 10:
             break
@@ -636,6 +727,7 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
             seen.add(key)
             downloaded.append(result.get('file_path'))
         except Exception as exc:
+            logger.exception('Comic chapter failed for watch %s: %s', watch['id'], chapter.get('title') or key)
             errors.append(f"{chapter.get('title') or key}: {exc}")
 
     comic['known_chapters'] = sorted(seen)[-5000:]
@@ -685,7 +777,10 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
     errors = []
     # Search the configured ebook connectors as well as the chapter feed.
     # Only text-book formats are relevant to this watch type.
-    candidates, _ = _search_candidates(watch, source_overrides)
+    candidates, connector_errors = _search_candidates(watch, source_overrides)
+    errors.extend(connector_errors)
+    for error in connector_errors:
+        logger.warning('Web fiction watch %s connector error: %s', watch['id'], error)
     for item in candidates:
         if str(item.get('format') or '').casefold() not in {'.epub', '.pdf', '.mobi', '.azw3'}:
             continue
@@ -699,6 +794,7 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
             seen_files.add(key)
             downloaded.append(result.get('file_path'))
         except Exception as exc:
+            logger.exception('Web fiction connector result failed for watch %s: %s', watch['id'], item.get('title') or key)
             errors.append(f"{item.get('title') or key}: {exc}")
         if len(downloaded) >= 10:
             break
@@ -712,6 +808,7 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
             seen.add(key)
             downloaded.append(result.get('file_path'))
         except Exception as exc:
+            logger.exception('Web fiction chapter failed for watch %s: %s', watch['id'], chapter.get('title') or key)
             errors.append(f"{chapter.get('title') or key}: {exc}")
 
     serial['known_chapters'] = sorted(seen)[-5000:]
@@ -724,6 +821,38 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
          now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), last_error, watch['id']))
     db.commit()
     return len(downloaded)
+
+
+def _process_fanfiction_watch(db, watch, library_folder):
+    """Download a whole fic once, then update its existing EPUB in place."""
+    metadata = json.loads(watch.get('metadata') or '{}')
+    fiction = dict(metadata.get('fanfiction') or {})
+    story_url = fiction.get('story_url') or watch.get('source_url')
+    if not story_url:
+        raise ValueError('Enter a public story URL for this fanfiction watch')
+    item = {
+        'title': watch['title'],
+        'author': watch.get('author') or 'Unknown',
+        'format': '.epub',
+        'url': story_url_key(story_url),
+        'source': story_url,
+        'story_url': story_url,
+        'kind': 'fanfiction',
+    }
+    row = enqueue(db, item)
+    result = download(db, row['id'], Path(library_folder).parent,
+                      destination=library_folder)
+    saved = json.loads(result['metadata'])
+    fiction.update({'story_url': story_url, 'item_id': result['id']})
+    metadata['fanfiction'] = fiction
+    now = _now()
+    db.execute('''UPDATE watched_items SET title=?,author=?,metadata=?,state='watching',file_path=?,
+        last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+        (saved.get('title') or watch['title'], saved.get('author') or watch.get('author') or 'Unknown',
+         json.dumps(metadata, ensure_ascii=False), result.get('file_path'),
+         now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), watch['id']))
+    db.commit()
+    return 1
 
 
 def process_due_watches(db, library_folder, force=False, source_options=None):
@@ -748,14 +877,20 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
             try:
                 _process_goodreads_collection(db, watch)
             except Exception as exc:
+                logger.exception('Goodreads watch %s (%s) failed', watch['id'], watch['title'])
                 db.execute("UPDATE watched_items SET last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
                 db.commit()
             continue
         if watch['kind'] in SERIAL_KINDS:
             try:
-                _process_webfiction_watch(db, watch, library_folder, source_options)
+                watch_metadata = json.loads(watch.get('metadata') or '{}')
+                if watch['kind'] == 'fanfiction' and watch_metadata.get('fanfiction'):
+                    _process_fanfiction_watch(db, watch, library_folder)
+                else:
+                    _process_webfiction_watch(db, watch, library_folder, source_options)
             except Exception as exc:
+                logger.exception('Fanfiction watch %s (%s) failed', watch['id'], watch['title'])
                 db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
                 db.commit()
@@ -764,6 +899,7 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
             try:
                 _process_comic_watch(db, watch, library_folder, source_options)
             except Exception as exc:
+                logger.exception('Comic watch %s (%s) failed', watch['id'], watch['title'])
                 db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
                 db.commit()

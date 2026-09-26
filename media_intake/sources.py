@@ -259,3 +259,69 @@ def search_openlibrary(query, limit=10):
                 break
             if results and results[-1].get('source_id') == identifier: break
     return results
+
+
+def search_openlibrary_metadata(query, limit=20):
+    """Search Open Library metadata for book and author suggestions."""
+    query = str(query or '').strip()
+    if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
+        raise ValueError('Enter a search up to 150 characters')
+    limit = max(1, min(int(limit), 30))
+    results, errors = [], []
+
+    author_url = 'https://openlibrary.org/search/authors.json?' + urllib.parse.urlencode(
+        {'q': query, 'limit': min(limit, 10)})
+    seen_authors = set()
+    try:
+        raw, final = http_get(author_url, max_bytes=2_000_000)
+        if urllib.parse.urlsplit(final).hostname != 'openlibrary.org':
+            raise ValueError('Open Library author search redirected away from its own site')
+        for row in json.loads(raw.decode('utf-8')).get('docs', []):
+            key = str(row.get('key') or '')
+            name = str(row.get('name') or '').strip()
+            key = key if key.startswith('/authors/') else '/authors/' + key
+            normalized_name = ' '.join(name.casefold().split())
+            if (name and normalized_name not in seen_authors and
+                    re.fullmatch(r'/authors/OL\d+A', key)):
+                seen_authors.add(normalized_name)
+                results.append({
+                    'provider': 'Open Library', 'kind': 'author', 'title': name,
+                    'author': 'Unknown', 'source_url': 'https://openlibrary.org' + key,
+                    'catalog_metadata': {'catalog_id': key, 'work_count': row.get('work_count')},
+                })
+    except Exception as exc:
+        errors.append(f'author search: {exc}')
+
+    params = urllib.parse.urlencode({
+        'q': query, 'fields': 'key,title,author_name,first_publish_year,edition_count',
+        'limit': min(limit, 20),
+    })
+    try:
+        raw, final = http_get('https://openlibrary.org/search.json?' + params,
+                              max_bytes=4_000_000)
+        if urllib.parse.urlsplit(final).hostname != 'openlibrary.org':
+            raise ValueError('Open Library book search redirected away from its own site')
+        for row in json.loads(raw.decode('utf-8')).get('docs', []):
+            key = str(row.get('key') or '')
+            title = str(row.get('title') or '').strip()
+            if not title or not re.fullmatch(r'/works/OL\d+W', key):
+                continue
+            authors = row.get('author_name') or []
+            results.append({
+                'provider': 'Open Library', 'kind': 'book', 'title': title,
+                'author': ', '.join(str(name) for name in authors[:3]) or 'Unknown',
+                'source_url': 'https://openlibrary.org' + key,
+                'catalog_metadata': {'catalog_id': key,
+                                     'first_publish_year': row.get('first_publish_year'),
+                                     'edition_count': row.get('edition_count')},
+            })
+    except Exception as exc:
+        errors.append(f'book search: {exc}')
+
+    deduplicated = {}
+    for result in results:
+        deduplicated[(result['kind'], result['source_url'])] = result
+    found = list(deduplicated.values())[:limit]
+    if not found and errors:
+        raise ValueError('Open Library metadata search failed: ' + '; '.join(errors))
+    return found

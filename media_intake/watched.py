@@ -1,6 +1,7 @@
 """Goodreads watch-list metadata and scheduled source searches."""
 import datetime as dt
 import difflib
+from concurrent.futures import ThreadPoolExecutor
 import html
 import json
 import logging
@@ -18,12 +19,14 @@ from .rights_evidence import (effective_work_rights, load_rights_evidence,
                               source_download_rights)
 from .media_catalogs import (discover_novelarchive_chapters, english_release_date,
                              ranobedb_series, resolve_catalog_file_links,
+                             search_ranobedb,
                              search_lnori, search_novelarchive)
-from .core import download, enqueue, search_catalog, search_opds
+from .core import download, enqueue, http_get, search_catalog, search_opds
 from .fanfiction import story_url_key
 from .irc import enqueue_irc, search_irc
 from .serial import discover_feed, enqueue_serial
-from .sources import resolve_detail, search_openlibrary, search_site
+from .sources import (resolve_detail, search_openlibrary,
+                      search_openlibrary_metadata, search_site)
 
 CHECK_INTERVAL = dt.timedelta(days=1)
 COMIC_KINDS = {'comic', 'manga', 'webcomic', 'webtoon'}
@@ -332,11 +335,20 @@ def search_goodreads(query, limit=80):
     results, errors = [], []
     for search_type in ('books', 'authors', 'series'):
         url = 'https://www.goodreads.com/search?' + urllib.parse.urlencode(
-            {'q': query, 'search_type': search_type})
+        {'q': query, 'search_type': search_type})
         try:
             raw, final_url = http_get(url)
-            results.extend(_goodreads_results_from_html(query, final_url,
-                                                        raw.decode('utf-8', errors='replace'), limit))
+            if not raw:
+                raise ValueError('Goodreads returned an empty search response, likely because its redirect was blocked')
+            page = raw.decode('utf-8', errors='replace')
+            parsed = _goodreads_results_from_html(query, final_url, page, limit)
+            results.extend(parsed)
+            if not parsed:
+                parser = GoodreadsParser()
+                parser.feed(page)
+                logger.warning('Goodreads %s search returned no recognized results for %r '
+                               '(final URL %s, %d links)', search_type, query, final_url,
+                               len(parser.anchors))
         except Exception as exc:
             errors.append(str(_goodreads_access_error(exc)))
             continue
@@ -348,7 +360,86 @@ def search_goodreads(query, limit=80):
             return results
     if not results and errors:
         raise ValueError('Goodreads search failed: ' + '; '.join(errors[-2:]))
+    if results and errors:
+        logger.warning('Goodreads search for %r returned %d partial result(s); %d request(s) failed',
+                       query, len(results), len(errors))
     return results
+
+
+def search_goodreads_with_fallback(query, limit=80):
+    """Search Goodreads first, then offer Open Library metadata if blocked or empty."""
+    goodreads_error = None
+    try:
+        results = search_goodreads(query, limit)
+        if results:
+            for result in results:
+                result.setdefault('provider', 'Goodreads')
+            return results
+    except Exception as exc:
+        goodreads_error = exc
+        logger.warning('Goodreads search unavailable for %r; trying Open Library: %s',
+                       query, exc)
+    try:
+        results = search_openlibrary_metadata(query, limit=min(limit, 30))
+    except Exception as exc:
+        logger.warning('Open Library metadata fallback failed for %r: %s', query, exc)
+        if goodreads_error:
+            raise ValueError(f'{goodreads_error}; Open Library fallback: {exc}') from exc
+        raise
+    if results:
+        logger.info('Open Library supplied %d metadata suggestion(s) for %r', len(results), query)
+        return results
+    if goodreads_error:
+        raise ValueError(f'{goodreads_error}; Open Library found no metadata matches')
+    return []
+
+
+def search_book_metadata(query, limit=40):
+    """Search book and series metadata providers together, returning selectable entries."""
+    query = str(query or '').strip()
+    if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
+        raise ValueError('Enter a book, series, or author search up to 150 characters')
+    limit = max(1, min(int(limit), 60))
+    searches = (
+        ('Goodreads', lambda: search_goodreads(query, limit=30)),
+        ('Open Library', lambda: search_openlibrary_metadata(query, limit=20)),
+        ('NovelArchive', lambda: search_novelarchive(query, limit=12)),
+        ('LNORI', lambda: search_lnori(query, limit=12)),
+        ('RanobeDB', lambda: search_ranobedb(query, limit=12)),
+    )
+    results, errors = [], []
+    with ThreadPoolExecutor(max_workers=len(searches)) as pool:
+        futures = [(provider, pool.submit(searcher)) for provider, searcher in searches]
+        for provider, future in futures:
+            try:
+                found = future.result()
+            except Exception as exc:
+                errors.append(f'{provider}: {exc}')
+                logger.warning('%s metadata lookup failed for %r: %s', provider, query, exc)
+                continue
+            for raw in found or []:
+                item = dict(raw)
+                item['provider'] = str(item.get('provider') or provider)
+                item['source_url'] = item.get('source_url') or item.get('url') or ''
+                item['url'] = item.get('url') or item['source_url']
+                if item.get('metadata') and not item.get('catalog_metadata'):
+                    item['catalog_metadata'] = item['metadata']
+                name = item['provider'].casefold()
+                if name == 'novelarchive':
+                    item['kind'] = 'webfiction'
+                elif name in {'lnori', 'ranobedb'}:
+                    item['kind'] = 'lightnovel'
+                else:
+                    item.setdefault('kind', 'book')
+                if item['source_url'] and item.get('title'):
+                    results.append(item)
+    deduplicated = {}
+    for item in results:
+        deduplicated[(item['provider'], item['kind'], item['source_url'])] = item
+    found = list(deduplicated.values())[:limit]
+    if not found and errors:
+        raise ValueError('Book metadata search failed: ' + '; '.join(errors))
+    return found
 
 
 def _now():
@@ -437,18 +528,32 @@ def add_from_goodreads_metadata(db, parsed, url, kind=None, title=None, author='
         writer = 'Unknown'
     date = release_date or parsed.get('release_date')
     saved = {'sources': sources or {}}
+    if parsed.get('provider'):
+        saved['catalog_provider'] = parsed['provider']
+    if parsed.get('catalog_metadata'):
+        saved['catalog_metadata'] = parsed['catalog_metadata']
     if detected_kind in ('series', 'author'):
         saved['known_books'] = [item.get('source_url') for item in parsed.get('books', []) if item.get('source_url')]
+    if detected_kind == 'author' and parsed.get('provider') == 'Open Library':
+        saved['openlibrary_baseline_pending'] = True
+    elif detected_kind == 'author' and not parsed.get('books'):
+        saved['goodreads_baseline_pending'] = True
     watch_id = add_watch(db, detected_kind, name, writer, parsed.get('source_url') or url,
                          date, saved)
     if detected_kind in ('series', 'author'):
-        # Established Goodreads pages contain many older books. Add only entries
-        # whose release date is explicitly in the future.
+        # A selected series represents its full listed bibliography. An author
+        # watch follows future releases and should not enqueue the whole backlist.
         for book in parsed.get('books', []):
-            if book.get('release_date') and book['release_date'] > dt.date.today().isoformat():
-                book_author = book.get('author') or (name if detected_kind == 'author' else writer)
-                add_watch(db, 'book', book['title'], book_author,
-                          book.get('source_url'), book['release_date'], {'sources': sources or {}}, watch_id)
+            if not book.get('title') or not book.get('source_url'):
+                continue
+            if detected_kind == 'author' and not (
+                    book.get('release_date') and
+                    book['release_date'] > dt.date.today().isoformat()):
+                continue
+            book_author = book.get('author') or (name if detected_kind == 'author' else writer)
+            add_watch(db, 'book', book['title'], book_author,
+                      book.get('source_url'), book.get('release_date'),
+                      {'sources': sources or {}}, watch_id)
     return watch_id, parsed
 
 
@@ -678,6 +783,56 @@ def _process_goodreads_collection(db, watch):
                   detail.get('release_date') or book.get('release_date'),
                   {'sources': sources}, watch['id'])
         added += 1
+    metadata['known_books'] = sorted(current)
+    now = _now()
+    db.execute("UPDATE watched_items SET metadata=?,last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+               (json.dumps(metadata, ensure_ascii=False), now.isoformat(sep='T'),
+                _next_day(now).isoformat(sep='T'), watch['id']))
+    db.commit()
+    return added
+
+
+def _process_openlibrary_author_collection(db, watch):
+    """Track additions to an Open Library author bibliography without backfilling it."""
+    parts = urllib.parse.urlsplit(watch.get('source_url') or '')
+    match = re.fullmatch(r'/authors/(OL\d+A)/?', parts.path, flags=re.I)
+    if parts.scheme != 'https' or parts.hostname != 'openlibrary.org' or not match:
+        raise ValueError('Open Library author watch needs an Open Library author page')
+    author_id = match.group(1)
+    url = f'https://openlibrary.org/authors/{author_id}/works.json?' + urllib.parse.urlencode(
+        {'limit': 100})
+    raw, final = http_get(url, max_bytes=4_000_000)
+    if urllib.parse.urlsplit(final).hostname != 'openlibrary.org':
+        raise ValueError('Open Library author works redirected away from its own site')
+    entries = json.loads(raw.decode('utf-8')).get('entries') or []
+    current = {}
+    for entry in entries:
+        key = str(entry.get('key') or '')
+        title = str(entry.get('title') or '').strip()
+        if not title or not re.fullmatch(r'/works/OL\d+W', key):
+            continue
+        source_url = 'https://openlibrary.org' + key
+        current[source_url] = {
+            'title': title, 'author': watch.get('title') or 'Unknown',
+            'source_url': source_url, 'release_date': _date(entry.get('first_publish_date')),
+        }
+
+    metadata = json.loads(watch.get('metadata') or '{}')
+    known = set(metadata.get('known_books') or [])
+    sources = metadata.get('sources') or {}
+    baseline = bool(metadata.pop('openlibrary_baseline_pending', False))
+    added = 0
+    for source_url, book in current.items():
+        is_new = source_url not in known
+        if baseline:
+            if book.get('release_date') and book['release_date'] > dt.date.today().isoformat():
+                add_watch(db, 'book', book['title'], book['author'], source_url,
+                          book['release_date'], {'sources': sources}, watch['id'])
+            continue
+        if is_new:
+            add_watch(db, 'book', book['title'], book['author'], source_url,
+                      book.get('release_date'), {'sources': sources}, watch['id'])
+            added += 1
     metadata['known_books'] = sorted(current)
     now = _now()
     db.execute("UPDATE watched_items SET metadata=?,last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -1251,9 +1406,15 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
             continue
         if watch['kind'] in ('series', 'author'):
             try:
-                _process_goodreads_collection(db, watch)
+                metadata = json.loads(watch.get('metadata') or '{}')
+                if (watch['kind'] == 'author' and
+                        metadata.get('catalog_provider') == 'Open Library'):
+                    _process_openlibrary_author_collection(db, watch)
+                else:
+                    _process_goodreads_collection(db, watch)
             except Exception as exc:
-                logger.exception('Goodreads watch %s (%s) failed', watch['id'], watch['title'])
+                logger.exception('Author or series watch %s (%s) failed',
+                                 watch['id'], watch['title'])
                 db.execute("UPDATE watched_items SET last_checked_at=?,next_check_at=?,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), str(exc), watch['id']))
                 db.commit()

@@ -24,11 +24,12 @@ from .media_catalogs import (search_lnori, search_mangaupdates, search_novelarch
 from .rights_evidence import (effective_work_rights, ensure_rights_evidence,
                               load_rights_evidence, set_work_rights)
 from .serial import discover_feed, enqueue_serial
-from .sources import resolve_detail, search_forum_threads, search_openlibrary, search_site
+from .sources import (resolve_detail, search_forum_threads, search_openlibrary,
+                      search_openlibrary_metadata, search_site)
 from .watched import (add_from_goodreads, add_from_goodreads_metadata, add_watch, get_setting, list_watches,
                       fetch_goodreads, parse_goodreads_html, parse_goodreads_search_html,
                       process_due_watches, remove_watch,
-                      search_goodreads, set_setting)
+                      search_book_metadata, set_setting)
 
 
 class MediaIntakeApp:
@@ -86,6 +87,12 @@ class MediaIntakeApp:
         self._forum_last_query = ''
         self._goodreads_pending_search_query = ''
         self._goodreads_pending_search_url = ''
+        self._title_suggestion_after = None
+        self._title_suggestion_query = ''
+        self._title_suggestion_popup = None
+        self._title_suggestion_list = None
+        self._title_suggestion_results = []
+        self._book_metadata_cache = {}
         self._build()
         self.refresh_queue()
         self.refresh_watches()
@@ -220,10 +227,15 @@ class MediaIntakeApp:
 
         second = ttk.Frame(add)
         second.pack(fill='x', padx=6, pady=(3, 6))
-        for label, variable, width in (('Title', self.watch_title, 25), ('Author', self.watch_author, 18),
+        for label, variable, width in (('Title / search', self.watch_title, 25), ('Author', self.watch_author, 18),
                                        ('Release date (YYYY-MM-DD)', self.watch_release_date, 15)):
             ttk.Label(second, text=label).pack(side='left')
-            ttk.Entry(second, textvariable=variable, width=width).pack(side='left', padx=(4, 10))
+            entry = ttk.Entry(second, textvariable=variable, width=width)
+            entry.pack(side='left', padx=(4, 10))
+            if variable is self.watch_title:
+                self.watch_title_entry = entry
+                entry.bind('<KeyRelease>', self._schedule_title_suggestions)
+                entry.bind('<Down>', self._focus_title_suggestions)
         ttk.Label(second, text='Type').pack(side='left')
         ttk.Combobox(second, textvariable=self.watch_kind, state='readonly', width=12,
                      values=['Auto', 'Book', 'Series', 'Author', 'Light novel', 'Manga', 'Comic', 'Webcomic', 'Webtoon',
@@ -708,8 +720,110 @@ class MediaIntakeApp:
         self._goodreads_pending_search_query = query
         self._goodreads_pending_search_url = 'https://www.goodreads.com/search?' + urllib.parse.urlencode({'q': query})
         self._worker(f'Searching Goodreads for {query}…',
-                     lambda: search_goodreads(query), self.show_goodreads_matches,
+                     lambda: search_book_metadata(query), self.show_goodreads_matches,
                      on_error=lambda error: self.goodreads_search_unavailable(query, error))
+
+    def _schedule_title_suggestions(self, event=None):
+        if event and event.keysym in {'Return', 'Escape', 'Up', 'Down', 'Left', 'Right', 'Tab'}:
+            return
+        if self._title_suggestion_after:
+            try:
+                self.root.after_cancel(self._title_suggestion_after)
+            except tk.TclError:
+                pass
+            self._title_suggestion_after = None
+        query = self.watch_title.get().strip()
+        if len(query) < 3:
+            self._close_title_suggestion_popup()
+            return
+        self._title_suggestion_query = query
+        self._title_suggestion_after = self.root.after(
+            900, lambda current=query: self._load_title_suggestions(current))
+
+    def _load_title_suggestions(self, query):
+        self._title_suggestion_after = None
+        if query != self.watch_title.get().strip():
+            return
+
+        def run():
+            try:
+                cache_key = query.casefold()
+                results = self._book_metadata_cache.get(cache_key)
+                if results is None:
+                    # Predictive suggestions should stay responsive even when a
+                    # third-party catalog is offline. The explicit metadata
+                    # lookup button searches Goodreads and all configured book
+                    # catalogs; typeahead uses Open Library's author/book index.
+                    results = search_openlibrary_metadata(query, limit=24)
+                    if len(self._book_metadata_cache) >= 64:
+                        self._book_metadata_cache.pop(next(iter(self._book_metadata_cache)))
+                    self._book_metadata_cache[cache_key] = results
+                error = None
+            except Exception as exc:
+                results, error = [], exc
+                self.logger.warning('Title suggestions failed for %r: %s', query, exc)
+            self.root.after(0, lambda: self._show_title_suggestions(query, results, error))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_title_suggestions(self, query, results, error=None):
+        if query != self.watch_title.get().strip():
+            return
+        if error or not results:
+            self._close_title_suggestion_popup()
+            return
+        self._title_suggestion_results = results
+        if not self._title_suggestion_popup or not self._title_suggestion_popup.winfo_exists():
+            popup = tk.Toplevel(self.root)
+            popup.wm_overrideredirect(True)
+            popup.attributes('-topmost', True)
+            listing = tk.Listbox(popup, height=min(7, len(results)), width=76,
+                                 activestyle='dotbox', exportselection=False)
+            listing.pack(fill='both', expand=True)
+            listing.bind('<ButtonRelease-1>', self._choose_title_suggestion)
+            listing.bind('<Double-1>', self._choose_title_suggestion)
+            listing.bind('<Return>', self._choose_title_suggestion)
+            listing.bind('<Escape>', lambda _event: self._close_title_suggestion_popup())
+            self._title_suggestion_popup = popup
+            self._title_suggestion_list = listing
+        listing = self._title_suggestion_list
+        listing.delete(0, tk.END)
+        for item in results:
+            listing.insert(tk.END, f"{item.get('kind', 'book').title()}  ·  {item.get('title', '')}  ·  {item.get('provider', 'Open Library')}")
+        listing.configure(height=min(7, len(results)))
+        self.watch_title_entry.update_idletasks()
+        x = self.watch_title_entry.winfo_rootx()
+        y = self.watch_title_entry.winfo_rooty() + self.watch_title_entry.winfo_height()
+        self._title_suggestion_popup.geometry(f'+{x}+{y}')
+        self._title_suggestion_popup.deiconify()
+
+    def _focus_title_suggestions(self, _event=None):
+        listing = self._title_suggestion_list
+        if listing and listing.winfo_exists() and self._title_suggestion_results:
+            listing.focus_set()
+            listing.selection_clear(0, tk.END)
+            listing.selection_set(0)
+            listing.activate(0)
+            return 'break'
+
+    def _choose_title_suggestion(self, _event=None):
+        listing = self._title_suggestion_list
+        if not listing or not listing.winfo_exists():
+            return 'break'
+        selected = listing.curselection()
+        if selected and selected[0] < len(self._title_suggestion_results):
+            item = self._title_suggestion_results[selected[0]]
+            self._close_title_suggestion_popup()
+            self._associate_book_metadata(item)
+        return 'break'
+
+    def _close_title_suggestion_popup(self):
+        popup = self._title_suggestion_popup
+        self._title_suggestion_popup = None
+        self._title_suggestion_list = None
+        self._title_suggestion_results = []
+        if popup and popup.winfo_exists():
+            popup.destroy()
 
     def goodreads_search_unavailable(self, query, error):
         self._done('Goodreads search blocked; save its results page to import')
@@ -809,7 +923,7 @@ class MediaIntakeApp:
         dialog.title(f'Choose a {provider} entry')
         dialog.geometry('760x430')
         dialog.transient(self.root)
-        ttk.Label(dialog, text=f'Choose a {provider} metadata result. Catalog page links do not download files.').pack(anchor='w', padx=10, pady=(10, 5))
+        ttk.Label(dialog, text=f'Click a {provider} result to add it to Watched and start its connector scan.').pack(anchor='w', padx=10, pady=(10, 5))
         matches = ttk.Treeview(dialog, columns=('title', 'author', 'details'), show='headings', selectmode='browse')
         for column, heading, width in (('title', 'Title', 310), ('author', 'Author', 180),
                                        ('details', 'Catalog details', 230)):
@@ -854,6 +968,7 @@ class MediaIntakeApp:
                 item['source_url'] = item.get('url')
                 self.associate_comic_metadata(item)
             else:
+                self.watch_lightnovel_profile = {}
                 self.watch_url.set(item.get('url') or '')
                 self.watch_title.set(item.get('title') or '')
                 self.watch_author.set(item.get('author') or '')
@@ -863,7 +978,10 @@ class MediaIntakeApp:
                 else:
                     self.watch_kind.set('Light novel' if provider == 'LNORI' else 'Auto')
                     self._done(f'{provider} metadata filled in; select the matching RanobeDB series to track English volume release dates')
+            if provider != 'MangaUpdates':
+                self.add_watched(auto_scan=True)
 
+        matches.bind('<ButtonRelease-1>', associate)
         matches.bind('<Double-1>', associate)
         buttons = ttk.Frame(dialog)
         buttons.pack(fill='x', padx=10, pady=(5, 10))
@@ -880,7 +998,7 @@ class MediaIntakeApp:
         dialog.title(f'Choose a {provider} manga')
         dialog.geometry('760x430')
         dialog.transient(self.root)
-        ttk.Label(dialog, text=f'Choose the {provider} entry to associate its metadata with this watch.').pack(anchor='w', padx=10, pady=(10, 5))
+        ttk.Label(dialog, text=f'Click a {provider} result to add it to Watched and start its connector scan.').pack(anchor='w', padx=10, pady=(10, 5))
         matches = ttk.Treeview(dialog, columns=('title', 'author', 'kind', 'release', 'english'), show='headings', selectmode='browse')
         for column, heading, width in (('title', 'Title', 280), ('author', 'Creator', 170),
                                        ('kind', 'Type', 75), ('release', 'Start date', 90),
@@ -904,6 +1022,7 @@ class MediaIntakeApp:
             dialog.destroy()
             self.associate_comic_metadata(item)
 
+        matches.bind('<ButtonRelease-1>', associate)
         matches.bind('<Double-1>', associate)
         buttons = ttk.Frame(dialog)
         buttons.pack(fill='x', padx=10, pady=(5, 10))
@@ -944,25 +1063,29 @@ class MediaIntakeApp:
         else:
             source_name = 'Taddy SSS' if item.get('sss_url') else 'MangaDex'
             self._done(f"{item.get('provider', 'Catalog')} metadata filled in; {source_name} chapter tracking is ready")
+        self.add_watched(auto_scan=True)
 
     def show_goodreads_matches(self, results):
         if not results:
-            self._done('No Goodreads matches found')
-            messagebox.showinfo('Goodreads lookup', 'No books, series, or authors matched that search.')
+            self._done('No book metadata matches found')
+            messagebox.showinfo('Book lookup', 'No books, series, or authors matched across the metadata catalogs.')
             return
         dialog = tk.Toplevel(self.root)
-        dialog.title('Choose a Goodreads entry')
+        dialog.title('Choose a book metadata match')
         dialog.geometry('650x400')
         dialog.transient(self.root)
-        ttk.Label(dialog, text='Choose the Goodreads entry whose metadata you want to use.').pack(anchor='w', padx=10, pady=(10, 5))
-        matches = ttk.Treeview(dialog, columns=('kind', 'title'), show='headings', selectmode='browse')
+        ttk.Label(dialog, text='Click a result to add it to Watched and search the connected book sources.').pack(anchor='w', padx=10, pady=(10, 5))
+        matches = ttk.Treeview(dialog, columns=('provider', 'kind', 'title'), show='headings', selectmode='browse')
+        matches.heading('provider', text='Source')
         matches.heading('kind', text='Type')
-        matches.heading('title', text='Goodreads title')
+        matches.heading('title', text='Title')
+        matches.column('provider', width=125, anchor='w')
         matches.column('kind', width=95, anchor='w')
-        matches.column('title', width=510, anchor='w')
+        matches.column('title', width=385, anchor='w')
         matches.pack(fill='both', expand=True, padx=10, pady=5)
         for index, item in enumerate(results):
-            matches.insert('', 'end', iid=str(index), values=(item['kind'].title(), item['title']))
+            matches.insert('', 'end', iid=str(index), values=(
+                item.get('provider') or 'Goodreads', item['kind'].title(), item['title']))
 
         def associate(_event=None):
             selected = matches.selection()
@@ -979,25 +1102,68 @@ class MediaIntakeApp:
             self.watch_release_date.set('')
             self.watch_kind.set(result['kind'].title())
             self._worker('Loading Goodreads metadata…',
-                         lambda: fetch_goodreads(result['source_url']), self.associate_goodreads_metadata,
-                         on_error=lambda error: self.goodreads_page_unavailable(result, error))
+                         lambda: (result if result.get('provider', 'Goodreads').casefold() != 'goodreads'
+                                  else fetch_goodreads(result['source_url'])),
+                         self._associate_book_metadata,
+                         on_error=lambda error: self._auto_add_goodreads_fallback(result, error))
 
+        matches.bind('<ButtonRelease-1>', associate)
         matches.bind('<Double-1>', associate)
         buttons = ttk.Frame(dialog)
         buttons.pack(fill='x', padx=10, pady=(5, 10))
         ttk.Button(buttons, text='Use selected', command=associate).pack(side='right')
         ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
-        self._done(f'{len(results)} Goodreads match(es)')
+        self._done(f'{len(results)} book metadata match(es)')
 
-    def associate_goodreads_metadata(self, metadata):
+    def _associate_book_metadata(self, metadata):
+        provider = str(metadata.get('provider') or '').casefold()
+        source_url = metadata.get('source_url') or metadata.get('url') or ''
+        if provider in {'goodreads', 'open library'} or not provider:
+            self.associate_goodreads_metadata(metadata, auto_add=True)
+            return
+
+        self.watch_goodreads_profile = {}
         self.watch_comic_profile = {}
+        self.watch_url.set(source_url)
+        self.watch_title.set(metadata.get('title') or '')
+        self.watch_author.set('' if metadata.get('author') == 'Unknown' else metadata.get('author', ''))
+        self.watch_release_date.set(metadata.get('release_date') or '')
+        self.watch_feed_url.set('')
+        catalog = metadata.get('catalog_metadata') or metadata.get('metadata') or {}
+        if provider == 'novelarchive':
+            self.watch_lightnovel_profile = {}
+            self.watch_kind.set('Web serial')
+        elif provider in {'lnori', 'ranobedb'}:
+            self.watch_lightnovel_profile = dict(catalog)
+            if provider == 'ranobedb':
+                self.watch_lightnovel_profile['ranobedb_id'] = catalog.get('catalog_id')
+            self.watch_kind.set('Light novel')
+        else:
+            self.associate_goodreads_metadata(metadata, auto_add=True)
+            return
+        self.add_watched(auto_scan=True)
+
+    def associate_goodreads_metadata(self, metadata, auto_add=False):
+        self.watch_comic_profile = {}
+        self.watch_lightnovel_profile = {}
         self.watch_goodreads_profile = dict(metadata)
         self.watch_url.set(metadata.get('source_url', ''))
         self.watch_title.set(metadata.get('title', ''))
         self.watch_author.set('' if metadata.get('author') == 'Unknown' else metadata.get('author', ''))
         self.watch_release_date.set(metadata.get('release_date') or '')
         self.watch_kind.set(metadata.get('kind', 'book').title())
-        self._done('Goodreads metadata filled in; review and add it to Watched')
+        if auto_add:
+            self.add_watched(auto_scan=True)
+        else:
+            self._done(f"{metadata.get('provider', 'Goodreads')} metadata filled in; review and add it to Watched")
+
+    def _auto_add_goodreads_fallback(self, result, error):
+        self.logger.warning('Goodreads detail page unavailable for %s (%s): %s',
+                            result.get('kind'), result.get('title'), error)
+        fallback = dict(result)
+        fallback.setdefault('provider', 'Goodreads')
+        self.associate_goodreads_metadata(fallback, auto_add=True)
+        self._done(f"Goodreads page unavailable; added {result.get('kind', 'entry')} and saved the error in logs")
 
     def goodreads_page_unavailable(self, result, error):
         self._goodreads_pending_search_query = ''
@@ -1036,7 +1202,7 @@ class MediaIntakeApp:
             self._worker('Reading saved Goodreads page…',
                          lambda: parse_goodreads_html(url.strip(), path), self.associate_goodreads_metadata)
 
-    def add_watched(self):
+    def add_watched(self, auto_scan=False):
         url = self.watch_url.get().strip()
         title = self.watch_title.get().strip()
         author = self.watch_author.get().strip() or 'Unknown'
@@ -1061,19 +1227,22 @@ class MediaIntakeApp:
                 watch_author = author
                 watch_kind = kind or 'book'
                 goodreads_failed = False
+                host = (urllib.parse.urlsplit(watch_url).hostname or '').casefold()
+                is_goodreads_url = host == 'goodreads.com' or host.endswith('.goodreads.com')
                 if watch_url and watch_kind in ('book', 'series', 'author'):
                     if goodreads_profile and goodreads_profile.get('source_url') == watch_url:
                         return add_from_goodreads_metadata(
                             db, goodreads_profile, watch_url, kind, watch_title or None,
                             watch_author, release, sources)
-                    try:
-                        return add_from_goodreads(db, watch_url, kind, watch_title or None, watch_author, release, sources)
-                    except Exception as exc:
-                        goodreads_failed = True
-                        self.logger.warning('Goodreads metadata fetch failed for %s; retaining entered metadata: %s',
-                                            watch_url, exc)
-                        if not watch_title:
-                            raise
+                    if is_goodreads_url:
+                        try:
+                            return add_from_goodreads(db, watch_url, kind, watch_title or None, watch_author, release, sources)
+                        except Exception as exc:
+                            goodreads_failed = True
+                            self.logger.warning('Goodreads metadata fetch failed for %s; retaining entered metadata: %s',
+                                                watch_url, exc)
+                            if not watch_title:
+                                raise
                 metadata = {'sources': sources}
                 if watch_kind in ('series', 'author'):
                     metadata['known_books'] = []
@@ -1161,8 +1330,16 @@ class MediaIntakeApp:
                 self._done('Watched; release date saved')
             else:
                 self._done('Added to watched')
+            if auto_scan:
+                self.root.after(100, self._run_added_watch_scan)
 
         self._worker('Reading Goodreads…' if url and kind in ('book', 'series', 'author') else 'Adding watch…', action, added)
+
+    def _run_added_watch_scan(self):
+        if self.watch_scan_running:
+            self.root.after(500, self._run_added_watch_scan)
+            return
+        self._run_watch_scan(force=True, automatic=True)
 
     def refresh_watches(self):
         self.watch_rows = list_watches(self.db)

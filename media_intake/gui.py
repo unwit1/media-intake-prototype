@@ -113,7 +113,7 @@ class MediaIntakeApp:
                              'Snahp forum threads']).pack(side='left')
         ttk.Entry(controls, textvariable=self.site_base, width=28).pack(side='left', padx=6)
         ttk.Button(controls, text='Search', command=self.search).pack(side='left')
-        ttk.Button(controls, text='Load saved forum results', command=self.load_saved_forum_results).pack(side='left', padx=6)
+        ttk.Button(controls, text='Snahp browser helper', command=self.open_forum_helper).pack(side='left', padx=6)
         ttk.Label(parent, text='Optional site base URL (for LibGen or Anna’s Archive)').pack(anchor='w', pady=(4, 6))
 
         columns = ('title', 'author', 'format', 'source')
@@ -287,6 +287,31 @@ class MediaIntakeApp:
                     continue
             return resolved
         self._worker(f'Searching {source}…', action, self.show_results)
+
+    def open_forum_helper(self):
+        window = tk.Toplevel(self.root)
+        window.title('Snahp forum browser helper')
+        window.geometry('460x190')
+        window.resizable(False, False)
+        window.transient(self.root)
+        ttk.Label(
+            window,
+            text=('Sign in and search in your normal browser. Media Intake never receives or stores your password. '
+                  'Save the search results page as HTML, then import it here; the importer keeps thread titles and '
+                  'same-site thread URLs only.'),
+            wraplength=430, justify='left').pack(fill='x', padx=14, pady=(14, 10))
+        controls = ttk.Frame(window)
+        controls.pack(fill='x', padx=14, pady=(0, 12))
+        ttk.Button(controls, text='Open forum sign-in', command=self.open_forum_login).pack(side='left')
+        ttk.Button(controls, text='Load saved search HTML', command=self.load_saved_forum_results).pack(side='left', padx=8)
+        ttk.Button(controls, text='Close', command=window.destroy).pack(side='right')
+
+    def open_forum_login(self):
+        opened = webbrowser.open('https://fora.snahp.eu/ucp.php?mode=login', new=1)
+        if opened:
+            self._done('Sign in and search in your browser, then import the saved results page')
+        else:
+            messagebox.showerror('Snahp forum', 'Could not open the default browser.')
 
     def load_saved_forum_results(self):
         path = filedialog.askopenfilename(

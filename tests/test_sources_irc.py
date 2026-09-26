@@ -61,14 +61,14 @@ class SearchIRC(socketserver.BaseRequestHandler):
 class SourceAndIRCTest(unittest.TestCase):
     def test_forum_search_exposes_thread_references_only(self):
         markup = '''
-          <div class="structItem">
-            <h3 class="structItem-title"><a href="/threads/sample-book.123/page-2?ref=search" title="Sample Book">Sample Book</a></h3>
-            <div class="structItem-snippet">
-              <a href="/threads/mentioned-in-snippet.456/">mentioned thread</a>
+          <div class="topiclist">
+            <a class="topictitle" href="/viewtopic.php?f=7&t=123&sid=session#p789" title="Sample Book">Sample Book</a>
+            <div class="post-snippet">
+              <a href="/viewtopic.php?t=456">mentioned thread</a>
               <a href="https://files.example.invalid/file/secret">external file link</a>
             </div>
-            <a href="/threads/recent-sidebar.789/">unrelated sidebar thread</a>
-            <a href="/forums/books.8/">Books forum</a>
+            <a href="/viewtopic.php?t=789">unrelated sidebar thread</a>
+            <a href="/viewforum.php?f=8">Books forum</a>
             <a href="https://elsewhere.example/threads/other.99/">Other forum</a>
           </div>
         '''
@@ -78,14 +78,14 @@ class SourceAndIRCTest(unittest.TestCase):
             rows = search_forum_threads('sample book', html_path=html)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['title'], 'Sample Book')
-        self.assertEqual(rows[0]['url'], 'https://fora.snahp.eu/threads/sample-book.123/')
+        self.assertEqual(rows[0]['url'], 'https://fora.snahp.eu/viewtopic.php?t=123')
         self.assertTrue(rows[0]['forum_thread'])
         self.assertEqual(rows[0]['format'], 'thread')
 
     def test_forum_403_points_to_browser_snapshot_fallback(self):
         with patch('media_intake.sources.urllib.request.build_opener') as build_opener:
             build_opener.return_value.open.side_effect = HTTPError(
-                'https://fora.snahp.eu/search/?q=test', 403, 'Forbidden', {}, None)
+                'https://fora.snahp.eu/search.php?keywords=test', 403, 'Forbidden', {}, None)
             with self.assertRaisesRegex(ValueError, 'normal browser and load a saved results page'):
                 search_forum_threads('test')
 

@@ -14,7 +14,7 @@ SITE_PROFILES = {
     'libgen': {'base': 'https://libgen.gl', 'path': '/index.php', 'query': 'req', 'detail': r'(?:/ads\.php\?md5=|book/index\.php\?md5=|/main/)[a-f0-9]{32}'},
 }
 SNAHP_FORUM = 'https://fora.snahp.eu'
-_THREAD_PATH = re.compile(r'^(/threads/[^/?#]*?\.\d+)(?:/|$)', re.I)
+_PHPBB_TOPIC_PATH = re.compile(r'^/viewtopic\.php$', re.I)
 
 
 class Anchors(HTMLParser):
@@ -50,17 +50,19 @@ class ForumThreadAnchors(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = set(attrs.get('class', '').split())
-        title_classes = {'structItem-title', 'contentRow-title'}
+        title_classes = {'topictitle'}
         in_title = bool(classes & title_classes) or any(parent & title_classes for _, parent in self.stack)
         if tag == 'a' and in_title:
             href = urllib.parse.urljoin(SNAHP_FORUM + '/', attrs.get('href', ''))
             parts = urllib.parse.urlsplit(href)
-            path_match = _THREAD_PATH.match(parts.path)
+            topic_ids = urllib.parse.parse_qs(parts.query).get('t', [])
+            topic_id = topic_ids[0] if topic_ids else ''
             if (parts.scheme == 'https' and parts.hostname == self.host and parts.port in (None, 443)
-                    and not parts.username and not parts.password and path_match):
-                # Keep the canonical first-page URL; discard pagination and tracking.
-                path = path_match.group(1).rstrip('/') + '/'
-                canonical = urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, '', ''))
+                    and not parts.username and not parts.password and _PHPBB_TOPIC_PATH.match(parts.path)
+                    and re.fullmatch(r'\d{1,12}', topic_id)):
+                # Keep only the topic ID; drop session IDs, post anchors, and tracking.
+                canonical = urllib.parse.urlunsplit((parts.scheme, parts.netloc, '/viewtopic.php',
+                                                     urllib.parse.urlencode({'t': topic_id}), ''))
                 self.current = {'url': canonical, 'title_attr': attrs.get('title', '').strip(), 'text': ''}
         self.stack.append((tag, classes))
 
@@ -161,10 +163,10 @@ def search_site(site, query, base=None, html_path=None):
 
 
 def search_forum_threads(query, base_url=SNAHP_FORUM, html_path=None):
-    """Search a XenForo-style forum and return only same-site thread records.
+    """Search a phpBB forum and return only same-site topic records.
 
     Search result snippets may contain file-host links; this adapter deliberately
-    discards every URL except canonical `/threads/<slug>.<id>/` links.
+    discards every URL except canonical `viewtopic.php?t=<id>` topic links.
     """
     query = str(query or '').strip()
     if not query:
@@ -173,7 +175,7 @@ def search_forum_threads(query, base_url=SNAHP_FORUM, html_path=None):
     if (base.scheme != 'https' or base.hostname != 'fora.snahp.eu'
             or base.port not in (None, 443) or base.username or base.password):
         raise ValueError('Forum base must be https://fora.snahp.eu')
-    search_url = urllib.parse.urljoin(base_url.rstrip('/') + '/', 'search/?' + urllib.parse.urlencode({'q': query}))
+    search_url = urllib.parse.urljoin(base_url.rstrip('/') + '/', 'search.php?' + urllib.parse.urlencode({'keywords': query}))
     if html_path:
         page = Path(html_path).read_text(encoding='utf-8')
         final_url = search_url
@@ -197,6 +199,8 @@ def search_forum_threads(query, base_url=SNAHP_FORUM, html_path=None):
         raise ValueError('Forum search redirected outside fora.snahp.eu')
     parser = ForumThreadAnchors(base_url)
     parser.feed(page)
+    if not parser.threads and 'not permitted to use the search system' in page.casefold():
+        raise ValueError('Forum search is restricted to signed-in members; open the forum in your browser and import saved results')
     return parser.threads
 
 

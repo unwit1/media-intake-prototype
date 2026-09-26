@@ -1,0 +1,10 @@
+{
+  "title": "Example Serial",
+  "author": "Example Author",
+  "kind": "webfiction",
+  "selector": "article,.chapter-content,#chapter",
+  "chapters": [
+    {"title": "Chapter 1", "url": "https://example.org/story/chapter-1"},
+    {"title": "Chapter 2", "url": "https://example.org/story/chapter-2"}
+  ]
+}

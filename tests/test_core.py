@@ -1,0 +1,70 @@
+import json
+import io
+import tempfile
+import threading
+import unittest
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from media_intake.core import connect, download, enqueue, file_name, import_calibre, list_items, search_opds
+from unittest.mock import patch
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/feed':
+            body = b'''<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>x1</id><title>Example Book</title><author><name>Jane Doe</name></author><link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="/book.epub"/></entry></feed>'''
+            mime = 'application/atom+xml'
+        else:
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, 'w') as archive:
+                archive.writestr('mimetype', 'application/epub+zip')
+            body = output.getvalue() if self.path == '/book.epub' else b'broken epub'
+            mime = 'application/epub+zip'
+        self.send_response(200); self.send_header('Content-Type', mime); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def log_message(self, *args): pass
+
+
+class PrototypeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True); cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join()
+
+    def test_opds_queue_download_and_dedupe(self):
+        base = f'http://127.0.0.1:{self.server.server_address[1]}'
+        items = search_opds(base + '/feed', 'example book')
+        self.assertEqual(len(items), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(tmp)
+            first = enqueue(db, items[0]); self.assertEqual(first['id'], enqueue(db, items[0])['id'])
+            result = download(db, first['id'], tmp)
+            self.assertEqual(result['state'], 'downloaded')
+            self.assertEqual(Path(result['file_path']).name, 'Example Book - Jane Doe.epub')
+            self.assertEqual(len(list_items(db)), 1)
+            self.assertEqual(download(db, first['id'], tmp)['file_path'], result['file_path'])
+            with patch('media_intake.core.subprocess.run') as run:
+                imported = import_calibre(db, first['id'], '/tmp/Calibre Library')
+            self.assertEqual(imported['state'], 'imported')
+            self.assertEqual(run.call_args.args[0][0:4], ['calibredb', 'add', '--with-library', '/tmp/Calibre Library'])
+
+    def test_invalid_file_is_failed_and_retriable(self):
+        base = f'http://127.0.0.1:{self.server.server_address[1]}'
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(tmp)
+            item = enqueue(db, {'title': 'Bad file', 'url': base + '/bad.epub', 'format': '.epub', 'source': base})
+            with self.assertRaisesRegex(ValueError, 'Invalid .epub archive'):
+                download(db, item['id'], tmp)
+            self.assertEqual(list_items(db)[0]['state'], 'failed')
+            self.assertEqual(list((Path(tmp) / 'downloads').iterdir()), [])
+
+    def test_name_sanitization(self):
+        self.assertEqual(file_name({'title': '../Bad: title', 'author': 'A/B', 'format': '.pdf', 'series': 'Series', 'series_index': 2}), 'Series 2 - Bad title - A B.pdf')
+
+
+if __name__ == '__main__': unittest.main()

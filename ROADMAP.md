@@ -6,9 +6,11 @@ The implementation order is intentional:
 
 1. **Franchise / continuity auto-expansion**
 2. **Game watching**
-3. **Movie watching**
-4. **TV watching**
-5. **Web-series watching**
+3. **Video watching**
+   - Movies
+   - TV / episodic series
+   - Web series
+   - Shorts, specials, OVAs/OADs, miniseries, streaming originals, and other video-first formats
 
 Later media types should reuse the same entity, relationship, provenance, refresh, confidence, and review infrastructure rather than creating independent one-off watch systems.
 
@@ -387,151 +389,44 @@ Detect:
 
 ---
 
-# Phase 3 — Movie watching
+# Phase 3 — Video watching
 
 **Priority: P2**
 
+Movies, television, web series, and other video-first formats belong to one **Video** media family. They should share the same core provider routing, entity model, relationship graph, release watcher, UI filters, and deduplication logic.
+
+The app may expose subtype filters such as Movie, TV, Web Series, Short, Special, or OVA, but these are subtypes of Video rather than separate top-level media systems.
+
 ## Goal
 
-Track individual films and film franchises, including future sequels and related branches.
+Allow a user to add any recognizable video title and have Media Intake automatically determine its subtype, discover its franchise/continuity, expand its internal structure where applicable, and monitor future releases or related video works.
 
-## Candidate provider adapters
+Examples:
 
-- TMDB
+- a film → collection/franchise → sequels, prequels, spin-offs
+- a TV show → seasons → episodes → specials → sequel/spin-off shows
+- a web series → playlists/feeds → seasons/arcs → episodes
+- an anime title → seasons/cours → episodes → films/OVAs/specials when they belong to the same continuity
+- a short film or streaming special → parent franchise/series when one exists
+
+## Shared Video provider layer
+
+Candidate providers should be routed by subtype while normalizing into the same internal Video model.
+
+### General / cross-subtype
+
 - Wikidata
-- official studio/distributor sources for authoritative announcements
+- TMDB
+- first-party studio/network/streamer/creator sources
 
-## Entity coverage
-
-Support:
-
-- film
-- film collection/franchise
-- sequel
-- prequel
-- spin-off
-- reboot
-- remake
-- alternate cut/edition
-- direct-to-video/streaming film
-- announced/untitled project
-
-## Watch events
-
-Detect:
-
-- sequel/prequel/spin-off announcement
-- title change
-- release date
-- delay
-- production-status change when reliable
-- theatrical release
-- streaming/home-media availability when enabled
-- newly linked franchise/collection entry
-
-A reboot/remake should be related to the prior continuity without being silently inserted into the same chronological sequence.
-
-## Acceptance criteria
-
-- Adding a movie can discover its collection/franchise.
-- Future sequels are added/discovered according to policy.
-- Remakes/reboots remain separate continuity branches.
-- Release changes update existing records rather than create duplicates.
-
----
-
-# Phase 4 — TV watching
-
-**Priority: P3**
-
-## Goal
-
-Track television series, seasons, episodes, specials, spin-offs, sequel shows, and shared television universes.
-
-## Candidate provider adapters
+### TV / episodic
 
 - TMDB
 - TVmaze
 - Wikidata
-- official network/streamer pages when available
+- official network/streamer schedules
 
-## Entity coverage
-
-Support:
-
-- television franchise/universe
-- show/series
-- season
-- episode
-- special
-- miniseries
-- sequel series
-- prequel series
-- spin-off
-- revival
-- reboot
-
-## Watch granularity
-
-Allow policies at multiple levels:
-
-- franchise
-- show
-- season
-- episode
-
-Examples:
-
-- track only new seasons
-- track every episode
-- track sequel/spin-off show announcements
-- track specials but not talk/recap episodes
-
-## Watch events
-
-Detect:
-
-- renewal
-- cancellation/end
-- new season
-- season premiere date
-- episode schedule
-- special
-- sequel/prequel/spin-off show
-- revival/reboot
-- schedule/date changes
-
-## Acceptance criteria
-
-- Adding a show can discover seasons and related shows.
-- New seasons appear automatically.
-- Episodes can be watched without forcing episode-level tracking globally.
-- Spin-offs/revivals/reboots are classified correctly.
-- Provider schedule changes update the same release record.
-
----
-
-# Phase 5 — Web-series watching
-
-**Priority: P4**
-
-This phase should build on the app's existing RSS/Atom web-serial and fanfiction capabilities rather than creating a parallel subsystem.
-
-## Goal
-
-Watch serialized video/audio/mixed-media productions published primarily on the web, including series that lack traditional TV metadata.
-
-Examples may include:
-
-- YouTube serialized shows
-- creator-hosted web series
-- RSS-backed episodic productions
-- public podcast/video feeds where episodes form a narrative series
-- independent animation/web productions
-
-## Discovery layers
-
-Prefer structured sources first:
+### Web series
 
 - RSS/Atom
 - YouTube channel/playlist metadata where available
@@ -539,55 +434,228 @@ Prefer structured sources first:
 - creator/site metadata
 - supported page adapters
 
-Use site-specific scraping only where permitted and necessary.
+Additional providers can be added later without changing the Video entity model.
 
-## Entity coverage
+## Shared Video entity coverage
+
+Support at minimum:
+
+- video franchise/universe
+- film
+- show/series
+- web series
+- miniseries
+- season
+- cour/arc where useful
+- episode
+- short
+- special
+- OVA/OAD
+- direct-to-video release
+- streaming-original video
+- sequel
+- prequel
+- spin-off
+- revival
+- reboot
+- remake
+- alternate cut/edition
+- announced/untitled project
+- playlist/feed as a membership source rather than necessarily a creative work
+
+## Shared Video relationship behavior
+
+Normalize relationships such as:
+
+- contains / part_of
+- season_of
+- episode_of
+- special_of
+- sequel_to / prequel_to
+- spin_off_of
+- crossover_with
+- same_universe
+- revival_of
+- reboot_of
+- remake_of
+- alternate_cut_of
+- adaptation_of
+
+A reboot/remake should remain connected to the earlier property without being silently inserted into the same continuity.
+
+A film that is canonically part of a TV/anime continuity should be allowed to share that continuity even though its subtype is Movie.
+
+## Shared Video watch policy
+
+Allow policy inheritance at:
+
+1. video-family defaults
+2. subtype defaults
+3. franchise
+4. series/show
+5. season
+6. individual work/episode
+
+Example controls:
+
+- watch future films
+- watch new seasons
+- watch every episode
+- watch specials/OVAs
+- watch direct sequel/spin-off shows
+- discover crossovers/shared-universe branches
+- ignore recap/talk/bonus episodes
+- track streaming/home-media availability
+- track remakes/reboots as related only
+
+## Shared Video watch events
+
+Detect where supported:
+
+- sequel/prequel/spin-off announcement
+- new season
+- new episode
+- new special/OVA/short
+- renewal
+- cancellation/end
+- revival/reboot/remake
+- title change
+- release/premiere date
+- schedule change or delay
+- production-status change when reliable
+- theatrical release
+- streaming release
+- home-media release when enabled
+- finale/completion
+- hiatus/return where reliable
+- feed/playlist migration
+- newly linked franchise/continuity entry
+
+## Video subtype A — Movies
+
+Movies are a Video subtype, not a separate top-level watcher.
+
+### Movie-specific behavior
 
 Support:
 
-- web series
-- season/arc
+- theatrical films
+- streaming films
+- direct-to-video films
+- franchise collections
+- sequels/prequels
+- spin-offs
+- remakes
+- reboots
+- alternate cuts/editions
+- announced/untitled projects
+
+### Movie acceptance criteria
+
+- Adding a movie can discover its collection/franchise.
+- Future sequels are added/discovered according to policy.
+- Remakes/reboots remain separate continuity branches.
+- Release changes update existing records rather than create duplicates.
+
+## Video subtype B — TV / episodic series
+
+TV, anime series, streaming episodic shows, and similar scheduled episodic video belong to the same Video family.
+
+### TV-specific behavior
+
+Support:
+
+- show/series
+- miniseries
+- season
+- cour where useful
 - episode
 - special
-- playlist
 - sequel series
+- prequel series
 - spin-off
-- creator channel as a related entity
+- revival
+- reboot
 
-Do not equate every creator upload with an episode.
+Allow users to watch only new seasons or every episode without changing the global Video behavior.
 
-## Episode identification
+### TV acceptance criteria
+
+- Adding a show can discover seasons and related shows.
+- New seasons appear automatically.
+- Episodes can be watched without forcing episode-level tracking globally.
+- Spin-offs/revivals/reboots are classified correctly.
+- Provider schedule changes update the same release record.
+
+## Video subtype C — Web series
+
+This subtype should build on the app's existing RSS/Atom web-serial and fanfiction infrastructure where useful, while keeping video-specific episode semantics separate from text serial downloads.
+
+### Web-series sources
+
+Prefer structured sources first:
+
+- RSS/Atom
+- YouTube playlists/channels where available
+- creator-hosted feeds
+- Wikidata
+- creator/site metadata
+
+Use site-specific scraping only where permitted and necessary.
+
+### Web-series episode identification
 
 Use combinations of:
 
 - playlist membership
-- series metadata
+- feed membership
+- explicit series metadata
 - title patterns
 - descriptions
 - publication order
-- explicit season/episode numbering
+- season/episode numbering
 - source-provided relationships
 
-Ambiguous uploads should be candidates rather than automatically injected into the canonical episode list.
+Do not equate every creator upload with an episode.
 
-## Watch events
+Ambiguous uploads should become candidates rather than being silently injected into the canonical episode list.
 
-Detect:
-
-- new episode
-- new season/arc
-- finale/completion
-- hiatus/return where reliable
-- sequel/spin-off series
-- feed/playlist move
-- title/number correction
-
-## Acceptance criteria
+### Web-series acceptance criteria
 
 - A structured web series can baseline existing episodes and watch only new ones.
-- Playlists/feeds can become series membership sources.
+- Playlists/feeds can become membership sources.
 - Unrelated creator uploads are not automatically classified as episodes.
-- Sequel/spin-off web series can participate in the same continuity graph as books/games/film/TV when evidence exists.
+- Sequel/spin-off web series can participate in the same continuity graph as books, games, movies, and TV when evidence exists.
+
+## Video subtype D — Other video-first formats
+
+Keep the schema open for additional Video subtypes without requiring a new top-level system.
+
+Examples:
+
+- short films
+- anthology segments
+- specials
+- OVAs/OADs
+- independent animation
+- creator serials
+- documentary series
+- concert/performance video series
+- video podcasts with structured seasons/episodes
+- limited-run streaming projects
+
+The resolver should classify these using the same Video graph and only add subtype-specific fields where needed.
+
+## Phase 3 acceptance criteria
+
+Phase 3 is complete when:
+
+- Movie, TV, Web Series, and other video-first works share one top-level Video family.
+- A single Add Anything flow can infer the appropriate Video subtype.
+- Cross-format continuity works correctly, such as a TV series with a canonical movie sequel or an anime with OVAs and films.
+- Common franchise relationships are normalized once instead of separately for movies/TV/web series.
+- New releases are monitored at the correct granularity for each subtype.
+- Adding future Video subtypes does not require another independent watch subsystem.
 
 ---
 
@@ -731,23 +799,40 @@ Prove:
 - game-specific relationship normalization
 - release/DLC monitoring
 
-## Milestone 5 — Movies
+## Milestone 5 — Video foundation
 
-- TMDB/Wikidata adapters
+- unified Video media family and subtype model
+- shared TMDB/Wikidata provider normalization
+- cross-format continuity relationships
+- common Video release/status watcher
+
+## Milestone 6 — Movie subtype
+
 - collections/franchises
-- sequel/reboot/remake handling
+- sequel/prequel/spin-off discovery
+- reboot/remake/alternate-cut handling
+- theatrical/streaming/home-media release tracking
 
-## Milestone 6 — TV
+## Milestone 7 — TV / episodic subtype
 
 - TMDB/TVmaze/Wikidata
-- seasons/episodes/specials
-- renewal/schedule monitoring
+- seasons/episodes/specials/cours
+- renewal/cancellation/schedule monitoring
+- cross-format movie/special relationships
 
-## Milestone 7 — Web series
+## Milestone 8 — Web-series subtype
 
 - extend existing feed/web-serial infrastructure
-- playlist/feed series membership
+- playlist/feed membership
+- episode classification
 - web-series continuity relationships
+
+## Milestone 9 — Additional Video subtypes
+
+- shorts/specials/OVAs/OADs
+- independent animation
+- documentary/performance/video-podcast series where structured
+- subtype-specific adapters only when shared Video primitives are insufficient
 
 ---
 
@@ -764,4 +849,4 @@ The long-term target is that a user can add one recognizable piece of media and 
 7. watch the graph for future additions and release changes,
 8. explain where every relationship came from,
 9. continue processing even when a small subset needs manual review,
-10. apply the same behavior consistently across books, games, movies, TV, and web series.
+10. apply the same behavior consistently across books, games, and the unified Video family (movies, TV, web series, anime/video specials, and future video-first subtypes).

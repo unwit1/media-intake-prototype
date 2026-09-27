@@ -1729,3 +1729,104 @@ Extend normalized file roles beyond conventional media formats:
 - `printable_model`
 
 This allows Media Intake to represent a Blender open movie, game asset pack, museum scan, audiobook, ebook, and game installer through the same acquisition model without pretending all downloadable files are equivalent.
+
+
+### Stock media, fonts, courseware, and repository hubs
+
+#### Stock/open photography and video
+
+- **Pexels API** — P1 searchable photo/video connector. The documented API exposes the Pexels content library, including photos and videos, with creator/source metadata and file variants. Respect the API's linking/credit requirements in UI.
+- **Pixabay API** — P1 searchable image/video connector. Its REST API returns downloadable royalty-free images and videos plus creator/source metadata.
+- **Unsplash API** — P1 image connector. Photo records expose API/HTML/download relations; implement the documented download-tracking/hotlink behavior rather than treating image CDN URLs as permanent canonical files.
+- **Openverse** — retain as the preferred cross-provider open image/audio aggregation layer.
+- **Flickr / Flickr Commons** — candidate photo connector through current API capabilities; store per-item license and originating collection.
+
+#### Fonts / typography as downloadable creative media
+
+Add a **Font** creative-media subtype so font families can be tracked like other versioned assets.
+
+- **Google Fonts Developer API** — P0/P1 font metadata/download connector. The API returns family, category, subsets/scripts, variants, version, last-modified date, variable-font axes and direct font-file URLs for each variant.
+- **Fontsource** — candidate open-source font package connector through npm/GitHub package metadata and releases.
+- **Open Font Library / individual foundry GitHub releases** — candidate open-font sources.
+- **Iconify** — candidate icon-set aggregator/protocol. A single adapter can normalize icons from many open icon collections and export SVG/JSON where current API/licensing permits.
+- **Wikimedia Commons / Internet Archive** — fallback historical typography/type-specimen sources.
+
+Font entity fields should include:
+- family
+- foundry/designer
+- style/weight
+- variable axes
+- scripts/subsets
+- version
+- file format (TTF/OTF/WOFF/WOFF2)
+- license
+- upstream repository/source
+
+#### Open courseware / lectures / educational collections
+
+Add an optional **Course / Educational Media** family with course → module → lecture → resource relationships.
+
+- **MIT OpenCourseWare** — P1 download-capable course connector. Courses expose downloadable course ZIP packages containing HTML and static resources such as PDFs, Word/LaTeX documents, code and data; many courses also expose individually downloadable lecture-video files.
+- **OpenLearn / OpenStax / university OER repositories** — candidate open educational connectors when structured feeds/APIs/download links are available.
+- **OER Commons / MERLOT** — candidate educational metadata aggregators that can resolve out to downloadable/open resources.
+- **Internet Archive educational collections** — reuse the generic Archive connector.
+- **YouTube/PeerTube lecture playlists** — video relationship/discovery layer, not generic direct-download unless the originating platform exposes it.
+
+Normalize resource roles such as:
+- syllabus
+- lecture_notes
+- lecture_video
+- lecture_audio
+- slides
+- assignment
+- solution
+- reading
+- textbook
+- code
+- dataset
+- lab
+- transcript
+
+#### Repository/file hubs as generalized media connectors
+
+- **Hugging Face Hub** — P1 generic repository/download connector for datasets, models, Spaces and arbitrary repository files. The official Hub API/client supports metadata lookup, single-file downloads, filtered snapshots, full-repository downloads, revisions/tags/commits and authenticated private repositories. This is useful for image/audio/video/text datasets and other media-adjacent collections.
+- **GitHub Releases** — P1 generic release-asset connector for media projects, asset packs, datasets, fonts, books, mods and creator-distributed files. Preserve repository, release/tag/commit, release asset ID, checksum when available and license metadata.
+- **GitLab Releases/Packages** — candidate equivalent connector.
+- **Zenodo** — P1 scholarly/dataset/software/media repository connector via DOI/record APIs with downloadable files and checksums.
+- **Figshare** — candidate research/media repository connector for downloadable datasets, figures, videos, posters and supplementary files.
+- **OSF (Open Science Framework)** — candidate project/file connector for public or user-authorized research project files.
+- **Kaggle** — candidate authenticated dataset connector for user-authorized/public datasets where API terms permit.
+
+#### Public-domain/open film collections
+
+- **Prelinger Archives** — treat as a specialized collection profile on top of the Internet Archive connector rather than building a duplicate downloader.
+- **Internet Archive Feature Films / Community Video / animation collections** — collection presets on top of the same IA acquisition engine.
+- **Library of Congress film/video collections** — use loc.gov/IIIF/file links when exposed.
+- **NASA / government archival film collections** — source presets on the shared public-media connector.
+
+#### Connector capability: collection presets
+
+Add provider-level **collection presets** so one connector can expose curated sub-sources without separate code.
+
+Examples:
+
+- Internet Archive → Prelinger Archives
+- Internet Archive → Live Music Archive
+- Internet Archive → Netlabels
+- Internet Archive → Software Library
+- Internet Archive → Feature Films
+- Wikimedia Commons → NASA media category
+- Hugging Face → audio datasets
+- Hugging Face → image datasets
+- MIT OCW → lecture-video courses
+
+A preset should define:
+- provider
+- query/filter
+- media subtype
+- expected file roles/formats
+- default refresh cadence
+- default provenance/attribution fields
+- optional local storage policy
+
+This keeps the codebase small while still presenting many specialized connectors in the UI.

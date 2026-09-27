@@ -1481,3 +1481,171 @@ Create a normalized internal provider interface for self-hosted media servers:
 
 Then map Plex, Jellyfin, Kavita, Komga, Audiobookshelf, Calibre/OPDS and OpenSubsonic onto it where their capabilities overlap.
 
+
+
+## Download-capable connector registry
+
+**Priority: P0 architecture, then source-by-source enablement.**
+
+Media Intake should maintain a separate registry of providers that can yield downloadable media files, downloadable archives, authenticated owned-library files, feed enclosures, or direct creator/public-domain assets.
+
+This is intentionally separate from metadata-provider support. A source may support metadata without file acquisition, file acquisition without broad discovery, or both.
+
+Each connector should advertise one or more acquisition modes:
+
+- `public_direct_file`
+- `public_collection_download`
+- `rss_enclosure`
+- `opds_acquisition`
+- `authenticated_owned_download`
+- `creator_authorized_download`
+- `self_hosted_library_download`
+- `api_download`
+- `browser_session_download`
+- `mirror_sync`
+- `bulk_dataset`
+- `stream_only`
+- `preview_only`
+
+Also store authentication requirements, file formats, checksums, source item ID, original filename, canonical source URL, content URL, acquisition method, observed timestamp, exposed license/rights metadata, and whether the connector yielded a direct file, authenticated entitlement, or only a landing page.
+
+The long-term rights/policy layer can decide which acquisition methods are allowed. The connector registry itself should still know what a provider technically exposes.
+
+### Cross-media archives and public collections
+
+- **Internet Archive / archive.org** — P0 download-capable provider. Its official client supports item metadata, file enumeration, per-file downloads, format-filtered downloads, glob downloads, entire-item downloads, entire-collection downloads, checksums, and generated derivatives such as EPUB/MOBI/DAISY. This should become one of the main general-purpose content connectors because an item may contain books, audio, movies, software, images, datasets or mixed collections.
+- **Wikimedia Commons** — P0 open-media connector. MediaWiki APIs expose file metadata, original URLs, MIME type, dimensions, SHA-1 and revisions. Support original-file acquisition plus attribution/license provenance.
+- **NASA Image and Video Library** — P1 multimedia connector for downloadable images, video, audio, captions and associated metadata. Use the public NASA media API where available.
+- **Smithsonian Open Access** — P1 downloadable image/media connector for eligible open-access items.
+- **Library of Congress** — P1 direct-content connector where loc.gov item records expose public files, OCR, images, audio/video or IIIF resources.
+- **Europeana / DPLA / DigitalNZ / Trove** — aggregator connectors that may resolve to downloadable upstream files. Preserve the originating institution and source URL.
+
+### Ebooks and written media
+
+- **Project Gutenberg** — P0. Prefer OPDS/RDF/CSV/MARC catalogs and the documented robot/mirror download routes rather than crawling normal web pages. Support EPUB, HTML, plain text, Kindle and MP3 where available.
+- **Standard Ebooks** — P0/P1 OPDS 1/2 acquisition connector plus release feeds.
+- **LibriVox** — P0/P1 audiobook metadata plus downloadable audio files.
+- **OAPEN / DOAB** — P1 open scholarly-book connector.
+- **arXiv** — P1 paper connector for PDF/source downloads plus Atom metadata.
+- **PubMed Central / Europe PMC** — P1 open-access full-text connector for eligible XML/PDF/supplementary files.
+- **CORE** — P1 scholarly full-text aggregator where its API exposes open full text.
+- **institutional repositories** — generic OAI-PMH/IIIF/direct-file connector for repositories exposing open PDFs, EPUBs, OCR, datasets or supplementary media.
+- **Kobo owned library** — optional authenticated-owned-library connector. Kobo supports exporting eligible purchases as EPUB/PDF; some purchases use Adobe DRM/ACSM, so record file/DRM state and do not assume every title yields a directly usable EPUB.
+- **DriveThruRPG owned library** — P1 authenticated-owned-library connector for PDFs, EPUBs, ZIPs, STL files, VTT modules and other purchased digital files. Its Library App already syncs library metadata and supports title/file-level downloads.
+- **Smashwords/Draft2Digital storefront libraries** — candidate authenticated ebook download connector if a stable supported account/export interface is available.
+
+### Fanfiction / serialized text exports
+
+- **Archive of Our Own (AO3)** — candidate P0/P1 native-export connector. Prefer native AO3 download links over reconstructing works by scraping chapter HTML. Preserve work ID, version/update timestamp and source URL.
+- **FanFicFare** — P0 meta-connector for supported fiction sites where it can technically produce EPUB/HTML/TXT from a user-supplied URL; keep site-specific policy/connector controls around it.
+- **Royal Road / other serial sites with creator-provided EPUB or RSS** — enable direct acquisition only when the site itself exposes an export/download route; otherwise retain update/metadata support separately.
+
+### Podcasts, audio feeds, and radio
+
+- **Podcast RSS** — P0 direct-content protocol. Parse enclosure URLs, MIME type, duration, GUID, publication date, chapters/transcripts where present, and incremental episode updates.
+- **Podcast Index** — use as feed resolver/metadata aggregator, then acquire episodes from canonical RSS enclosure URLs.
+- **Internet Archive audio collections** — P0/P1 direct downloadable audio collections where individual item files are exposed.
+- **Freesound API** — P1 authenticated API download provider. OAuth2 can download original sound files and complete packs; preserve sound/pack metadata and per-item license.
+- **Jamendo** — P1 conditional music-download provider. Only expose direct acquisition for records whose API fields explicitly permit audio/ZIP download.
+- **ccMixter** — P1 Creative Commons audio/remix/sample provider. Its site exposes streams/downloads and RSS/Atom-style Sample Pool metadata with CC license information; useful for tracks, samples and stem ZIPs.
+- **Musopen** — P1 public-domain/classical recording and sheet-music provider. Supports free downloadable recordings and PDFs.
+- **Radio Browser** — `stream_only` connector for live stations; model live stream URLs as streams rather than permanent downloaded works.
+
+### Music storefront / owned-library connectors
+
+- **Bandcamp** — P1 authenticated-owned-library connector. Purchases can be downloaded from the user's collection/purchases pages in MP3 V0, MP3 320, FLAC, AAC, Ogg Vorbis, ALAC, WAV and AIFF. Model this as user-authenticated owned-content retrieval rather than a public catalog API.
+- **GOG music/soundtrack extras** — where purchased games expose soundtrack/extras as downloadable files, treat these as child assets of the owned game.
+- **Jamendo / Freesound / ccMixter / Musopen** — retain public/creator-authorized acquisition modes described above.
+
+### Video
+
+- **PeerTube** — P0/P1 federated-video direct-content connector. The REST surface exposes public static video file routes in addition to metadata, channels and playlists. Preserve the originating instance and ActivityPub IDs.
+- **Internet Archive movies/video** — P0 video file connector with multiple derivatives/formats and captions where available.
+- **NASA video library** — P1 downloadable public media, including caption files.
+- **Blender Studio/Open Movies and Blender demo files** — P1 downloadable open-movie/project asset connector.
+- **creator-hosted RSS/Atom/video feeds** — generic enclosure/direct-link support.
+- **Vimeo/YouTube/Dailymotion** — metadata/playback connectors unless the official API/account state explicitly provides a download for that specific item.
+
+### Game stores and owned software libraries
+
+- **GOG** — P0/P1 authenticated-owned-library connector. GOG explicitly provides offline backup game installers and DLC installers from a user's account. Import ownership, versions, platform/language, installer parts, extras and checksums where obtainable.
+- **itch.io** — P0/P1 authenticated-owned-library connector. Official API can enumerate owned download keys from purchases, claims, bundles and gifts; use supported authenticated download flows for files tied to those entitlements. Keep browse-page RSS as the public discovery side.
+- **Humble Bundle / Humble library** — candidate authenticated-owned-library connector for DRM-free games, ebooks, comics, audio and software from the user's purchases if a stable supported integration/browser-session flow can be maintained.
+- **Steam** — library/installation connector only through supported Steam client/API mechanisms.
+- **Epic Games Store** — owned-library/installation candidate through official client/platform mechanisms.
+- **Internet Archive software collections** — metadata/file connector where item files are publicly exposed.
+
+### Game-development assets / reusable media
+
+- **Kenney** — P1 downloadable game-asset provider. Asset pages expose ZIP downloads, categories, file counts, versions and CC0 licensing; useful for 2D, 3D, UI, textures, audio and development packs.
+- **OpenGameArt** — P1 downloadable asset connector. Individual submissions expose files, creator, tags, collections and explicit license fields. Begin with a conservative page/RSS adapter if permitted rather than assuming a mature public API.
+- **Freesound** — sound-effect/sample provider as above.
+- **Blender demo/open-movie files** — 3D scenes, animation, textures and project files.
+- **itch.io asset packs** — public/free discovery via RSS plus authenticated entitlement/download for claimed/purchased packs.
+- **Openverse** — discovery layer for open images/audio; follow upstream content URLs while preserving provider/source/license.
+- **Wikimedia Commons** — images/audio/video/3D/document files.
+- **NASA media** — images/audio/video.
+
+### Sheet music / scores / source media
+
+- **IMSLP** — P1 candidate score/recording connector. IMSLP exposes a MediaWiki API and downloadable score/media files; build metadata discovery through MediaWiki and a separate file-link resolver.
+- **Musopen** — P1 downloadable score PDF and recording provider.
+- **Mutopia Project** — candidate open/public-domain sheet-music connector; investigate machine-readable indexes and downloadable PDF/MIDI/LilyPond/other source formats.
+- **Wikimedia Commons** — score images/PDF/MIDI/audio where cataloged.
+
+### 3D models / printable and creative source files
+
+Treat downloadable creative assets as a supported media subtype even when they are not traditional books/movies/music.
+
+Candidate connectors:
+
+- **Printables**
+- **Thingiverse**
+- **MakerWorld**
+- **Thangs**
+- **MyMiniFactory**
+- **Cults3D**
+- **NASA 3D Resources**
+- **Smithsonian 3D/Open Access**
+- **Internet Archive 3D items**
+- **Wikimedia Commons 3D files**
+- **OpenGameArt / Kenney / itch.io asset packs**
+
+Track model/project page, author, license, version/revision, STL/3MF/OBJ/STEP/source files, images, remix/source relationships, print profiles, compatible machine/material metadata when exposed, and download entitlement state.
+
+### Comics and graphic media
+
+- **Internet Archive comics/periodicals** — downloadable CBZ/PDF/image/derived formats when exposed.
+- **Digital Comic Museum** — candidate public-domain comic download connector; investigate supported access pattern before implementation.
+- **Comic Book Plus** — candidate public-domain/permissioned comic and pulp download connector; investigate supported automation/terms before implementation.
+- **MangaDex** — retain metadata/chapter provider separately from acquisition; any page/chapter-file integration should use its documented API/acceptable-use model.
+- **DriveThruComics / DriveThruRPG library** — authenticated-owned digital acquisitions where exposed by the user's library.
+
+### Bulk/local mirror sources
+
+Some providers should support optional large-scale synchronization rather than one-file-at-a-time retrieval:
+
+- Project Gutenberg mirrors/harvest routes
+- Internet Archive collections via official client/search download
+- Wikimedia dumps/media categories where appropriate
+- Semantic Scholar/OpenAlex/other bulk metadata datasets
+- franchise wiki database dumps
+- MAME/software-list XML metadata
+- provider-supplied OPDS/OAI-PMH/IIIF Change Discovery feeds
+
+Bulk sync should have storage quotas, resume/checkpoint support, checksums, deduplication and source-level enable/disable controls.
+
+### Acquisition routing
+
+Add a provider-independent interface:
+
+- `media.acquire.plan(entity_id)`
+- `media.acquire.sources(entity_id)`
+- `media.acquire.resolve(provider_item_id)`
+- `media.acquire.list_files(provider_item_id)`
+- `media.acquire.download(file_id, destination)`
+- `media.acquire.sync_collection(provider_id, collection_id)`
+- `media.acquire.verify(file_id)`
+- `media.acquire.import(file_id)`
+
+The planner should be able to return multiple routes for the same logical work, such as an open file, owned-store purchase, self-hosted copy, feed enclosure, local-file match or stream-only availability. The metadata graph should deduplicate these routes under the same logical entity instead of creating duplicate media records.

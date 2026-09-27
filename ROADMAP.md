@@ -1324,3 +1324,160 @@ Known example:
 - Unpaywall general search: retired 2026-09-18; successor route = OpenAlex works search.
 
 Do not add dead APIs as live supported providers merely because historical documentation exists. Keep a rejected/retired-provider ledger so future research does not repeatedly rediscover and attempt to integrate the same dead endpoint.
+
+
+## Continued aggregator research — serialized media, personal libraries, news, franchise data, and preservation
+
+### Webcomics / manga / serialized visual stories
+
+- **MangaDex API** — P0/P1 structured manga provider. Support manga search, authors/artists, tags, multilingual titles/descriptions, chapters, scanlation groups, cover art, publication status, and explicit manga-to-manga relations such as sequel/prequel/spin-off/alternate-story relationships. Treat hosted chapter/page acquisition as a separate capability subject to MangaDex API/acceptable-use rules and the individual content's status.
+- **ComicFury RSS** — P1 generic webcomic update source. ComicFury comics expose RSS feeds, including comic-only feeds, making it suitable for baseline + incremental page/update tracking without bespoke scraping.
+- **generic webcomic RSS/Atom** — first-class content/update adapter for independent creator sites.
+- **WEBTOON** — candidate metadata/page adapter only if a supported public or authorized integration route is available; do not depend on undocumented internal endpoints.
+- **Tapas** — candidate metadata/page adapter only if a supported public or authorized route is available.
+- **Hiveworks / SpiderForest / independent webcomic collectives** — candidate discovery sources through site indexes, per-comic RSS/feeds, sitemaps, and structured page metadata where available.
+- **Webcomic archive pages + Schema.org/OpenGraph** — generic declarative adapter for sites with clear archive navigation but no dedicated API, subject to site terms and rate limits.
+
+### Asian web novels / light novels
+
+- **Shōsetsuka ni Narō / Syosetu Developer API** — P0 Japanese web-novel metadata provider. The official API exposes works, authors, genres, keywords, publication/update timestamps, chapter count, length, completion/stop state, rankings and Atom output. Use N-code as a durable external ID.
+- **Syosetu Atom feeds** — incremental update source for tracked works.
+- **Kakuyomu** — candidate page/feed provider. Prefer publisher/creator feeds or structured metadata if exposed; no undocumented internal API dependency.
+- **Royal Road RSS** — P0/P1 serialized-fiction update provider. Individual fiction syndication feeds expose recent chapter updates, and multiple fiction IDs can be combined in one syndication feed.
+- **NovelUpdates** — valuable translation/release aggregation candidate when a supported structured path is available; retain as metadata/discovery-only until integration terms are clear.
+- **FanFicFare-supported Asian fiction sites** — use the FanFicFare meta-provider where it already has maintained adapters instead of duplicating parsing logic.
+
+### Podcasts / audio drama / radio
+
+- **Podchaser API** — P1 rich podcast aggregator. Supports podcast/episode search plus creator/guest credits, networks, transcripts, charts, similar podcasts, lists and audience metadata. Support REST for smaller integrations and optional GraphQL/bulk delivery for higher-volume configurations.
+- **Radio Browser API** — P0/P1 open internet-radio directory. Public API exposes station metadata, stream URLs, homepage/favicon, tags, country/state/language, codecs/bitrates, health status, votes/clicks and multiple playlist output formats (M3U/PLS/XSPF). Treat live stream URLs as playable sources, not downloadable permanent media.
+- **Podcast Index** — retain as the open podcast/feed identity layer and canonical RSS resolver.
+- **Listen Notes** — retain as broad full-catalog podcast/episode search.
+- **audio-drama-specific directories** — candidate enrichment providers when a documented API/feed exists; map audio dramas into the same podcast/serial graph rather than creating a disconnected system.
+
+### News, magazines, newspapers, and periodicals
+
+Add a future **Periodical / News** media family capable of representing publication → issue → article/page relationships.
+
+Provider candidates:
+
+- **Library of Congress Chronicling America via loc.gov API** — P0 historical-US-newspaper provider. Exposes title, issue and page-level search, OCR/full text, IIIF image services and structured JSON/YAML without an API key. The legacy dedicated Chronicling America API was retired in favor of loc.gov in 2025, so use the current loc.gov route.
+- **New York Times Archive API** — P1 optional publication-specific provider. Month-by-month article metadata back to 1851; requires API key and must respect NYT API terms/attribution.
+- **GDELT 2.x** — P1 global news discovery/monitoring aggregator. Useful for finding articles/events across many publishers and generating topic-specific RSS/JSON feeds; treat discovered publisher URLs as provenance, not as permission to copy article bodies.
+- **NewsAPI** — optional commercial/general-news discovery provider. Search recent articles across a large source set; metadata/link discovery only unless the originating publisher independently permits content ingestion.
+- **Trove newspapers/magazines** — retain as a cultural-heritage periodical provider.
+- **Europeana/DPLA/Internet Archive periodicals** — reuse the cultural-heritage layer for historical magazines, journals and newspapers.
+- **publisher RSS/Atom feeds** — canonical incremental source for publications that expose them.
+- **Crossref/OpenAlex** — bridge scholarly journals/articles into the same periodical model where applicable.
+
+Normalize:
+- publication
+- volume
+- issue
+- edition
+- section
+- article
+- page
+- supplement
+- column/series
+- publication date
+- correction/retraction/update
+- canonical URL
+- DOI/ISSN/LCCN/OCLC identifiers where available
+
+### Personal/self-hosted media library aggregators
+
+Treat user-owned library servers as a separate high-trust provider class. They aggregate content the user already has and can provide exact local identity, hierarchy, file paths, playback state and collections.
+
+- **Plex Media Server API** — P0 personal-library provider for movies, TV, music and other Plex library media. Import libraries, hierarchy, GUID/external IDs, collections, related/similar items, artwork, file metadata and watch state where authorized. Plex's newer metadata-provider API should also be evaluated as a way for Media Intake itself to become a Plex metadata provider.
+- **Jellyfin** — P0/P1 personal-library provider. Libraries support movies, shows, music, books, photos and mixed media; integrate through the supported server API and preserve Jellyfin item IDs plus external provider IDs.
+- **Kavita API** — P0/P1 personal ebook/comics/manga library provider. Official OpenAPI/Swagger surface and API-key authentication make it suitable for library, series, volume/chapter, reading-progress and collection import.
+- **Komga API** — P0/P1 comics/manga/ebook server provider with official REST/OpenAPI, API keys/basic auth, series/books/collections/read-progress metadata.
+- **Audiobookshelf API** — P0/P1 audiobook/podcast personal-library provider. Supports book and podcast libraries, authors, series, chapters, RSS feed links, playlists/collections and listening progress. Use the newer API-key/JWT authentication model and track API version because older static docs are deprecated.
+- **Navidrome / OpenSubsonic** — P1 personal music-library provider. OpenSubsonic/Subsonic-compatible APIs expose libraries, artists, albums, songs, genres, playlists, favorites, play queues, bookmarks, ratings/scrobbles, cover art and downloads from the user's own server.
+- **generic Subsonic/OpenSubsonic server adapter** — one protocol adapter should support Navidrome and other compatible music servers.
+- **Calibre Content Server / OPDS** — retain as P0/P1 personal ebook-library source.
+- **local filesystem + embedded metadata** — continue supporting file/folder import with hashes and embedded tags, then reconcile against public providers.
+
+Personal-library providers should have capabilities such as:
+- `owned_content`
+- `local_file_identity`
+- `playback_progress`
+- `reading_progress`
+- `user_rating`
+- `collection_membership`
+- `playlist_membership`
+- `download_from_owned_server`
+
+### Indie/open music expansion
+
+- **Audius API / SDK** — P1 open music catalog/provider for artists/users, tracks, albums/playlists, discovery/search, streaming and user libraries. Its free developer tier is large enough for normal personal use; treat stream/download semantics according to current Audius content/API rules.
+- **Bandcamp API** — optional **account/sales/provider-side** integration only. The documented API is aimed at labels and fulfillment partners and is not a public global-catalog search API, so do not use undocumented endpoints as a general Bandcamp catalog dependency.
+- **Jamendo** — retain as the open/creator music catalog with explicit `audiodownload_allowed` / `zip_allowed` enforcement.
+
+### Game catalog and preservation metadata
+
+- **TheGamesDB API** — P1 game metadata provider with title search, platform lookup, developer/publisher/genre/region/country data, images/videos, ROM-hash lookup and update logs.
+- **RetroAchievements API** — P1 retro-game identity/user-state provider. Supports game metadata, hashes, achievements, recently played/completion state and want-to-play lists. Useful as both a metadata source and a user-library/progress source.
+- **MAME software lists** — P1 machine-readable preservation metadata. MAME XML software lists encode software identity, year, publisher, alternate titles, parent/clone relationships, media parts, CRC/SHA1 hashes and compatibility/support state. Import metadata/hashes only; do not treat preservation metadata as a ROM-content source.
+- **No-Intro / Redump / TOSEC / preservation DAT ecosystems** — candidate checksum/identity providers when official redistributable DATs or supported APIs are available. Keep metadata/hashes separate from copyrighted software bytes.
+- **Giant Bomb** — mark current API integration as **degraded/unavailable** as of 2026 unless the rebuilt public API returns. Giant Bomb states that its previous Games/Characters/Companies/Concepts/Releases APIs are not currently available while its wiki stack is being rebuilt.
+- **IGDB** — strengthen to P0 for game relationship modeling because it directly exposes collections/series, franchises, DLC, expansions, remakes, remasters, ports, standalone expansions, parent games, bundles and version-parent relationships.
+
+### Franchise-specific / universe knowledge providers
+
+Use franchise-specific databases as **supplemental relationship/lore evidence**, never as the sole canonical release database.
+
+- **generic MediaWiki/Fandom adapter** — P1. MediaWiki Action/REST APIs provide search, pages, categories, links, templates, revisions and recent changes across many franchise wikis. Build one configurable adapter rather than a separate scraper per wiki.
+- **Memory Alpha** — Star Trek specialist example proving the pattern: it exposes MediaWiki API endpoints, RSS/watchlist feeds and downloadable database dumps. Respect its CC BY-NC license and keep page text/licensing provenance.
+- **UESP and other independent MediaWiki franchise wikis** — candidate configurable MediaWiki instances for Elder Scrolls and other universes; verify each site's API/usage/license before activation.
+- **PokéAPI** — P1 Pokémon-specific structured knowledge provider for generations, game versions, species, moves, abilities, types, locations and other game-world entities. Useful for franchise entity graphs, not for release tracking alone.
+- **SWAPI / maintained Star Wars API implementations** — P2 Star Wars knowledge enrichment for films, people, planets, species, vehicles and starships; treat community APIs as supplemental and validate maintenance/lifecycle.
+- **franchise-wiki database dumps** — when a wiki offers current dumps under a compatible license, prefer scheduled bulk import over hammering page APIs for large-scale indexing.
+
+Add capability flags:
+- `franchise_lore`
+- `characters`
+- `locations`
+- `organizations`
+- `in_universe_timeline`
+- `canonicality_claims`
+- `wiki_revision_monitoring`
+
+Keep fictional-universe canon claims separate from real-world release/edition relationships.
+
+### Tabletop/RPG follow-up
+
+- **Open5e v2** — upgrade from generic candidate to strong open-content provider. Its current REST API exposes source documents plus rules/resources such as creatures, spells and other open game content. Preserve source-document/license provenance on every imported record.
+- **D&D Beyond** — mark as **rejected for direct API integration** unless Wizards/D&D Beyond launches a documented public API. D&D Beyond staff/community documentation continues to state there is no supported public API; do not depend on reverse-engineered internal endpoints.
+- **RPGGeek/BoardGameGeek** — retain for publication/expansion/family metadata rather than rules text unless the specific content is licensed/open.
+
+### itch.io discovery refinement
+
+The official itch.io API is account/developer oriented, but **browse pages expose RSS feeds simply by appending `.xml`**. Add an itch.io RSS discovery adapter for:
+- free games
+- new releases
+- tagged/category browse pages
+- platform filters
+- sales/bundles where represented by supported feeds
+
+Use official authenticated API separately for the user's owned/developer-visible content and purchase proof.
+
+### New generic adapter: user media-server protocol
+
+Create a normalized internal provider interface for self-hosted media servers:
+
+- `library.list`
+- `library.search`
+- `library.items`
+- `library.item.get`
+- `library.children`
+- `library.collections`
+- `library.playlists`
+- `library.progress`
+- `library.external_ids`
+- `library.files`
+- `library.sync`
+
+Then map Plex, Jellyfin, Kavita, Komga, Audiobookshelf, Calibre/OPDS and OpenSubsonic onto it where their capabilities overlap.
+

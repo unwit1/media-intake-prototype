@@ -1201,3 +1201,87 @@ A failed provider should reduce evidence coverage, not halt the entire Add Anyth
 
 When future research discovers a service that aggregates useful metadata for any supported or plausible media type, add it to the provider registry backlog unless it is clearly unusable, unlawful to integrate, or technically irrelevant. Record why it was rejected rather than silently forgetting it.
 
+
+
+## Cultural-heritage super-aggregators and distributed collections
+
+These providers can dramatically increase cross-format discovery because each aggregates many libraries, museums, archives, universities, broadcasters, and cultural institutions rather than representing only one catalog.
+
+- **Digital Public Library of America (DPLA)** — P0/P1 US cultural-heritage aggregation. Search items and collections across many contributing repositories; preserve contributing institution, source URL, rights data, and DPLA IDs. DPLA bulk data should be considered for local indexing where appropriate.
+- **Europeana** — P0/P1 European cultural-heritage aggregation across books/text, images, audio, video, artworks and museum/archive objects. Support Search/Record APIs, rights/reusability filters, external provider links, SPARQL/OAI-PMH where useful, and media links when rights permit.
+- **Smithsonian Open Access** — P1 museum/archive/library metadata with open-access media links for eligible public-domain objects. Preserve Smithsonian unit/collection provenance and rights.
+- **Library of Congress loc.gov API** — P1 cross-format discovery for digitized books, audio, film/video, maps, newspapers, manuscripts, photographs, web archives and notated music. Also investigate MARC/linked-data routes for broader bibliographic identity.
+- **Trove (National Library of Australia)** — P1 cross-format aggregator for books, newspapers/magazines, images, research, music, diaries, people/organizations and related Australian collections.
+- **DigitalNZ** — P1 aggregator across images, audio, video, books, newspapers, manuscripts, research papers, articles, archives, data and web pages. Its API exposes source pointers and rights metadata rather than pretending DigitalNZ owns the underlying content.
+- **HathiTrust** — P1 bibliographic/full-view discovery where supported; content access must remain rights-aware.
+- **institutional/repository networks** — treat OAI-PMH, IIIF, OPDS and repository APIs as generic sources so individual universities, museums and archives can be added without bespoke code.
+
+### IIIF support
+
+Add **IIIF Presentation API** and **IIIF Change Discovery API** to generic protocol adapters.
+
+IIIF support should allow Media Intake to:
+
+- ingest manifests as structured media/container records
+- preserve canvases/pages/sequences
+- follow `seeAlso`, `rendering`, `homepage`, `provider`, `requiredStatement` and rights metadata
+- discover linked OCR/text/metadata representations
+- use Image API services for permitted image retrieval
+- use Change Discovery to detect additions, updates and deletions in large collections
+- map manifests into collection/item/page relationships without assuming every canvas is a distinct creative work
+
+IIIF is especially valuable because one adapter can unlock many libraries, archives, museums and cultural aggregators.
+
+## Mods / user-created game content as a future Media family
+
+Treat mods, modpacks, curated collections and other creator-distributed game content as a plausible future media/content family rather than forcing them into the base-game schema.
+
+Add provider candidates:
+
+- **Nexus Mods API** — mods, files/versions, games, collections and update metadata. Especially useful for existing Agent OS/mod-research workflows and future Media Intake tracking.
+- **Modrinth API** — projects, versions, dependencies, loaders, game versions, categories, licenses, galleries and update dates.
+- **CurseForge API** — candidate mod/modpack/addon metadata provider subject to API-key/terms review.
+- **Thunderstore API** — candidate package/community/version/dependency metadata provider.
+- **itch.io API** — authenticated user-owned/developer catalog integration and proof-of-ownership/download workflows where official API capabilities permit; do not assume it provides a global searchable catalog API.
+- **Steam Workshop** — candidate workshop/item metadata via supported Steam APIs where available.
+
+Normalized mod-content entities should support:
+
+- project/mod
+- modpack/collection
+- file/version
+- dependency
+- optional dependency
+- incompatibility
+- game
+- game version
+- loader/framework
+- author/team
+- collection/list
+- release/update
+- archived/deleted release
+
+This family should reuse the same provider registry, relationship graph, release monitoring, rights/provenance, and user-library concepts.
+
+## Research/data super-aggregators
+
+Add these higher-order research aggregators because they already reconcile records from many repositories and identifier systems:
+
+- **OpenAIRE Graph** — publications, datasets, software and other research products aggregated from Crossref, DataCite, DOAJ, repositories, ORCID-linked records and other sources; useful as a deduplicated discovery layer.
+- **DataCite** — DOI metadata for datasets, software, publications and other research outputs; public REST API plus OAI-PMH/bulk options.
+- **Europe PMC** — life-sciences publications/preprints, open-access/full-text links, references, citations and text-mined entities.
+- **LibraryThing thingISBN/thingTitle** — useful specialist work/edition equivalence evidence by mapping ISBNs that belong to the same logical work.
+- **WorldCat/OCLC** — valuable bibliographic/holdings source but access is subscription-gated; represent it as an optional enterprise/library provider rather than a default dependency.
+
+## Provider selection policy additions
+
+When multiple layers exist, prefer efficient aggregation before fan-out:
+
+1. Resolve against a high-coverage aggregator/ID bridge.
+2. Use returned external IDs to query specialist databases deterministically.
+3. Query first-party sources for volatile/release-critical claims.
+4. Fan out to weaker fuzzy-search providers only when unresolved fields remain.
+5. Cache normalized results and provenance.
+6. Preserve provider disagreement instead of selecting a silent winner.
+
+This should reduce API calls while increasing coverage and identity precision.

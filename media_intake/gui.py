@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import uuid
 import tkinter as tk
 import urllib.parse
 import webbrowser
@@ -18,14 +19,17 @@ from .core import connect, download, enqueue, list_items
 from .comics import (list_comicvine_issues, mangadex_id_from_url, search_anilist,
                      search_comicvine, search_mangadex, search_taddy)
 from .comic_sources import search_getcomics, search_public_domain_comic_mirror
-from .discovery import CATEGORY_CONNECTORS, CATEGORIES, search_media_category
+from .discovery import (CATEGORIES, METADATA_CONNECTORS, connected_download_sources,
+                       get_download_priority, save_download_priority,
+                       search_media_category)
 from .fmhy import candidates
+from .irc import enqueue_irc
 from .media_catalogs import (search_lnori, search_mangaupdates, search_novelarchive,
                              search_ranobedb)
 from .rights_evidence import (effective_work_rights, ensure_rights_evidence,
                               load_rights_evidence, set_work_rights)
 from .serial import discover_feed, enqueue_serial
-from .sources import (resolve_detail, search_forum_threads, search_openlibrary,
+from .sources import (resolve_detail, search_forum_threads,
                       search_openlibrary_metadata, search_site)
 from .watched import (add_from_goodreads, add_from_goodreads_metadata, add_watch, get_setting, list_watches,
                       fetch_goodreads, parse_goodreads_html, parse_goodreads_search_html,
@@ -54,6 +58,9 @@ class MediaIntakeApp:
         self.source = tk.StringVar(value='All connected in category')
         self.search_category = tk.StringVar(value='Books')
         self.search_category_info = tk.StringVar()
+        self.settings_category = None
+        self.priority_view = None
+        self.priority_status = tk.StringVar(value='')
         self.site_base = tk.StringVar()
         self.title = tk.StringVar()
         self.author = tk.StringVar()
@@ -73,7 +80,6 @@ class MediaIntakeApp:
         self.taddy_user_id = os.environ.get('TADDY_USER_ID', '').strip()
         self.taddy_api_key = os.environ.get('TADDY_API_KEY', '').strip()
         self.watch_goodreads_profile = {}
-        self.watch_openlibrary = tk.BooleanVar(value=get_setting(self.db, 'watch_openlibrary', '1') == '1')
         self.watch_libgen = tk.BooleanVar(value=get_setting(self.db, 'watch_libgen', '1') == '1')
         self.watch_annas = tk.BooleanVar(value=get_setting(self.db, 'watch_annas', '1') == '1')
         self.watch_libgen_base = tk.StringVar(value=get_setting(self.db, 'watch_libgen_base', ''))
@@ -81,6 +87,8 @@ class MediaIntakeApp:
         self.watch_opds_feeds = tk.StringVar(value=get_setting(self.db, 'watch_opds_feeds', ''))
         self.watch_catalogs = tk.StringVar(value=get_setting(self.db, 'watch_catalogs', ''))
         self.watch_irc_configs = tk.StringVar(value=get_setting(self.db, 'watch_irc_configs', irc_default))
+        self.irc_sources = self._load_irc_sources()
+        self.irc_sources_view = None
         self.watch_rows = []
         self.watch_scan_running = False
         self._saved_watch_sources = None
@@ -103,6 +111,7 @@ class MediaIntakeApp:
         self._build()
         self.refresh_queue()
         self.refresh_watches()
+        self.root.after(1000, self._poll_queue)
         self.root.after(1500, self._schedule_watch_scan)
 
     def _configure_logging(self):
@@ -128,19 +137,35 @@ class MediaIntakeApp:
         ttk.Entry(toolbar, textvariable=tk.StringVar(value=str(self.data_root)), width=58, state='readonly').pack(side='left', padx=6)
         ttk.Button(toolbar, text='Choose…', command=self.choose_root).pack(side='left')
         ttk.Button(toolbar, text='Open logs', command=self.open_logs).pack(side='left', padx=6)
+        rights_actions = ttk.Frame(toolbar)
+        rights_actions.pack(side='right', padx=(8, 0))
+        ttk.Button(rights_actions, text='Open rights file', command=self.open_rights_evidence).pack(side='left')
+        ttk.Button(rights_actions, text='Edit rights evidence', command=self.edit_watch_rights).pack(side='left', padx=(6, 0))
         ttk.Label(toolbar, textvariable=self.status).pack(side='right')
 
         tabs = ttk.Notebook(self.root)
+        self.main_tabs = tabs
         tabs.pack(fill='both', expand=True, padx=8, pady=(0, 8))
         search_tab = ttk.Frame(tabs, padding=8)
         queue_tab = ttk.Frame(tabs, padding=8)
         watched_tab = ttk.Frame(tabs, padding=8)
+        settings_tab = ttk.Frame(tabs, padding=8)
         tabs.add(search_tab, text='Search and add')
         tabs.add(queue_tab, text='Queue')
         tabs.add(watched_tab, text='Watched')
+        tabs.add(settings_tab, text='Settings')
         self._build_search(search_tab)
         self._build_queue(queue_tab)
         self._build_watched(watched_tab)
+        self._build_settings(settings_tab)
+        tabs.bind('<<NotebookTabChanged>>', self._on_main_tab_changed)
+
+    def _on_main_tab_changed(self, _event=None):
+        if not self.main_tabs:
+            return
+        selected = self.main_tabs.select()
+        if selected and self.main_tabs.tab(selected, 'text') == 'Settings':
+            self._render_download_priority()
 
     def choose_root(self):
         chosen = filedialog.askdirectory(initialdir=str(self.data_root), title='Choose Media Intake data folder')
@@ -152,7 +177,6 @@ class MediaIntakeApp:
         self.db = connect(self.data_root)
         self._saved_watch_sources = None
         self.library_folder.set(get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
-        self.watch_openlibrary.set(get_setting(self.db, 'watch_openlibrary', '1') == '1')
         self.watch_libgen.set(get_setting(self.db, 'watch_libgen', '1') == '1')
         self.watch_annas.set(get_setting(self.db, 'watch_annas', '1') == '1')
         self.watch_libgen_base.set(get_setting(self.db, 'watch_libgen_base', ''))
@@ -162,6 +186,8 @@ class MediaIntakeApp:
         self.watch_comic_mirror_base.set(get_setting(self.db, 'watch_comic_mirror_base', ''))
         irc_default = str(self.default_irc_config) if self.default_irc_config.is_file() else ''
         self.watch_irc_configs.set(get_setting(self.db, 'watch_irc_configs', irc_default))
+        self.irc_sources = self._load_irc_sources()
+        self._render_irc_sources()
         self.refresh_queue()
         self.refresh_watches()
 
@@ -180,15 +206,16 @@ class MediaIntakeApp:
         ttk.Button(controls, text='Search all connected sources', command=self.search).pack(side='left')
         advanced = ttk.Frame(parent)
         advanced.pack(fill='x', pady=(4, 0))
-        ttk.Label(advanced, text='Single connector (optional)').pack(side='left')
+        ttk.Label(advanced, text='Search one source (metadata or download)').pack(side='left')
         ttk.Combobox(advanced, textvariable=self.source, state='readonly', width=27,
-                     values=['All connected in category', 'Open Library', 'LibGen', "Anna's Archive",
-                             'FMHY directory', 'Snahp forum threads', 'NovelArchive', 'LNORI',
-                             'RanobeDB', 'MangaUpdates', 'GetComics',
-                             'Public-domain comic mirror']).pack(side='left', padx=6)
+                     values=['All connected in category', 'Open Library (metadata)', 'LibGen (download)', "Anna's Archive (download)",
+                             'FMHY directory', 'Snahp forum threads', 'NovelArchive (metadata)', 'LNORI (metadata)',
+                             'RanobeDB (metadata)', 'MangaUpdates (metadata)', 'GetComics (download)',
+                             'Public-domain comic mirror (download)']).pack(side='left', padx=6)
         ttk.Entry(advanced, textvariable=self.site_base, width=28).pack(side='left', padx=4)
         ttk.Button(advanced, text='Snahp browser helper', command=self.open_forum_helper).pack(side='left', padx=6)
-        ttk.Label(parent, textvariable=self.search_category_info).pack(anchor='w', pady=(4, 6))
+        ttk.Label(parent, textvariable=self.search_category_info,
+                  wraplength=920, justify='left').pack(anchor='w', pady=(4, 6))
         self._update_search_category_info()
         ttk.Label(parent, text='Optional site base URL (LibGen, Anna’s Archive, or a separate public-domain comic mirror)').pack(anchor='w', pady=(4, 6))
 
@@ -202,7 +229,7 @@ class MediaIntakeApp:
         buttons = ttk.Frame(parent)
         buttons.pack(fill='x', pady=(8, 0))
         ttk.Button(buttons, text='Queue selected result', command=self.queue_result).pack(side='left')
-        ttk.Button(buttons, text='Add catalog result to Watched',
+        ttk.Button(buttons, text='Watch selected title',
                    command=self.add_selected_search_to_watched).pack(side='left', padx=6)
         ttk.Button(buttons, text='Open selected link', command=self.open_selected_link).pack(side='left')
 
@@ -214,9 +241,9 @@ class MediaIntakeApp:
         ttk.Button(add, text='Add to queue', command=self.add_direct).pack(side='left', padx=6)
 
     def _build_queue(self, parent):
-        columns = ('id', 'title', 'author', 'format', 'state', 'file')
+        columns = ('id', 'title', 'author', 'format', 'state', 'progress', 'file')
         self.queue_view = ttk.Treeview(parent, columns=columns, show='headings', selectmode='browse')
-        for col, width in (('id', 45), ('title', 260), ('author', 180), ('format', 70), ('state', 100), ('file', 360)):
+        for col, width in (('id', 45), ('title', 190), ('author', 140), ('format', 60), ('state', 90), ('progress', 235), ('file', 250)):
             self.queue_view.heading(col, text=col.title())
             self.queue_view.column(col, width=width, anchor='w')
         self.queue_view.pack(fill='both', expand=True)
@@ -224,6 +251,315 @@ class MediaIntakeApp:
         buttons.pack(fill='x', pady=(8, 0))
         ttk.Button(buttons, text='Refresh', command=self.refresh_queue).pack(side='left')
         ttk.Button(buttons, text='Download selected', command=self.download_selected).pack(side='left', padx=6)
+
+    def _build_settings(self, parent):
+        pages = ttk.Notebook(parent)
+        pages.pack(fill='both', expand=True)
+        priority_page = ttk.Frame(pages, padding=8)
+        irc_page = ttk.Frame(pages, padding=8)
+        pages.add(priority_page, text='Download priority')
+        pages.add(irc_page, text='IRC sources')
+        self._build_irc_sources(irc_page)
+
+        ttk.Label(priority_page, text='Download source priority',
+                  font=('TkDefaultFont', 11, 'bold')).pack(anchor='w')
+        ttk.Label(
+            priority_page,
+            text=('Choose a media category, then move its connected download sources into priority order. '
+                  'Metadata repositories are searched separately and never need download approval here. '
+                  'Books prefer EPUB, then PDF, AZW3, MOBI, TXT, and audiobook formats; source priority breaks ties.'),
+            wraplength=900, justify='left').pack(anchor='w', pady=(4, 10))
+
+        body = ttk.Frame(priority_page)
+        body.pack(fill='both', expand=True)
+        category_frame = ttk.LabelFrame(body, text='Media categories')
+        category_frame.pack(side='left', fill='y', padx=(0, 10))
+        self.settings_category = tk.Listbox(category_frame, exportselection=False, width=22,
+                                            height=min(len(CATEGORIES), 14))
+        self.settings_category.pack(fill='y', expand=True, padx=6, pady=6)
+        for category in CATEGORIES:
+            self.settings_category.insert('end', category)
+        self.settings_category.bind('<<ListboxSelect>>', self._select_priority_category)
+
+        sources_frame = ttk.LabelFrame(body, text='Connected download sources (top is highest priority)')
+        sources_frame.pack(side='left', fill='both', expand=True)
+        self.priority_view = ttk.Treeview(
+            sources_frame, columns=('rank', 'source'), show='headings', selectmode='browse', height=12)
+        self.priority_view.heading('rank', text='Priority')
+        self.priority_view.heading('source', text='Download source')
+        self.priority_view.column('rank', width=75, stretch=False, anchor='center')
+        self.priority_view.column('source', width=400, anchor='w')
+        self.priority_view.pack(side='left', fill='both', expand=True, padx=(6, 0), pady=6)
+        controls = ttk.Frame(sources_frame)
+        controls.pack(side='left', fill='y', padx=8, pady=6)
+        ttk.Button(controls, text='Move up', command=lambda: self._move_priority(-1)).pack(fill='x', pady=(0, 5))
+        ttk.Button(controls, text='Move down', command=lambda: self._move_priority(1)).pack(fill='x', pady=5)
+        ttk.Button(controls, text='Reset order', command=self._reset_priority).pack(fill='x', pady=(12, 5))
+        ttk.Label(priority_page, textvariable=self.priority_status).pack(anchor='w', pady=(8, 0))
+        self.settings_category.selection_set(0)
+        self._render_download_priority()
+
+    def _load_irc_sources(self):
+        try:
+            sources = json.loads(get_setting(self.db, 'watch_irc_sources', '[]'))
+        except (TypeError, ValueError):
+            sources = []
+        sources = [source for source in sources if isinstance(source, dict)] if isinstance(sources, list) else []
+        remaining_paths = []
+        migrated = False
+        for config_path in (value.strip() for value in self.watch_irc_configs.get().split(';')):
+            if not config_path:
+                continue
+            try:
+                config = json.loads(Path(config_path).read_text(encoding='utf-8'))
+                if not isinstance(config, dict) or not config.get('server') or not config.get('channel'):
+                    raise ValueError('IRC config needs server and channel')
+                sources.append({
+                    'id': uuid.uuid4().hex,
+                    'name': Path(config_path).stem or config['server'],
+                    'server': config['server'], 'port': int(config.get('port', 6697)),
+                    'tls': bool(config.get('tls', True)),
+                    'nick': config.get('nick') or 'MediaIntake',
+                    'channel': config['channel'],
+                    'password_env': config.get('password_env') or '',
+                    'timeout': int(config.get('timeout', 180)),
+                    'categories': list(CATEGORIES), 'enabled': True,
+                })
+                migrated = True
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                remaining_paths.append(config_path)
+        if migrated:
+            self.watch_irc_configs.set(';'.join(remaining_paths))
+            set_setting(self.db, 'watch_irc_sources', json.dumps(sources, ensure_ascii=False))
+            set_setting(self.db, 'watch_irc_configs', ';'.join(remaining_paths))
+        return sources
+
+    def _build_irc_sources(self, parent):
+        ttk.Label(parent, text='IRC search sources',
+                  font=('TkDefaultFont', 11, 'bold')).pack(anchor='w')
+        ttk.Label(parent,
+                  text=('Each row is one server, nickname, and channel. Assign the media categories it can search. '
+                        'Sources are tried from top to bottom for that category; the next IRC source is queried only '
+                        'when the earlier source has no matching files. Passwords stay in environment variables.'),
+                  wraplength=900, justify='left').pack(anchor='w', pady=(4, 10))
+        body = ttk.Frame(parent)
+        body.pack(fill='both', expand=True)
+        columns = ('priority', 'name', 'server', 'nickname', 'channel', 'categories')
+        self.irc_sources_view = ttk.Treeview(body, columns=columns, show='headings',
+                                             selectmode='browse', height=13)
+        for column, width in (('priority', 65), ('name', 130), ('server', 145),
+                              ('nickname', 105), ('channel', 120), ('categories', 280)):
+            self.irc_sources_view.heading(column, text='Priority' if column == 'priority' else column.title())
+            self.irc_sources_view.column(column, width=width, anchor='w', stretch=column == 'categories')
+        self.irc_sources_view.pack(side='left', fill='both', expand=True)
+        buttons = ttk.Frame(body)
+        buttons.pack(side='left', fill='y', padx=(8, 0))
+        ttk.Button(buttons, text='Add source', command=self.add_irc_source).pack(fill='x', pady=(0, 5))
+        ttk.Button(buttons, text='Edit selected', command=self.edit_irc_source).pack(fill='x', pady=5)
+        ttk.Button(buttons, text='Remove selected', command=self.remove_irc_source).pack(fill='x', pady=5)
+        ttk.Separator(buttons).pack(fill='x', pady=8)
+        ttk.Button(buttons, text='Move up', command=lambda: self.move_irc_source(-1)).pack(fill='x', pady=5)
+        ttk.Button(buttons, text='Move down', command=lambda: self.move_irc_source(1)).pack(fill='x', pady=5)
+        self._render_irc_sources()
+
+    def _render_irc_sources(self, selected_id=None):
+        if not self.irc_sources_view:
+            return
+        for row in self.irc_sources_view.get_children():
+            self.irc_sources_view.delete(row)
+        for index, source in enumerate(self.irc_sources, 1):
+            categories = [category for category in CATEGORIES
+                          if category in (source.get('categories') or [])]
+            name = source.get('name') or source.get('server') or ''
+            self.irc_sources_view.insert(
+                '', 'end', iid=str(source.get('id') or index - 1),
+                values=(index, name, source.get('server') or '', source.get('nick') or '', source.get('channel') or '',
+                        ', '.join(categories)))
+        if selected_id and self.irc_sources_view.exists(str(selected_id)):
+            self.irc_sources_view.selection_set(str(selected_id))
+            self.irc_sources_view.see(str(selected_id))
+
+    def _selected_irc_source_index(self):
+        if not self.irc_sources_view:
+            return None
+        selected = self.irc_sources_view.selection()
+        if not selected:
+            return None
+        selected_id = selected[0]
+        return next((index for index, source in enumerate(self.irc_sources)
+                     if str(source.get('id') or index) == selected_id), None)
+
+    def _save_irc_sources(self, selected_id=None):
+        self.irc_sources = list(self.irc_sources)
+        set_setting(self.db, 'watch_irc_sources', json.dumps(self.irc_sources, ensure_ascii=False))
+        self._saved_watch_sources = None
+        self._watch_sources()
+        self._render_irc_sources(selected_id)
+        self._render_download_priority()
+
+    def add_irc_source(self):
+        self._edit_irc_source_dialog()
+
+    def edit_irc_source(self):
+        index = self._selected_irc_source_index()
+        if index is None:
+            return
+        self._edit_irc_source_dialog(index)
+
+    def _edit_irc_source_dialog(self, edit_index=None):
+        existing = dict(self.irc_sources[edit_index]) if edit_index is not None else {}
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Edit IRC source' if existing else 'Add IRC source')
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        form = ttk.Frame(dialog, padding=12)
+        form.pack(fill='both', expand=True)
+        values = {
+            'name': tk.StringVar(value=existing.get('name', '')),
+            'server': tk.StringVar(value=existing.get('server', '')),
+            'port': tk.StringVar(value=str(existing.get('port', 6697))),
+            'nick': tk.StringVar(value=existing.get('nick', 'MediaIntake')),
+            'channel': tk.StringVar(value=existing.get('channel', '')),
+            'password_env': tk.StringVar(value=existing.get('password_env', '')),
+        }
+        labels = (('Name (optional)', 'name'), ('Server', 'server'), ('Port', 'port'),
+                  ('Nickname', 'nick'), ('Channel', 'channel'),
+                  ('Password environment variable (optional)', 'password_env'))
+        for row, (label, key) in enumerate(labels):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky='w', padx=(0, 10), pady=4)
+            ttk.Entry(form, textvariable=values[key], width=43).grid(row=row, column=1, sticky='ew', pady=4)
+        tls = tk.BooleanVar(value=existing.get('tls', True))
+        ttk.Checkbutton(form, text='Use TLS', variable=tls).grid(
+            row=len(labels), column=1, sticky='w', pady=(4, 8))
+        ttk.Label(form, text='Search these categories').grid(
+            row=len(labels) + 1, column=0, sticky='nw', padx=(0, 10), pady=4)
+        categories = tk.Listbox(form, selectmode='multiple', exportselection=False,
+                                height=min(len(CATEGORIES), 9), width=40)
+        categories.grid(row=len(labels) + 1, column=1, sticky='ew', pady=4)
+        for category in CATEGORIES:
+            categories.insert('end', category)
+        assigned = set(existing.get('categories') or (CATEGORIES[0],))
+        for index, category in enumerate(CATEGORIES):
+            if category in assigned:
+                categories.selection_set(index)
+        buttons = ttk.Frame(form)
+        buttons.grid(row=len(labels) + 2, column=0, columnspan=2, sticky='e', pady=(10, 0))
+
+        def save():
+            server = values['server'].get().strip()
+            nick = values['nick'].get().strip()
+            channel = values['channel'].get().strip()
+            password_env = values['password_env'].get().strip()
+            try:
+                port = int(values['port'].get().strip())
+            except ValueError:
+                messagebox.showerror('IRC source', 'Port must be a number from 1 to 65535.', parent=dialog)
+                return
+            selected_categories = [CATEGORIES[index] for index in categories.curselection()]
+            valid_server = bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*[A-Za-z0-9]', server))
+            if (not valid_server or '..' in server or not 1 <= port <= 65535
+                    or not re.fullmatch(r'[\w\-\[\]{}^|`]{1,30}', nick)
+                    or not re.fullmatch(r'#[\w\-\[\]{}^|`]+', channel)
+                    or (password_env and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', password_env))
+                    or not selected_categories):
+                messagebox.showerror(
+                    'IRC source',
+                    'Enter a valid server, nickname, channel, port, optional environment variable, and at least one category.',
+                    parent=dialog)
+                return
+            source = {
+                'id': existing.get('id') or uuid.uuid4().hex,
+                'name': values['name'].get().strip()[:80] or f'{server} {channel}',
+                'server': server, 'port': port, 'tls': tls.get(), 'nick': nick,
+                'channel': channel, 'password_env': password_env,
+                'timeout': int(existing.get('timeout', 180)),
+                'categories': selected_categories, 'enabled': True,
+            }
+            if edit_index is None:
+                self.irc_sources.append(source)
+            else:
+                self.irc_sources[edit_index] = source
+            dialog.destroy()
+            self._save_irc_sources(source['id'])
+
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=(6, 0))
+        ttk.Button(buttons, text='Save source', command=save).pack(side='right')
+        dialog.grab_set()
+        dialog.wait_window()
+
+    def remove_irc_source(self):
+        index = self._selected_irc_source_index()
+        if index is None:
+            return
+        source = self.irc_sources.pop(index)
+        self._save_irc_sources()
+
+    def move_irc_source(self, direction):
+        index = self._selected_irc_source_index()
+        target = index + direction if index is not None else None
+        if target is None or target < 0 or target >= len(self.irc_sources):
+            return
+        self.irc_sources[index], self.irc_sources[target] = self.irc_sources[target], self.irc_sources[index]
+        self._save_irc_sources(self.irc_sources[target].get('id'))
+
+    def _selected_settings_category(self):
+        if not self.settings_category:
+            return None
+        selected = self.settings_category.curselection()
+        return self.settings_category.get(selected[0]) if selected else None
+
+    def _select_priority_category(self, _event=None):
+        self._render_download_priority()
+
+    def _render_download_priority(self, selected_source=None):
+        if not self.priority_view:
+            return
+        category = self._selected_settings_category()
+        for row in self.priority_view.get_children():
+            self.priority_view.delete(row)
+        if not category:
+            self.priority_status.set('Choose a media category.')
+            return
+        options = self._watch_sources()
+        ordered = get_download_priority(self.db, category, options)
+        if not ordered:
+            self.priority_status.set(f'No connected download sources for {category}.')
+            return
+        for rank, source in enumerate(ordered, start=1):
+            self.priority_view.insert('', 'end', iid=str(rank - 1), values=(rank, source))
+        if selected_source in ordered:
+            self.priority_view.selection_set(str(ordered.index(selected_source)))
+        else:
+            self.priority_view.selection_set('0')
+        self.priority_status.set(f'Priority order saved for {category}.')
+
+    def _move_priority(self, direction):
+        category = self._selected_settings_category()
+        if not category or not self.priority_view:
+            return
+        selected = self.priority_view.selection()
+        if not selected:
+            return
+        ordered = [self.priority_view.item(row, 'values')[1]
+                   for row in self.priority_view.get_children()]
+        index = int(selected[0])
+        target = index + direction
+        if target < 0 or target >= len(ordered):
+            return
+        ordered[index], ordered[target] = ordered[target], ordered[index]
+        save_download_priority(self.db, category, ordered, self._watch_sources())
+        self._render_download_priority(ordered[target])
+
+    def _reset_priority(self):
+        category = self._selected_settings_category()
+        if not category:
+            return
+        defaults = connected_download_sources(category, self._watch_sources())
+        if not defaults:
+            self._render_download_priority()
+            return
+        save_download_priority(self.db, category, defaults, self._watch_sources())
+        self._render_download_priority(defaults[0])
 
     def _build_watched(self, parent):
         destination = ttk.LabelFrame(parent, text='Saved library folder')
@@ -283,10 +619,8 @@ class MediaIntakeApp:
         options.pack(fill='x', pady=(0, 8))
         line = ttk.Frame(options)
         line.pack(fill='x', padx=6, pady=(5, 2))
-        ttk.Checkbutton(line, text='Open Library', variable=self.watch_openlibrary,
-                        command=self._watch_sources).pack(side='left')
         ttk.Checkbutton(line, text='LibGen', variable=self.watch_libgen,
-                        command=self._watch_sources).pack(side='left', padx=(10, 0))
+                        command=self._watch_sources).pack(side='left')
         ttk.Label(line, text='Base URL').pack(side='left', padx=(4, 0))
         libgen_base_entry = ttk.Entry(line, textvariable=self.watch_libgen_base, width=27)
         libgen_base_entry.pack(side='left', padx=5)
@@ -312,11 +646,11 @@ class MediaIntakeApp:
 
         line = ttk.Frame(options)
         line.pack(fill='x', padx=6, pady=(2, 5))
-        ttk.Label(line, text='IRC configs (; separated)').pack(side='left')
+        ttk.Label(line, text='Legacy IRC configs').pack(side='left')
         irc_configs_entry = ttk.Entry(line, textvariable=self.watch_irc_configs, width=80)
         irc_configs_entry.pack(side='left', padx=5, fill='x', expand=True)
         irc_configs_entry.bind('<FocusOut>', lambda _event: self._watch_sources())
-        ttk.Button(line, text='Choose', command=self.choose_irc_configs).pack(side='left')
+        ttk.Button(line, text='Import into Settings', command=self.choose_irc_configs).pack(side='left')
         line = ttk.Frame(options)
         line.pack(fill='x', padx=6, pady=(2, 5))
         ttk.Label(line, text='Public-domain comic mirror base').pack(side='left')
@@ -339,8 +673,6 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Check watched now', command=lambda: self._run_watch_scan(force=True)).pack(side='left', padx=6)
         ttk.Button(buttons, text='Discover related', command=self.discover_watched_relationships).pack(side='left', padx=6)
         ttk.Button(buttons, text='Remove selected', command=self.delete_watched).pack(side='left')
-        ttk.Button(buttons, text='Edit rights evidence', command=self.edit_watch_rights).pack(side='left', padx=6)
-        ttk.Button(buttons, text='Open rights file', command=self.open_rights_evidence).pack(side='left')
 
     def _busy(self, message):
         self.status.set(message)
@@ -397,18 +729,20 @@ class MediaIntakeApp:
 
     def _update_search_category_info(self):
         category = self.search_category.get()
-        providers = ', '.join(CATEGORY_CONNECTORS.get(category, ()))
+        metadata = ', '.join(METADATA_CONNECTORS.get(category, ())) or 'none connected'
+        downloads = ', '.join(connected_download_sources(category, self._watch_sources())) or 'none connected'
         note = ''
         if category == 'Comics':
             note = (' GetComics and mirror file searches obey the local rights approval file. '
                     'Comic Vine and Taddy are searched when their API credentials are configured.')
         elif category == 'Fanfiction':
-            note = ' Paste a supported story URL; site-wide text search is not available yet.'
+            note = ' FanFicFare can track supported story URLs; IRC also searches connected file indexes.'
         elif category in {'Videos', 'Games'}:
-            note = ' This category currently has metadata discovery only; file and release connectors are roadmap work.'
+            note = ' IRC searches connected file indexes for matching video or game formats.'
         elif category == 'Manga':
             note = ' Taddy is searched when its API credentials are configured.'
-        self.search_category_info.set(f'Connected sources for {category}: {providers}.{note}')
+        self.search_category_info.set(
+            f'Metadata repositories: {metadata}. Download sources: {downloads}.{note}')
 
     def search(self):
         query = self.query.get().strip()
@@ -422,18 +756,35 @@ class MediaIntakeApp:
         if source == 'All connected in category':
             category = self.search_category.get()
             options = self._watch_sources()
+            priority = get_download_priority(self.db, category, options)
             credentials = {'comicvine_api_key': self.comicvine_api_key,
                            'taddy_user_id': self.taddy_user_id,
                            'taddy_api_key': self.taddy_api_key}
             self._worker(
                 f'Searching {category} across its connected sources…',
-                lambda: search_media_category(query, category, options, credentials),
+                lambda: search_media_category(query, category, options, credentials, priority),
                 self.show_category_results)
             return
+        source = {
+            'Open Library (metadata)': 'Open Library',
+            'LibGen (download)': 'LibGen',
+            "Anna's Archive (download)": "Anna's Archive",
+            'NovelArchive (metadata)': 'NovelArchive',
+            'LNORI (metadata)': 'LNORI',
+            'RanobeDB (metadata)': 'RanobeDB',
+            'MangaUpdates (metadata)': 'MangaUpdates',
+            'GetComics (download)': 'GetComics',
+            'Public-domain comic mirror (download)': 'Public-domain comic mirror',
+        }.get(source, source)
         base = self.site_base.get().strip() or None
         def action():
             if source == 'Open Library':
-                return search_openlibrary(query)
+                return [{**item, 'category': self.search_category.get(),
+                         'url': item.get('source_url') or '', 'format': 'catalog',
+                         'source': 'Open Library', 'source_role': 'metadata',
+                         'discovery_only': True,
+                         'display_source': 'Metadata · Open Library'}
+                        for item in search_openlibrary_metadata(query, limit=24)]
             if source == 'FMHY directory':
                 return [{'title': f"Search {site['name']}", 'author': site['section'],
                          'format': 'link', 'source': site['search_url'], 'url': site['search_url'],
@@ -480,14 +831,32 @@ class MediaIntakeApp:
         if not selected:
             return
         item = dict(self.results[int(selected[0])])
-        if not item.get('discovery_only') and item.get('format') not in {'catalog', 'link'}:
+        category = item.get('category') or self.search_category.get()
+        metadata_variants = item.get('metadata_variants') or []
+        if (not metadata_variants and not item.get('discovery_only')
+                and item.get('format') not in {'catalog', 'link'}
+                and category not in {'Books', 'Light novels', 'Web serials', 'Comics', 'Manga'}):
             messagebox.showinfo('Add to Watched', 'This result is a downloadable file. Use “Queue selected result” to add it to the download queue.')
             return
-        category = item.get('category') or self.search_category.get()
         if category in {'Books', 'Light novels', 'Web serials'}:
-            self._associate_book_metadata(item)
+            if metadata_variants:
+                self._associate_book_metadata(metadata_variants[0])
+            elif item.get('download_variants'):
+                self.watch_goodreads_profile = {}
+                self.watch_comic_profile = {}
+                self.watch_lightnovel_profile = {}
+                self.watch_url.set('')
+                self.watch_title.set(item.get('title') or '')
+                self.watch_author.set('' if item.get('author') == 'Unknown' else item.get('author', ''))
+                watch_kind = {'Light novels': 'Light novel', 'Web serials': 'Webfiction'}
+                self.watch_kind.set(watch_kind.get(category, 'Book'))
+                self.add_watched(auto_scan=True)
+            else:
+                self._associate_book_metadata(item)
             return
         if category in {'Comics', 'Manga'}:
+            if metadata_variants:
+                item = dict(metadata_variants[0])
             item.update(item.get('metadata') or {})
             if item.get('provider') == 'MangaUpdates':
                 item['kind'] = 'manga'
@@ -496,6 +865,8 @@ class MediaIntakeApp:
             self.associate_comic_metadata(item)
             return
         if category == 'Fanfiction':
+            if metadata_variants:
+                item = dict(metadata_variants[0])
             self.watch_goodreads_profile = {}
             self.watch_url.set(item.get('source_url') or item.get('url') or '')
             self.watch_title.set(item.get('title') or 'Fanfiction story')
@@ -681,7 +1052,9 @@ class MediaIntakeApp:
         self.results = results
         for row in self.results_view.get_children(): self.results_view.delete(row)
         for index, item in enumerate(results):
-            self.results_view.insert('', 'end', iid=str(index), values=(item.get('title', ''), item.get('author', ''), item.get('format', ''), item.get('source', '')))
+            self.results_view.insert('', 'end', iid=str(index), values=(
+                item.get('title', ''), item.get('author', ''), item.get('format', ''),
+                item.get('display_source') or item.get('source', '')))
         self._done(f'{len(results)} result(s)')
 
     def queue_result(self):
@@ -699,7 +1072,14 @@ class MediaIntakeApp:
             return
         def action():
             db = connect(self.data_root)
-            try: return enqueue(db, item)
+            try:
+                if item.get('irc'):
+                    config = dict(item['irc'])
+                    for key in ('source_key', 'rights_evidence_path', 'rights_work_key'):
+                        if item.get(key):
+                            config[key] = item[key]
+                    return enqueue_irc(db, config)
+                return enqueue(db, item)
             finally: db.close()
         self._worker('Adding to queue…', action, lambda _result: self._done('Queued'))
 
@@ -764,19 +1144,50 @@ class MediaIntakeApp:
 
     def choose_irc_configs(self):
         chosen = filedialog.askopenfilenames(
-            initialdir=str(self.data_root), title='Choose IRC search configurations',
+            initialdir=str(self.data_root), title='Import IRC sources from JSON configurations',
             filetypes=[('JSON configuration', '*.json'), ('All files', '*.*')])
         if chosen:
             self.watch_irc_configs.set(';'.join(chosen))
+            self.irc_sources = self._load_irc_sources()
+            self._saved_watch_sources = None
             self._watch_sources()
+            self._render_irc_sources()
+            self._render_download_priority()
 
     def _watch_sources(self):
         opds_feeds = [value.strip() for value in self.watch_opds_feeds.get().split(';') if value.strip()]
         catalogs = [value.strip() for value in self.watch_catalogs.get().split(';') if value.strip()]
         irc_configs = [value.strip() for value in self.watch_irc_configs.get().split(';') if value.strip()]
+        comic_rss_configured = False
+        webfiction_rss_configured = False
+        taddy_configured = bool(self.taddy_user_id and self.taddy_api_key)
+        for row in self.db.execute('SELECT kind,source_url,metadata FROM watched_items'):
+            try:
+                metadata = json.loads(row['metadata'] or '{}')
+            except (TypeError, ValueError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            comic = metadata.get('comic') or {}
+            serial = metadata.get('serial') or {}
+            if not isinstance(comic, dict):
+                comic = {}
+            if not isinstance(serial, dict):
+                serial = {}
+            comic_feed = str(comic.get('feed_url') or row['source_url'] or '')
+            comic_host = (urllib.parse.urlsplit(comic_feed).hostname or '').casefold()
+            if comic.get('taddy_id') or comic.get('sss_url') or comic_host.endswith('taddy.org'):
+                taddy_configured = True
+            elif (row['kind'] in {'comic', 'comic_issue', 'manga', 'webcomic', 'webtoon'}
+                  and comic_feed and not comic.get('mangadex_id')
+                  and comic_host not in {'mangadex.org', 'www.mangadex.org'}):
+                comic_rss_configured = True
+            serial_feed = str(serial.get('feed_url') or row['source_url'] or '')
+            serial_host = (urllib.parse.urlsplit(serial_feed).hostname or '').casefold()
+            if row['kind'] == 'webfiction' and serial_feed and not serial_host.endswith('novelarchive.cc'):
+                webfiction_rss_configured = True
         sources = {
             'rights_evidence_path': str(self.rights_evidence_path),
-            'openlibrary': self.watch_openlibrary.get(),
             'libgen': self.watch_libgen.get(),
             'libgen_base': self.watch_libgen_base.get().strip(),
             'annas': self.watch_annas.get(),
@@ -784,12 +1195,18 @@ class MediaIntakeApp:
             'opds_feeds': opds_feeds,
             'catalogs': catalogs,
             'irc_configs': irc_configs,
+            'irc_sources': list(self.irc_sources),
             'comic_mirror_base': self.watch_comic_mirror_base.get().strip(),
+            'taddy_configured': taddy_configured,
+            'comic_rss_configured': comic_rss_configured,
+            'webfiction_rss_configured': webfiction_rss_configured,
         }
         if sources != self._saved_watch_sources:
             for key, value in sources.items():
                 if isinstance(value, bool):
                     stored = '1' if value else '0'
+                elif key == 'irc_sources':
+                    stored = json.dumps(value, ensure_ascii=False)
                 elif isinstance(value, list):
                     stored = ';'.join(value)
                 else:
@@ -1699,10 +2116,45 @@ class MediaIntakeApp:
 
     def refresh_queue(self):
         self.queue_rows = list_items(self.db)
+        selected = self.queue_view.selection()
         for row in self.queue_view.get_children(): self.queue_view.delete(row)
         for row in self.queue_rows:
             item = json.loads(row['metadata'])
-            self.queue_view.insert('', 'end', iid=str(row['id']), values=(row['id'], item.get('title', ''), item.get('author', ''), item.get('format', ''), row['state'], row.get('file_path') or ''))
+            state = 'Downloading' if row['state'] == 'downloading' else row['state']
+            self.queue_view.insert('', 'end', iid=str(row['id']), values=(
+                row['id'], item.get('title', ''), item.get('author', ''), item.get('format', ''),
+                state, self._queue_progress_label(row), row.get('file_path') or ''))
+        if selected and self.queue_view.exists(selected[0]):
+            self.queue_view.selection_set(selected[0])
+
+    @staticmethod
+    def _format_bytes(value):
+        amount = max(0, int(value or 0))
+        for unit in ('B', 'KB', 'MB', 'GB'):
+            if amount < 1024 or unit == 'GB':
+                return f'{amount:.1f} {unit}' if unit != 'B' else f'{amount} B'
+            amount /= 1024
+
+    def _queue_progress_label(self, row):
+        if row.get('state') != 'downloading':
+            return ''
+        done = row.get('progress_bytes')
+        total = row.get('progress_total')
+        message = row.get('progress_message') or 'Preparing download'
+        if total:
+            percent = min(100, int((done or 0) * 100 / total))
+            return f'{percent}% ({self._format_bytes(done)} / {self._format_bytes(total)})'
+        if done:
+            return f'{message} · {self._format_bytes(done)} received'
+        return message
+
+    def _poll_queue(self):
+        try:
+            self.refresh_queue()
+            delay = 1000 if any(row.get('state') == 'downloading' for row in self.queue_rows) else 2500
+            self.root.after(delay, self._poll_queue)
+        except tk.TclError:
+            return
 
     def download_selected(self):
         selected = self.queue_view.selection()

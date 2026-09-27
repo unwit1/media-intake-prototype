@@ -13,7 +13,15 @@ from pathlib import Path
 
 from .media_graph import initialize_media_graph
 
-EXTENSIONS = {'.epub', '.pdf', '.mobi', '.azw3', '.txt', '.cbz', '.cbr', '.mp3', '.m4b'}
+BOOK_FORMATS = {'.epub', '.pdf', '.mobi', '.azw3', '.txt'}
+AUDIO_FORMATS = {'.mp3', '.m4b', '.m4a', '.flac', '.ogg', '.opus', '.wav', '.aac'}
+COMIC_FORMATS = {'.cbz', '.cbr', '.zip', '.rar', '.7z'}
+VIDEO_FORMATS = {'.mkv', '.mp4', '.m4v', '.avi', '.mov', '.webm', '.mpg', '.mpeg', '.ts', '.wmv'}
+GAME_FORMATS = {
+    '.iso', '.chd', '.cso', '.xci', '.nsp', '.gba', '.gbc', '.gb', '.nds',
+    '.3ds', '.cia', '.nes', '.sfc', '.smc', '.n64', '.z64', '.v64', '.wbfs',
+}
+EXTENSIONS = BOOK_FORMATS | AUDIO_FORMATS | COMIC_FORMATS | VIDEO_FORMATS | GAME_FORMATS
 ATOM = '{http://www.w3.org/2005/Atom}'
 DC = '{http://purl.org/dc/terms/}'
 MAX_FILE_BYTES = 1024 * 1024 * 1024
@@ -59,7 +67,14 @@ def connect(root):
         id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, metadata TEXT NOT NULL,
         state TEXT NOT NULL DEFAULT 'queued', file_path TEXT, sha256 TEXT,
         error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        progress_bytes INTEGER, progress_total INTEGER, progress_message TEXT)''')
+    item_columns = {row['name'] for row in db.execute('PRAGMA table_info(items)')}
+    for name, declaration in (('progress_bytes', 'INTEGER'),
+                              ('progress_total', 'INTEGER'),
+                              ('progress_message', 'TEXT')):
+        if name not in item_columns:
+            db.execute(f'ALTER TABLE items ADD COLUMN {name} {declaration}')
     db.execute('''CREATE TABLE IF NOT EXISTS watched_items (
         id INTEGER PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
         author TEXT NOT NULL DEFAULT 'Unknown', source_url TEXT, release_date TEXT,
@@ -87,6 +102,17 @@ def list_items(db, state=None):
     return [dict(x) for x in db.execute(sql, (state,) if state else ())]
 
 
+def update_download_progress(db, item_id, done=None, total=None, message=None):
+    """Persist a queue item's current transfer phase and byte counts."""
+    if done is not None:
+        done = max(0, int(done))
+    if total is not None:
+        total = max(0, int(total))
+    db.execute('''UPDATE items SET progress_bytes=?, progress_total=?, progress_message=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?''', (done, total, str(message or '')[:200], item_id))
+    db.commit()
+
+
 def http_get(url, max_bytes=10_000_000):
     request = urllib.request.Request(url, headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -101,7 +127,7 @@ def http_get(url, max_bytes=10_000_000):
 
 def check_download(path, ext):
     """Reject common error pages and broken archive formats before queuing import."""
-    if ext in ('.epub', '.cbz'):
+    if ext in ('.epub', '.cbz', '.zip'):
         if not zipfile.is_zipfile(path):
             raise ValueError(f'Invalid {ext} archive')
         with zipfile.ZipFile(path) as archive:
@@ -185,43 +211,59 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         if not approved:
             source = source_key_for_item(item)
             raise ValueError(f'Download not approved: set {source}.approved_for_download to true in {rights_path}')
+    if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists() \
+            and urllib.parse.urlsplit(item['url']).scheme not in ('fanfic+http', 'fanfic+https'):
+        return dict(row)
+    db.execute("UPDATE items SET state='downloading', error=NULL, progress_bytes=0, progress_total=NULL, progress_message='Preparing download', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+    db.commit()
     if urllib.parse.urlsplit(item['url']).scheme in ('fanfic+http', 'fanfic+https'):
         try:
             from .fanfiction import download_fanfiction
-            return download_fanfiction(db, row, root, max_bytes, destination)
+            result = download_fanfiction(db, row, root, max_bytes, destination)
+            update_download_progress(db, item_id, None, None, None)
+            return result
         except Exception as exc:
-            db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+            db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
             raise
-    if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists():
-        return dict(row)
     if urllib.parse.urlsplit(item['url']).scheme == 'irc+xdcc':
         try:
             from .irc import download_irc
-            return download_irc(db, row, root, max_bytes, destination)
+            result = download_irc(db, row, root, max_bytes, destination)
+            update_download_progress(db, item_id, None, None, None)
+            return result
         except Exception as exc:
-            db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+            db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
             raise
     if urllib.parse.urlsplit(item['url']).scheme in ('serial+http', 'serial+https'):
         try:
             from .serial import download_serial
-            return download_serial(db, row, root, max_bytes, destination)
+            result = download_serial(db, row, root, max_bytes, destination)
+            update_download_progress(db, item_id, None, None, None)
+            return result
         except Exception as exc:
-            db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+            db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
             raise
     folder = Path(destination) if destination else Path(root) / 'downloads'
-    folder.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
     digest, total = hashlib.sha256(), 0
+    tmp = None
     try:
+        folder.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
         with os.fdopen(fd, 'wb') as out:
             req = urllib.request.Request(item['url'], headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
             with urllib.request.urlopen(req, timeout=60) as response:
                 content_type = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
                 if content_type in ('text/html', 'application/xhtml+xml'):
                     raise ValueError('URL returned an HTML page, not a media file')
+                try:
+                    expected = int(response.headers.get('Content-Length') or '')
+                    if expected <= 0:
+                        expected = None
+                except ValueError:
+                    expected = None
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk: break
@@ -229,6 +271,9 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
                     if total > max_bytes: raise ValueError('File exceeds size limit')
                     digest.update(chunk)
                     out.write(chunk)
+                    update_download_progress(db, item_id, total, expected, 'Downloading file')
+        if total:
+            update_download_progress(db, item_id, total, expected, 'Validating downloaded file')
         if not total: raise ValueError('Empty download')
         check_download(tmp, item['format'])
         base = folder / file_name(item)
@@ -243,11 +288,11 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
                 os.replace(tmp, dest)
         else:
             os.replace(tmp, dest)
-        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(dest.resolve()), digest.hexdigest(), item_id))
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(dest.resolve()), digest.hexdigest(), item_id))
         db.commit()
     except Exception as exc:
-        if os.path.exists(tmp): os.unlink(tmp)
-        db.execute("UPDATE items SET state='failed', error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+        if tmp and os.path.exists(tmp): os.unlink(tmp)
+        db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
         db.commit()
         raise
     return dict(db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone())

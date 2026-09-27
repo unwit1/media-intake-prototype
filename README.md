@@ -16,7 +16,9 @@ python -m media_intake download 1
 python -m media_intake import-calibre 1 --library "/path/to/Calibre Library"
 ```
 
-The GUI provides source search, result review, direct URL intake, queue status, downloads, and a persistent **Watched** tab. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.
+The GUI provides source search, result review, direct URL intake, queue status and transfer progress, downloads, and a persistent **Watched** tab. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.
+
+In **Settings → IRC sources**, add one row per server/channel/nickname, assign the media categories it can search, and move rows to set IRC fallback order. A later IRC source is queried only when higher-priority sources return no matching files. Existing JSON IRC config paths are imported into this list automatically; passwords should be supplied through an environment variable. The Queue tab shows percentages when a file size is known, and current phase/bytes for transfers whose size is not known in advance.
 
 GUI errors and background watch failures are saved in a rotating diagnostics log at `<data folder>/logs/media-intake.log` (four 2 MB backups). Use **Open logs** in the toolbar to inspect it. Download and watch errors are also retained on their queue/watch rows so they can be retried and diagnosed later.
 

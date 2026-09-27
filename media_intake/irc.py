@@ -13,7 +13,10 @@ import urllib.parse
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from .core import MAX_FILE_BYTES, check_download, file_name, validate_item
+from .core import EXTENSIONS, MAX_FILE_BYTES, check_download, file_name, validate_item
+
+_SEARCHABLE_EXTENSIONS = '|'.join(
+    re.escape(extension[1:]) for extension in sorted(EXTENSIONS, key=len, reverse=True))
 
 
 def enqueue_irc(db, config):
@@ -37,10 +40,15 @@ def enqueue_irc(db, config):
     from .core import enqueue
     token = str(config.get('pack') or config['request'])
     url = 'irc+xdcc://' + config['server'].lower() + '/' + urllib.parse.quote(config['channel'], safe='') + '/' + config['bot'].lower() + '/' + urllib.parse.quote(token, safe='')
-    return enqueue(db, {'title': config['title'], 'author': config.get('author','Unknown'),
-                        'format': config['format'], 'url': url, 'source': 'irc://' + config['server'] + '/' + config['channel'],
-                        'series': config.get('series'), 'series_index': config.get('series_index'),
-                        'irc': config})
+    item = {'title': config['title'], 'author': config.get('author', 'Unknown'),
+            'format': config['format'], 'url': url,
+            'source': 'irc://' + config['server'] + '/' + config['channel'],
+            'series': config.get('series'), 'series_index': config.get('series_index'),
+            'source_key': config.get('source_key') or 'irc', 'irc': config}
+    for key in ('rights_evidence_path', 'rights_work_key'):
+        if config.get(key):
+            item[key] = config[key]
+    return enqueue(db, item)
 
 
 def parse_offer(line, bot, max_bytes=MAX_FILE_BYTES):
@@ -131,7 +139,10 @@ def download_irc(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
     folder.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
     digest, received = hashlib.sha256(), 0
+    last_progress = 0
     try:
+        from .core import update_download_progress
+        update_download_progress(db, row['id'], 0, None, 'Connecting to IRC and waiting for a file offer')
         with os.fdopen(fd, 'wb') as out, receive_offer(config, max_bytes) as offer:
             advertised_ext = Path(offer['filename']).suffix.lower()
             if advertised_ext != item['format']:
@@ -143,6 +154,9 @@ def download_irc(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                     if not chunk: raise ConnectionError('DCC transfer ended early')
                     out.write(chunk); digest.update(chunk); received += len(chunk)
                     dcc.sendall(struct.pack('!I', received & 0xffffffff))
+                    if received - last_progress >= 1024 * 1024 or received >= offer['size']:
+                        update_download_progress(db, row['id'], received, offer['size'], 'Receiving DCC file')
+                        last_progress = received
         check_download(tmp, item['format'])
         base = folder / file_name(item)
         destination = base
@@ -154,11 +168,87 @@ def download_irc(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                 os.replace(tmp, destination)
         else:
             os.replace(tmp, destination)
-        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(destination.resolve()), digest.hexdigest(), row['id']))
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(destination.resolve()), digest.hexdigest(), row['id']))
         db.commit()
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
     return dict(db.execute('SELECT * FROM items WHERE id=?', (row['id'],)).fetchone())
+
+
+def has_configured_source(source_options, category=None):
+    """Return whether IRC has a configured source applicable to a category."""
+    options = source_options or {}
+    for source in options.get('irc_sources') or ():
+        if not isinstance(source, dict) or source.get('enabled', True) is False:
+            continue
+        categories = source.get('categories') or ()
+        if category is None or category in categories:
+            return True
+    legacy_configs = options.get('irc_configs') or (
+        [options['irc_config']] if options.get('irc_config') else [])
+    if isinstance(legacy_configs, (str, Path, dict)):
+        legacy_configs = [legacy_configs]
+    for config in legacy_configs:
+        if isinstance(config, dict) and config.get('server') and config.get('channel'):
+            return True
+        try:
+            if Path(config).is_file():
+                return True
+        except (TypeError, OSError):
+            continue
+    return False
+
+
+def configured_search_sources(source_options, category=None):
+    """Build the ordered IRC source list, with legacy JSON files as fallbacks."""
+    options = source_options or {}
+    sources = []
+    for source in options.get('irc_sources') or ():
+        if not isinstance(source, dict) or source.get('enabled', True) is False:
+            continue
+        if category is not None and category not in (source.get('categories') or ()):
+            continue
+        config = {key: value for key, value in source.items()
+                  if key not in {'id', 'name', 'categories', 'enabled'}}
+        sources.append((source.get('name') or source.get('server') or 'IRC source', config))
+
+    legacy_configs = options.get('irc_configs') or (
+        [options['irc_config']] if options.get('irc_config') else [])
+    if isinstance(legacy_configs, (str, Path, dict)):
+        legacy_configs = [legacy_configs]
+    for config_path in legacy_configs:
+        if isinstance(config_path, dict):
+            sources.append((config_path.get('name') or config_path.get('server') or 'IRC config',
+                            dict(config_path)))
+            continue
+        try:
+            config = json.loads(Path(config_path).read_text(encoding='utf-8'))
+            sources.append((Path(config_path).stem, config))
+        except Exception as exc:
+            sources.append((str(config_path), exc))
+    return sources
+
+
+def search_configured_sources(query, source_options, category, allowed_formats, limit=100):
+    """Search IRC sources in priority order and stop at the first relevant result set."""
+    results, errors = [], []
+    for name, config_or_error in configured_search_sources(source_options, category):
+        if isinstance(config_or_error, Exception):
+            errors.append(f'{name}: {config_or_error}')
+            continue
+        try:
+            found = [item for item in search_irc(query, config_or_error, limit=limit)
+                     if str(item.get('format') or '').casefold() in allowed_formats]
+            if not found:
+                continue
+            for item in found:
+                item['irc_source_name'] = name
+                if isinstance(item.get('irc'), dict):
+                    item['irc']['source_name'] = name
+            return found, errors
+        except Exception as exc:
+            errors.append(f'{name}: {exc}')
+    return results, errors
 
 
 def parse_search_index(data, config, limit=100):
@@ -173,7 +263,9 @@ def parse_search_index(data, config, limit=100):
                 content = stream.read(5_000_001)
             if len(content) > 5_000_000: raise ValueError('IRC index expanded beyond 5 MB')
             for line in content.decode('utf-8-sig', 'replace').splitlines():
-                match = re.search(r'(?<!\S)!([\w\-\[\]{}^|`]+)\s+(.+?\.(?:epub|pdf|mobi|azw3|cbz))(?=\s*::\s*INFO\s*::|\s*$)', line, re.I)
+                match = re.search(
+                    rf'(?<!\S)!([\w\-\[\]{{}}^|`]+)\s+(.+?\.(?:{_SEARCHABLE_EXTENSIONS}))'
+                    r'(?=\s*::\s*INFO\s*::|\s*$)', line, re.I)
                 if not match: continue
                 bot, filename = match.group(1), match.group(2).strip()
                 if '\x00' in filename or len(filename) > 320: continue

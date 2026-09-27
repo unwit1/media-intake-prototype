@@ -11,11 +11,16 @@ SCHEMA_VERSION = 1
 DOWNLOAD_STATUSES = {'public_domain', 'permission_granted'}
 WORK_STATUSES = DOWNLOAD_STATUSES | {'restricted', 'not_reviewed'}
 DOWNLOAD_SOURCES = (
-    'openlibrary', 'libgen', 'annas_archive', 'opds_feeds', 'json_catalogs', 'irc',
+    # Connectors that can provide a file, a comic chapter, or an updated story.
+    'libgen', 'annas_archive', 'opds_feeds', 'json_catalogs', 'irc',
     'mangadex', 'taddy', 'comic_rss_atom', 'webfiction_rss_atom', 'fanficfare',
-    'ranobedb', 'lnori.com', 'novelarchive.cc', 'getcomics.org', 'comicvine',
+    'lnori.com', 'novelarchive.cc', 'getcomics.org',
     'public_domain_comic_mirror', 'direct_file_url',
 )
+METADATA_ONLY_SOURCES = frozenset({
+    'openlibrary', 'open library', 'goodreads', 'comicvine', 'comic vine',
+    'ranobedb', 'anilist', 'mangaupdates', 'manga updates', 'wikidata',
+})
 
 
 def initial_document():
@@ -23,9 +28,10 @@ def initial_document():
     return {
         'schema_version': SCHEMA_VERSION,
         'instructions': (
-            'This is the single local source approval file. Set approved_for_download to the JSON '
-            'boolean true or false for each connector. The app checks that value before downloading. '
-            'Add or correct evidence in this same file. Per-work approvals are under works.'
+            'This is the single local source approval file. The sources object lists only connectors '
+            'that can provide files or chapters; set approved_for_download to the JSON boolean true '
+            'or false for each listed source. Metadata repositories need no download approval. '
+            'Per-work approvals are under works.'
         ),
         'sources': {**{
             name: {
@@ -85,11 +91,49 @@ def _atomic_write(path, document):
         raise
 
 
+def _separate_metadata_sources(document):
+    """Move obsolete metadata-provider approval rows out of downloadable sources."""
+    sources = document.get('sources')
+    if not isinstance(sources, dict):
+        return False
+    moved = {}
+    for key in list(sources):
+        normalized = str(key or '').strip().casefold().rstrip('.')
+        if normalized in METADATA_ONLY_SOURCES:
+            moved[key] = sources.pop(key)
+    if not moved:
+        return False
+    repositories = document.setdefault('metadata_repositories', {})
+    if not isinstance(repositories, dict):
+        repositories = {'legacy_metadata_repositories': repositories}
+        document['metadata_repositories'] = repositories
+    for key, record in moved.items():
+        if key not in repositories:
+            repositories[key] = record
+        else:
+            repositories[f'{key}_legacy_download_setting'] = record
+    instructions = str(document.get('instructions') or '')
+    if 'single local source approval file.' in instructions and 'Metadata repositories need no download approval.' not in instructions:
+        document['instructions'] = initial_document()['instructions']
+    return True
+
+
 def ensure_rights_evidence(path):
     """Create an initial local rights file without overwriting user edits."""
     path = Path(path)
     if not path.exists():
         _atomic_write(path, initial_document())
+    else:
+        try:
+            with path.open('r', encoding='utf-8') as source:
+                document = json.load(source)
+        except (OSError, json.JSONDecodeError):
+            return path
+        if (isinstance(document, dict) and document.get('schema_version') == SCHEMA_VERSION
+                and isinstance(document.get('sources'), dict)
+                and isinstance(document.get('works'), dict)
+                and _separate_metadata_sources(document)):
+            _atomic_write(path, document)
     return path
 
 
@@ -121,6 +165,8 @@ def save_rights_evidence(path, document):
 def source_download_rights(document, source):
     """Return a source record only when its explicit JSON boolean is YES."""
     source = str(source or '').strip().casefold().rstrip('.')
+    if source in METADATA_ONLY_SOURCES:
+        return None
     record = (document.get('sources') or {}).get(source) or {}
     # This boolean is the single approval switch. Notes are stored for review,
     # but heuristics elsewhere in the app do not replace the explicit choice.
@@ -139,7 +185,10 @@ def source_is_approved(path, source):
 def source_key_for_item(item):
     explicit = str(item.get('source_key') or '').strip().casefold()
     if explicit:
-        return explicit
+        # Old queued catalog rows sometimes carry a metadata provider as their
+        # source. A real file reached through one of those rows is governed by
+        # the generic direct-file approval, never by metadata-repository rights.
+        return 'direct_file_url' if explicit in METADATA_ONLY_SOURCES else explicit
     url = urllib.parse.urlsplit(str(item.get('url') or ''))
     scheme = url.scheme.casefold()
     if scheme == 'irc+xdcc':
@@ -149,8 +198,6 @@ def source_key_for_item(item):
     if scheme.startswith('serial+'):
         return item.get('source_key') or 'webfiction_rss_atom'
     host = (url.hostname or '').casefold()
-    if host in {'openlibrary.org', 'archive.org', 'ia801500.us.archive.org'}:
-        return 'openlibrary'
     if host in {'getcomics.info', 'www.getcomics.info', 'getcomics.org', 'www.getcomics.org'}:
         return 'getcomics.org'
     if host == 'lnori.com':

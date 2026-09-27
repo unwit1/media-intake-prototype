@@ -21,10 +21,12 @@ class CategoryDiscoveryTest(unittest.TestCase):
         self.assertEqual(goodreads.call_count, 1)
         self.assertEqual(openlibrary.call_count, 1)
         self.assertEqual(files.call_count, 1)
-        self.assertEqual(len(response['results']), 3)
+        self.assertEqual(len(response['results']), 2)
         self.assertIn('book download sources', response['searched'])
         file_result = next(item for item in response['results'] if item['format'] == '.epub')
         self.assertFalse(file_result.get('discovery_only', False))
+        self.assertEqual(file_result.get('metadata_provider'), 'Open Library')
+        self.assertEqual(len(file_result['metadata_variants']), 1)
 
     def test_manga_searches_all_manga_catalogs_and_filters_other_media(self):
         with patch('media_intake.discovery.search_anilist', return_value=[{
@@ -41,9 +43,12 @@ class CategoryDiscoveryTest(unittest.TestCase):
         self.assertEqual(anilist.call_count, 1)
         self.assertEqual(mangadex.call_count, 1)
         self.assertEqual(updates.call_count, 1)
-        self.assertEqual(len(response['results']), 3)
+        self.assertEqual(len(response['results']), 1)
         self.assertEqual({item['kind'] for item in response['results']}, {'manga'})
-        self.assertEqual(len(response['searched']), 3)
+        self.assertEqual(set(response['results'][0]['metadata_sources']),
+                         {'AniList', 'MangaDex', 'MangaUpdates'})
+        self.assertEqual(len(response['results'][0]['metadata_variants']), 3)
+        self.assertEqual(len(response['searched']), 4)
 
     def test_anime_searches_anilist_as_anime_and_wikidata(self):
         with patch('media_intake.discovery.search_anilist', return_value=[{
@@ -57,7 +62,9 @@ class CategoryDiscoveryTest(unittest.TestCase):
 
         anilist.assert_called_once_with('Example Anime', media_type='ANIME')
         wikidata.assert_called_once_with('Example Anime')
-        self.assertEqual(len(response['results']), 2)
+        self.assertEqual(len(response['results']), 1)
+        self.assertEqual(set(response['results'][0]['metadata_sources']), {'AniList', 'Wikidata'})
+        self.assertEqual(len(response['results'][0]['metadata_variants']), 2)
 
     def test_fanfiction_category_accepts_a_story_url(self):
         response = search_media_category(

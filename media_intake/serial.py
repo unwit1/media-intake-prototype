@@ -362,11 +362,14 @@ def download_serial(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
     folder.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
     try:
+        from .core import update_download_progress
         chapters, spent = [], 0
         with os.fdopen(fd, 'wb') as out:
             archive = zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) if item['kind'] in IMAGE_KINDS else None
             try:
                 for index, chapter in enumerate(item['chapters'], 1):
+                    update_download_progress(db, row['id'], spent, None,
+                                             f'Fetching chapter {index} of {len(item["chapters"])}')
                     if archive is not None:
                         if chapter.get('mangadex_id'):
                             image_urls = _mangadex_image_urls(chapter)
@@ -384,6 +387,8 @@ def download_serial(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                                 spent += len(data)
                                 if spent > max_bytes: raise ValueError('Series exceeds size limit')
                                 archive.writestr(f'{index:04d}-{number:04d}{ext}', data)
+                                update_download_progress(db, row['id'], spent, None,
+                                                         f'Fetching chapter {index} of {len(item["chapters"])}')
                         elif chapter.get('images'):
                             referer = chapter.get('url') or item.get('source') or ''
                             for number, image_url in enumerate(chapter['images'], 1):
@@ -391,6 +396,8 @@ def download_serial(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                                 spent += len(data)
                                 if spent > max_bytes: raise ValueError('Series exceeds size limit')
                                 archive.writestr(f'{index:04d}-{number:04d}{ext}', data)
+                                update_download_progress(db, row['id'], spent, None,
+                                                         f'Fetching chapter {index} of {len(item["chapters"])}')
                         else:
                             raw, final = http_get(chapter['url'], max_bytes=2_000_000)
                             parser = ChapterParser(item['selector'], final)
@@ -401,6 +408,8 @@ def download_serial(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                                 spent += len(data)
                                 if spent > max_bytes: raise ValueError('Series exceeds size limit')
                                 archive.writestr(f'{index:04d}-{number:04d}{ext}', data)
+                                update_download_progress(db, row['id'], spent, None,
+                                                         f'Fetching chapter {index} of {len(item["chapters"])}')
                     else:
                         raw, final = http_get(chapter['url'], max_bytes=2_000_000)
                         parser = ChapterParser(item['selector'], final)
@@ -409,6 +418,8 @@ def download_serial(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                         spent += len(raw)
                         if spent > min(max_bytes, 50_000_000): raise ValueError('Series text exceeds size limit')
                         chapters.append((chapter.get('title') or f'Chapter {index}', parser.paragraphs))
+                        update_download_progress(db, row['id'], spent, None,
+                                                 f'Fetching chapter {index} of {len(item["chapters"])}')
             finally:
                 if archive is not None:
                     info = _comic_info(item)
@@ -426,7 +437,7 @@ def download_serial(db, row, root, max_bytes=MAX_FILE_BYTES, destination=None):
                 dest = dest.with_name(dest.stem + ' [' + digest[:8] + ']' + dest.suffix)
                 os.replace(tmp, dest)
         else: os.replace(tmp, dest)
-        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(dest.resolve()), digest, row['id']))
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(dest.resolve()), digest, row['id']))
         db.commit()
     finally:
         if os.path.exists(tmp): os.unlink(tmp)

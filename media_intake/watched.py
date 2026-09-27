@@ -21,18 +21,34 @@ from .media_catalogs import (discover_novelarchive_chapters, english_release_dat
                              ranobedb_series, resolve_catalog_file_links,
                              search_ranobedb,
                              search_lnori, search_novelarchive)
-from .core import download, enqueue, http_get, search_catalog, search_opds
+from .core import (AUDIO_FORMATS, BOOK_FORMATS, COMIC_FORMATS, EXTENSIONS,
+                   GAME_FORMATS, VIDEO_FORMATS, download, enqueue, http_get,
+                   search_catalog, search_opds)
 from .media_graph import (add_media_relationship, sync_watch_entity,
                           upsert_media_entity)
 from .fanfiction import story_url_key
-from .irc import enqueue_irc, search_irc
+from .irc import enqueue_irc, has_configured_source, search_configured_sources
 from .serial import discover_feed, enqueue_serial
-from .sources import (resolve_detail, search_openlibrary,
-                      search_openlibrary_metadata, search_site)
+from .sources import (resolve_detail, search_openlibrary_metadata, search_site)
 
 CHECK_INTERVAL = dt.timedelta(days=1)
 COMIC_KINDS = {'comic', 'manga', 'webcomic', 'webtoon'}
 SERIAL_KINDS = {'webfiction', 'fanfiction'}
+_IRC_FORMATS_BY_KIND = {
+    'book': BOOK_FORMATS | AUDIO_FORMATS,
+    'series': BOOK_FORMATS | AUDIO_FORMATS,
+    'lightnovel': BOOK_FORMATS | AUDIO_FORMATS,
+    'comic': COMIC_FORMATS | {'.pdf'},
+    'comic_issue': COMIC_FORMATS | {'.pdf'},
+    'manga': COMIC_FORMATS | {'.pdf'},
+    'webcomic': COMIC_FORMATS | {'.pdf'},
+    'webtoon': COMIC_FORMATS | {'.pdf'},
+    'anime': VIDEO_FORMATS,
+    'video': VIDEO_FORMATS,
+    'game': GAME_FORMATS | {'.zip', '.rar', '.7z'},
+    'webfiction': BOOK_FORMATS,
+    'fanfiction': BOOK_FORMATS,
+}
 logger = logging.getLogger(__name__)
 
 
@@ -671,16 +687,14 @@ def _search_candidates(watch, source_overrides=None):
             item.setdefault('source_key', source_key)
             if options.get('rights_evidence_path'):
                 item.setdefault('rights_evidence_path', options['rights_evidence_path'])
+                if item.get('irc') is not None:
+                    item['irc'].setdefault('source_key', source_key)
+                    item['irc'].setdefault('rights_evidence_path', options['rights_evidence_path'])
             if approval and approval.get('rights_work_key'):
                 item.setdefault('rights_work_key', approval['rights_work_key'])
             results.append(item)
 
     book_kind = watch.get('kind') in {'book', 'series', 'lightnovel'}
-    if book_kind and options.get('openlibrary', True) and _approved_source_record(options, 'openlibrary'):
-        try:
-            add_results(search_openlibrary(query, limit=15), 'openlibrary')
-        except Exception as exc:
-            errors.append(f'Open Library: {exc}')
     for feed_url in (options.get('opds_feeds', []) if book_kind and _approved_source_record(
             options, 'opds_feeds') else []):
         try:
@@ -710,15 +724,20 @@ def _search_candidates(watch, source_overrides=None):
                     errors.append(f'{site}: {exc}')
         except Exception as exc:
             errors.append(f'{site}: {exc}')
-    irc_configs = options.get('irc_configs') or ([options['irc_config']] if options.get('irc_config') else [])
-    if not book_kind or not _approved_source_record(options, 'irc'):
-        irc_configs = []
-    for irc_config_path in irc_configs:
-        try:
-            config = json.loads(Path(irc_config_path).read_text(encoding='utf-8'))
-            add_results(search_irc(query, config, limit=100), 'irc')
-        except Exception as exc:
-            errors.append(f'IRC: {exc}')
+    irc_category = {
+        'book': 'Books', 'series': 'Books', 'lightnovel': 'Light novels',
+        'comic': 'Comics', 'comic_issue': 'Comics', 'webcomic': 'Comics',
+        'manga': 'Manga', 'webtoon': 'Manga', 'anime': 'Anime',
+        'video': 'Videos', 'game': 'Games', 'webfiction': 'Web serials',
+        'fanfiction': 'Fanfiction',
+    }.get(watch.get('kind'))
+    if (_approved_source_record(options, 'irc')
+            and has_configured_source(options, irc_category)):
+        allowed_formats = _IRC_FORMATS_BY_KIND.get(watch.get('kind'), EXTENSIONS)
+        irc_items, irc_errors = search_configured_sources(
+            query, options, irc_category, allowed_formats, limit=100)
+        errors.extend(f'IRC: {error}' for error in irc_errors)
+        add_results(irc_items, 'irc')
     if options.get('comic_mirror_base') and watch.get('kind') in COMIC_KINDS | {'comic_issue'}:
         try:
             rights = _approved_source_record(options, 'public_domain_comic_mirror', watch)
@@ -748,15 +767,17 @@ def _search_candidates(watch, source_overrides=None):
                     add_results(resolve_catalog_file_links(item, approval), source_key, approval)
             except Exception as exc:
                 errors.append(f'{source_key} / rights evidence: {exc}')
-    if watch.get('kind') in {'webfiction', 'fanfiction'}:
-        approval = _approved_source_record(options, 'novelarchive.cc')
-        if approval:
+    if watch.get('kind') == 'webfiction':
+        for source_key, searcher in (('lnori.com', search_lnori),
+                                     ('novelarchive.cc', search_novelarchive)):
+            approval = _approved_source_record(options, source_key)
+            if not approval:
+                continue
             try:
-                item = {'provider': 'NovelArchive', 'title': watch['title'],
-                        'author': watch.get('author'), 'url': watch.get('source_url')}
-                add_results(resolve_catalog_file_links(item, approval), 'novelarchive.cc', approval)
+                for item in searcher(query, limit=10):
+                    add_results(resolve_catalog_file_links(item, approval), source_key, approval)
             except Exception as exc:
-                errors.append(f'NovelArchive / rights evidence: {exc}')
+                errors.append(f'{source_key} / rights evidence: {exc}')
     return [item for item in results if _is_match(item, watch)], errors
 
 
@@ -1071,6 +1092,18 @@ def _chapter_key(chapter):
     return str(chapter.get('mangadex_id') or chapter.get('url') or '')
 
 
+def _download_candidate_key(item):
+    if item.get('url'):
+        return str(item['url'])
+    config = item.get('irc') or {}
+    if config:
+        token = config.get('request') or config.get('pack') or ''
+        return 'irc|' + '|'.join(str(value or '') for value in (
+            config.get('server'), config.get('channel'), config.get('bot'), token,
+            item.get('format')))
+    return ''
+
+
 def _chapter_serial_manifest(watch, chapter, manga_id, selector, source_key=None,
                              rights_evidence_path=None, rights_work_key=None):
     number = str(chapter.get('number') or '').strip()
@@ -1172,11 +1205,11 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
         logger.warning('Comic watch %s connector error: %s', watch['id'], error)
     for item in candidates:
         item_format = str(item.get('format') or '').casefold()
-        if item_format not in {'.cbz', '.cbr'} and not (
+        if item_format not in COMIC_FORMATS and not (
                 item_format == '.pdf' and item.get('source_key') in {
-                    'public_domain_comic_mirror', 'getcomics.org'}):
+                    'public_domain_comic_mirror', 'getcomics.org', 'irc'}):
             continue
-        key = str(item.get('url') or '')
+        key = _download_candidate_key(item)
         if not key or key in seen_files:
             continue
         try:
@@ -1226,21 +1259,18 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
     options = dict(metadata.get('sources') or {})
     options.update(source_overrides or {})
     feed_url = serial.get('feed_url') or watch.get('source_url')
-    if not feed_url:
-        raise ValueError('Add a public RSS/Atom chapter feed to track this web serial')
-    feed_host = (urllib.parse.urlsplit(feed_url).hostname or '').casefold()
-    chapter_source_key = 'novelarchive.cc' if feed_host == 'novelarchive.cc' else 'webfiction_rss_atom'
-    chapter_approval = _approved_source_record(options, chapter_source_key, watch, db)
-    if not chapter_approval:
-        now = _now()
-        error = f'{chapter_source_key} download source is NO in rights-evidence.json.'
-        db.execute("UPDATE watched_items SET state='rights_hold',last_checked_at=?,next_check_at=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                   (now.isoformat(sep='T'), error, watch['id']))
-        db.commit()
-        return 0
-    if chapter_source_key == 'novelarchive.cc':
+    feed_host = (urllib.parse.urlsplit(feed_url).hostname or '').casefold() if feed_url else ''
+    chapter_source_key = ('novelarchive.cc' if feed_host.endswith('novelarchive.cc')
+                          else 'webfiction_rss_atom') if feed_url else None
+    chapter_approval = (_approved_source_record(options, chapter_source_key, watch, db)
+                        if chapter_source_key else None)
+    errors = []
+    manifest = {'chapters': []}
+    if feed_url and not chapter_approval:
+        errors.append(f'{chapter_source_key} download source is NO in rights-evidence.json.')
+    elif chapter_source_key == 'novelarchive.cc':
         manifest = discover_novelarchive_chapters(feed_url, limit=200)
-    else:
+    elif feed_url:
         manifest = discover_feed(feed_url, watch['kind'], limit=200)
     chapters = manifest.get('chapters') or []
     seen = set(serial.get('known_chapters') or [])
@@ -1263,7 +1293,6 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
     serial['feed_initialized'] = True
 
     downloaded = []
-    errors = []
     # Search the configured ebook connectors as well as the chapter feed.
     # Only text-book formats are relevant to this watch type.
     candidates, connector_errors = _search_candidates(watch, source_overrides)
@@ -1273,7 +1302,7 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
     for item in candidates:
         if str(item.get('format') or '').casefold() not in {'.epub', '.pdf', '.mobi', '.azw3'}:
             continue
-        key = str(item.get('url') or '')
+        key = _download_candidate_key(item)
         if not key or key in seen_files:
             continue
         try:
@@ -1314,8 +1343,8 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
     return len(downloaded)
 
 
-def _process_fanfiction_watch(db, watch, library_folder):
-    """Download a whole fic once, then update its existing EPUB in place."""
+def _process_fanfiction_watch(db, watch, library_folder, source_overrides=None):
+    """Update a fic with FanFicFare, falling back to an approved IRC EPUB."""
     metadata = json.loads(watch.get('metadata') or '{}')
     fiction = dict(metadata.get('fanfiction') or {})
     story_url = fiction.get('story_url') or watch.get('source_url')
@@ -1330,9 +1359,32 @@ def _process_fanfiction_watch(db, watch, library_folder):
         'story_url': story_url,
         'kind': 'fanfiction',
     }
-    row = enqueue(db, item)
-    result = download(db, row['id'], Path(library_folder).parent,
-                      destination=library_folder)
+    try:
+        row = enqueue(db, item)
+        result = download(db, row['id'], Path(library_folder).parent,
+                          destination=library_folder)
+    except Exception as fanfic_error:
+        result = None
+        irc_errors = []
+        candidates, search_errors = _search_candidates(watch, source_overrides)
+        irc_errors.extend(search_errors)
+        for candidate in candidates:
+            if (not candidate.get('irc') or
+                    str(candidate.get('format') or '').casefold() != '.epub'):
+                continue
+            try:
+                irc_row = enqueue_irc(db, candidate['irc'])
+                result = download(db, irc_row['id'], Path(library_folder).parent,
+                                  destination=library_folder)
+                break
+            except Exception as exc:
+                irc_errors.append(f"{candidate.get('title') or 'IRC result'}: {exc}")
+        if result is None:
+            detail = '; '.join(irc_errors[-2:])
+            message = f'FanFicFare: {fanfic_error}'
+            if detail:
+                message += f'; IRC: {detail}'
+            raise RuntimeError(message) from fanfic_error
     saved = json.loads(result['metadata'])
     fiction.update({'story_url': story_url, 'item_id': result['id']})
     metadata['fanfiction'] = fiction
@@ -1484,7 +1536,7 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
             try:
                 watch_metadata = json.loads(watch.get('metadata') or '{}')
                 if watch['kind'] == 'fanfiction' and watch_metadata.get('fanfiction'):
-                    _process_fanfiction_watch(db, watch, library_folder)
+                    _process_fanfiction_watch(db, watch, library_folder, source_options)
                 else:
                     _process_webfiction_watch(db, watch, library_folder, source_options)
             except Exception as exc:

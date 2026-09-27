@@ -143,6 +143,9 @@ def download_fanfiction(db, row, root, max_bytes=MAX_FILE_BYTES, destination=Non
     staged = stage_dir / 'story.epub'
     existing = target.is_file()
     try:
+        from .core import update_download_progress
+        update_download_progress(db, row['id'], 0, None,
+                                 'FanFicFare is fetching story chapters')
         if existing:
             shutil.copy2(target, staged)
             output = _run_fanficfare(['--update-epub', str(staged)], stage_dir, profile)
@@ -155,6 +158,8 @@ def download_fanfiction(db, row, root, max_bytes=MAX_FILE_BYTES, destination=Non
             raise RuntimeError('FanFicFare did not create an EPUB. The site may require an account, '
                                'be unsupported, or be blocking automated access. ' + detail)
         size = staged.stat().st_size
+        update_download_progress(db, row['id'], size, None,
+                                 'Validating updated fanfiction EPUB')
         if size <= 0 or size > max_bytes:
             raise ValueError('Fanfiction EPUB is empty or exceeds the size limit')
         check_download(staged, '.epub')
@@ -172,7 +177,8 @@ def download_fanfiction(db, row, root, max_bytes=MAX_FILE_BYTES, destination=Non
                 target = target.with_name(f'{target.stem} [{key}]{target.suffix}')
             os.replace(staged, target)
         db.execute("""UPDATE items SET metadata=?,state='downloaded',file_path=?,sha256=?,
-            error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            error=NULL,progress_bytes=NULL,progress_total=NULL,progress_message=NULL,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                    (json.dumps(item, ensure_ascii=False), str(target.resolve()), digest, row['id']))
         db.commit()
         return dict(db.execute('SELECT * FROM items WHERE id=?', (row['id'],)).fetchone())

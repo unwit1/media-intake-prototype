@@ -1649,3 +1649,83 @@ Add a provider-independent interface:
 - `media.acquire.import(file_id)`
 
 The planner should be able to return multiple routes for the same logical work, such as an open file, owned-store purchase, self-hosted copy, feed enclosure, local-file match or stream-only availability. The metadata graph should deduplicate these routes under the same logical entity instead of creating duplicate media records.
+
+
+### Open art, museum, 3D, texture, and source-file connectors
+
+Add the following download-capable providers to the connector backlog.
+
+#### Wikisource / Wikimedia text export
+
+- **Wikisource** — P0/P1 ebook export connector. Works expose built-in EPUB, MOBI and PDF downloads in addition to page/source data through MediaWiki. Use the work's top-level page and Wikidata/scan backing where available to preserve logical-work identity and source provenance.
+- **Wikibooks / other Wikimedia text projects** — candidate export connectors where the same export infrastructure produces structured downloadable books/documents.
+
+#### Museum/open-art APIs with high-resolution files
+
+- **The Metropolitan Museum of Art Open Access API** — P1 artwork/image connector. Public-domain object records expose downloadable images and structured collection metadata.
+- **Art Institute of Chicago API + IIIF** — P1. Public-domain works expose IIIF manifests/images and documented download patterns; support metadata search plus local image acquisition when needed.
+- **Cleveland Museum of Art Open Access API** — P1. The API includes metadata and image links for tens of thousands of works, including full-size/uncompressed image paths for eligible CC0 items, plus ZIP JPEG+caption and high-resolution TIFF endpoints.
+- **Wellcome Collection** — candidate P1 IIIF/image connector. Investigate current API + IIIF surfaces for images, digitized books, manuscripts and other collection objects.
+- **Rijksmuseum / National Gallery / Yale / Getty open-access collections** — candidate museum-specific connectors where current APIs/IIIF expose downloadable public-domain/open-access images. Prefer IIIF generic support whenever possible to avoid bespoke code.
+
+#### 3D / HDRI / texture / production-asset libraries
+
+- **Poly Haven API** — P0/P1 asset connector. Its public API exposes asset search/metadata plus `GET /files/{id}` download URLs, file sizes, hashes and dependencies for HDRIs, textures and models. Support HDR/EXR/JPG, texture maps, Blend/USD/glTF and other listed file variants.
+- **ambientCG** — P1 CC0 texture/material/HDRI/model connector. The public asset API exposes structured asset data and direct ZIP downloads; normalize resolutions, maps/material channels and archive contents.
+- **Sketchfab Download API** — P1 authenticated downloadable-3D provider. For download-enabled models, OAuth users can request short-lived archive URLs; current API downloads provide formats including glTF/GLB and USDZ. Preserve model UID, creator, license/attribution data, available formats and expiring URL state.
+- **NASA 3D Resources** — P1 scientific/space 3D-asset connector.
+- **Smithsonian 3D/Open Access** — P1 museum/scientific 3D connector.
+- **Quaternius** — candidate downloadable CC0 low-poly/game-asset connector.
+- **Objaverse** — candidate large-scale 3D metadata/download aggregator. Use only records whose upstream licensing/source data are retained and verify the current dataset/API route before activation.
+- **Google Scanned Objects / research 3D datasets** — candidate downloadable model datasets where official dataset hosting and licensing permit integration.
+- **Khronos glTF Sample Assets** — P2 developer/reference connector for structured downloadable glTF test/sample media.
+- **Blender Extensions / demo/open-movie resources** — P1 production source-file connector for .blend projects and associated assets.
+
+#### Public scientific and government media
+
+- **NASA Image and Video Library** — strengthen as P1 because its searchable library provides downloadable image/video/audio variants and downloadable caption files.
+- **NOAA / USGS / National Park Service media APIs** — candidate P1 scientific/geospatial/public-media connectors where current APIs expose downloadable photography, maps, audio/video or datasets.
+- **Library of Congress digital collections** — retain as a broad image/audio/video/text connector and exploit IIIF where available.
+
+#### Game/media asset catalogs without strong APIs
+
+- **Kenney** — direct ZIP asset packs with categories, versions and file counts; suitable for a lightweight catalog/page connector.
+- **OpenGameArt** — downloadable 2D/3D/audio/music/archive files with creator, tags, collections and license metadata. Since a mature public search API is not evident, keep it as a page/RSS connector candidate rather than pretending there is a stable API.
+- **itch.io asset packs** — combine browse RSS, metadata/page resolution and authenticated claimed/purchased downloads.
+- **creator GitHub/GitLab releases** — generic release-asset connector for open media/asset projects whose canonical distribution is a repository release. Store repository, release/tag, asset filename, checksum when available and source license.
+
+#### Additional open audio/music repositories
+
+- **ccMixter** — reinforce as a direct-download remix/sample connector; RSS/Atom-compatible Sample Pool metadata includes Creative Commons license information, and individual works may expose MP3/FLAC/stem archives.
+- **FreePD** — candidate public-domain music connector; verify current machine-readable catalog/download structure before adapter implementation.
+- **Free Music Archive** — candidate open/creator music connector if a current stable API/data export is available; otherwise use metadata/link discovery only.
+- **Internet Archive netlabels/live-music collections** — collection-level direct-download connectors using the generic Archive.org integration.
+
+#### Connector format normalization for creative assets
+
+Extend normalized file roles beyond conventional media formats:
+
+- `master`
+- `preview`
+- `thumbnail`
+- `source_project`
+- `render`
+- `model`
+- `texture`
+- `normal_map`
+- `roughness_map`
+- `displacement_map`
+- `hdri`
+- `audio_stem`
+- `score`
+- `midi`
+- `caption`
+- `transcript`
+- `ocr`
+- `supplement`
+- `installer`
+- `dlc_installer`
+- `archive`
+- `printable_model`
+
+This allows Media Intake to represent a Blender open movie, game asset pack, museum scan, audiobook, ebook, and game installer through the same acquisition model without pretending all downloadable files are equivalent.

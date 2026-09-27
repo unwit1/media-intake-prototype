@@ -874,3 +874,330 @@ The long-term target is that a user can add one recognizable piece of media and 
 8. explain where every relationship came from,
 9. continue processing even when a small subset needs manual review,
 10. apply the same behavior consistently across books, games, and the unified Video family (movies, TV, web series, anime/video specials, and future video-first subtypes).
+
+
+---
+
+# Metadata aggregator registry and content-source expansion
+
+**Priority: P0 architectural capability; individual providers are prioritized below.**
+
+Media Intake should treat any legitimate service, database, feed, catalog, index, or API that aggregates useful media metadata as a potentially addable **metadata aggregator provider**. Do not hard-code a short closed list of sources. Maintain a provider registry so new aggregators can be enabled without redesigning media-family logic.
+
+The purpose of this registry is broader than search. Metadata aggregators can improve identity resolution, external-ID mapping, work-vs-edition collapse, franchise/series expansion, relationship evidence, release monitoring, availability discovery, artwork, recommendations, user-state import, and discovery of actual legally accessible content.
+
+## Provider capability contract
+
+Every metadata/content provider should advertise capabilities rather than being treated as globally authoritative.
+
+Suggested capability flags:
+
+- `search`
+- `entity_lookup`
+- `bulk_catalog`
+- `external_id_mapping`
+- `aliases`
+- `creator_metadata`
+- `series_membership`
+- `franchise_relationships`
+- `continuity_relationships`
+- `work_edition_grouping`
+- `release_grouping`
+- `season_episode_structure`
+- `chapter_structure`
+- `release_calendar`
+- `future_release_discovery`
+- `incremental_changes`
+- `availability_lookup`
+- `streaming_availability`
+- `user_library`
+- `user_history`
+- `ratings`
+- `recommendations`
+- `covers_artwork`
+- `direct_content`
+- `download_links`
+- `rss_atom`
+- `opds`
+- `oai_pmh`
+- `activitypub_federation`
+
+Provider configuration should also record authentication type, cost/free tier, rate limits, terms/licensing constraints, attribution requirements, cache policy, supported media types, geographic restrictions, API stability, and whether the source is suitable for metadata only versus direct-content acquisition.
+
+## Field-level authority
+
+No provider should be globally canonical. Allow authority/confidence to vary by field and relationship type.
+
+Examples:
+
+- TVmaze may outrank a general movie database for episode air dates.
+- Open Library may outrank a social catalog for ISBN/edition identity.
+- BookBrainz may provide stronger explicit edition-group relationships.
+- Wikidata may be stronger for cross-media identifiers and adaptation relationships.
+- a first-party publisher/studio/developer source should outrank aggregators for authoritative announcements.
+- Podcast RSS should outrank a third-party podcast index for the canonical episode enclosure URL.
+- a provider's explicit relation should outrank a title-similarity inference.
+
+## P0/P1 metadata aggregator candidates
+
+The following should be represented in the provider registry as addable supported metadata aggregators even when an adapter is not implemented yet.
+
+### Cross-media / universal identity
+
+- **Wikidata** — cross-media entities, aliases, identifiers, creators, adaptations, franchises, relationships.
+- **Wikipedia / MediaWiki APIs** — human-curated context, page relationships, infobox-derived identifiers where useful; lower authority than structured first-party metadata for volatile fields.
+- **Apple Search API** — broad discovery across music, movies, TV, podcasts, audiobooks, ebooks, and apps; useful generic fallback resolver.
+- **Internet Archive metadata/search APIs** — cross-format records covering books, audio, video, software, images, collections, and archival items; also a potential direct-content source when rights/availability permit.
+
+### Books / written works
+
+- **Open Library** — work/edition separation, ISBNs, authors, subjects, covers, availability, recent changes, and bulk data.
+- **BookBrainz** — authors, works, edition groups, editions, aliases, identifiers, and explicit relationships.
+- **Hardcover** — modern book catalog and series/community metadata through GraphQL.
+- **Google Books** — book/edition identifiers, ISBNs, publisher metadata, descriptions, covers, and broad search coverage.
+- **ISFDB** — speculative-fiction bibliographic, series, publication, award, and title relationships; adapter feasibility/terms should be evaluated before implementation.
+- **WorldCat/OCLC** — bibliographic and library holdings metadata where accessible under supported terms/API access.
+- **LibraryThing** — supplemental book/edition/series/community metadata where API access permits.
+- **Goodreads** — retain import/export and existing supported paths, but do not depend on new public API access.
+- **StoryGraph** — candidate import/export or future API integration; do not treat a currently unavailable public API as a dependency.
+
+### Scholarly / technical / research publications
+
+- **OpenAlex** — graph of scholarly works, books, chapters, papers, authors, sources, institutions, topics, open-access locations, citations, and identifiers.
+- **Crossref** — DOI bibliographic metadata, publishers, journals, books/chapters, licenses, funding, ORCID/ROR identifiers, updates.
+- **DataCite** — DOI metadata for datasets, research outputs, software, publications, and related identifiers.
+- **PubMed / NCBI E-utilities** — biomedical publication metadata, links, identifiers, abstracts where available, and bulk updates.
+- **PubMed Central** — open-access full-text relationship and content discovery for eligible works.
+- **Europe PMC** — biomedical/life-science metadata, citations, grants, preprints, and open-access/full-text discovery.
+- **arXiv** — structured preprint metadata/feed integration.
+- **DOAJ** — open-access journal/article discovery and metadata.
+- **DOAB** — open-access book metadata via bulk exports/OAI-PMH/RSS/Atom.
+- **OAPEN** — open-access scholarly books with JSON/CSV/ONIX/KBART/OAI-PMH metadata and full-text linkage.
+
+### Comics / manga
+
+- **Metron** — comic series, issues, arcs, characters, creators, universes, cover hashes, Comic Vine IDs, and Grand Comics Database IDs.
+- **Grand Comics Database (GCD)** — issue/series/publisher/creator metadata; use supported data/API/export mechanisms.
+- **Comic Vine** — volumes, issues, characters, teams, concepts, publishers, people, and related comic metadata where API terms permit.
+- **MangaUpdates** — manga series, type, publishers, licensing, status, and related metadata.
+- **MangaDex** — manga, authors, artists, groups, chapters, relationships and multilingual release metadata through its API.
+- **AniList** — manga as well as anime; especially useful for relations and adaptation graph evidence.
+- **MyAnimeList via supported API/Jikan** — supplemental manga/anime metadata. Treat Jikan explicitly as a third-party MAL-backed aggregator rather than first-party MAL authority.
+- **Kitsu** — anime/manga discovery, identifiers, relationships, categories, and user-state opportunities.
+
+### Anime
+
+- **AniList**
+- **MyAnimeList / Jikan**
+- **Kitsu**
+- **AniDB** — anime-specific IDs, episodes, relations, creators and release metadata where API access/terms allow.
+- **Anime-Planet** — candidate supplemental catalog/user-list integration if a supported structured path becomes available.
+- **LiveChart** — seasonal/release-calendar enrichment where permitted.
+- **Simkl** — anime plus TV/movie metadata and valuable external-ID mapping among AniList, MAL, AniDB, Kitsu, TMDB, IMDb, TVDB, and other ecosystems.
+
+### Movies / TV / episodic video
+
+- **TMDB** — movie/TV search, collections, people, images, release metadata, recommendations, external IDs.
+- **TVmaze** — show/season/episode structures, specials, alternate episode orders, broadcast and web schedules, external-ID lookup.
+- **TheTVDB** — series, movies, seasons, episodes, artwork, translations, statuses, and update streams.
+- **Trakt** — movies/shows plus watchlist/history/collection/list state and supplemental metadata.
+- **Simkl** — TV/movies/anime plus cross-provider identifier resolution and user watch state.
+- **OMDb** — lightweight IMDb-linked movie/TV/episode metadata where API access is appropriate.
+- **IMDb datasets/API** — identifier/ratings/title metadata; distinguish free public datasets from licensed commercial API products.
+- **Watchmode** — movie/TV metadata plus streaming-provider availability, deeplinks, episode availability, ID mapping, and daily change data.
+- **JustWatch** — candidate availability provider only through supported/authorized integration; do not depend on undocumented private endpoints.
+- **official network/studio/streamer sources** — authoritative release/status evidence when structured feeds or APIs are available.
+
+### Web video / creator video
+
+- **YouTube Data API** — channels, videos, playlists, playlist membership, publication metadata and structured web-series discovery.
+- **PeerTube** — federated video, channels, playlists, search/index federation, ActivityPub relationships.
+- **Vimeo API** — videos, channels, showcases/albums, folders, creators and search.
+- **Dailymotion API** — videos, users/channels, playlists and structured publication metadata.
+- **RSS/Atom video feeds** — generic first-class provider for sites/creators exposing feeds.
+- **ActivityPub** — generic federated-content discovery capability where the originating platform exposes useful structured objects.
+
+### Games
+
+- **IGDB** — primary game/franchise/collection/release metadata candidate.
+- **RAWG** — broad games, platforms, stores, DLC, developers, publishers, genres and release metadata.
+- **MobyGames** — deep historical releases/platforms plus groups that can encode game series, remakes, inspirations and other useful relationships.
+- **Steam Web APIs/store metadata** — release/platform/store and DLC/application relationships where supported.
+- **GOG catalog/store metadata** — candidate store/release enrichment where supported.
+- **Giant Bomb** — games, franchises, characters, concepts and related metadata where API access permits.
+- **SteamGridDB** — artwork/identity enrichment, not canonical work metadata.
+- **PCGamingWiki** — candidate compatibility/platform/technical metadata source where supported terms allow structured integration.
+- **HowLongToBeat** — candidate enrichment only if an authorized structured integration becomes available; do not depend on scraping.
+
+### Visual novels
+
+- **VNDB** — P0 specialist provider for visual novels, releases, languages, platforms, producers, staff, characters, tags, official relations, development status and external links.
+- **IGDB/Steam** — secondary identity/release sources for visual novels distributed as games.
+- **AniList/MAL/Kitsu** — adaptation/related-anime evidence where applicable.
+
+### Tabletop / board / RPG media
+
+- **BoardGameGeek** — board games, expansions, families, designers, publishers, versions and user collections via supported API.
+- **RPGGeek** — tabletop RPG publications and related entities where the BGG API surface supports them.
+- **VideoGameGeek** — supplemental game records where useful.
+- **Open5e** — open tabletop rules/content metadata and searchable open material.
+- **publisher SRDs/open compendia** — direct structured metadata/content sources for licensed/open tabletop material.
+
+### Music
+
+- **MusicBrainz** — artists, recordings, releases, release groups, works, labels, relationships and external IDs.
+- **Discogs** — artists, labels, releases and master releases for edition/release grouping.
+- **Spotify Web API** — artists, albums, tracks, shows, episodes and audiobooks; metadata/user-library integration only under Spotify policy, never downloading/ripping.
+- **Apple Music/iTunes Search** — music plus cross-media catalog discovery.
+- **Deezer API** — supplemental artist/album/track/catalog metadata where current API access permits.
+- **Last.fm** — artists/albums/tracks, tags and listening/scrobble metadata.
+- **ListenBrainz** — listening history, MusicBrainz-linked data and user-history import/export.
+- **AcoustID** — audio fingerprint-to-recording identification for locally owned/imported files.
+- **Cover Art Archive** — MusicBrainz-linked cover art.
+- **Internet Archive audio collections** — archival/open audio metadata and eligible content discovery.
+
+### Podcasts / audio serials / audio drama
+
+- **Podcast Index** — podcast/feed/episode discovery and canonical feed identifiers.
+- **Listen Notes** — broad podcast/episode search as a secondary discovery source.
+- **Apple Podcasts/iTunes Search API** — cross-platform podcast discovery and IDs.
+- **Spotify podcast metadata** — show/episode metadata and user-state opportunities under platform policy.
+- **Podcast RSS/Atom feeds** — canonical source for episode membership, GUIDs, publication timestamps and enclosure URLs.
+- **OP3-compatible/open podcast analytics identifiers** where useful for identity/analytics enrichment.
+- **LibriVox** — public-domain audiobook projects, authors, genres, release updates and direct eligible audio content.
+
+### Audiobooks
+
+- **LibriVox**
+- **Spotify audiobook metadata**
+- **Apple audiobook catalog/Search API**
+- **Open Library** edition/work metadata to connect audiobook editions to logical book works.
+- **MusicBrainz** where spoken-word releases are cataloged.
+- **Internet Archive** for archival/open audiobook and spoken-word collections.
+
+### Web fiction / fanfiction / serialized text
+
+- **FanFicFare** — treat its supported-site adapter ecosystem as a meta-provider layer for normalized discovery/update metadata across many fiction sites.
+- **AO3** — supported page/feed/import adapter; no dependency on an unofficial API as canonical infrastructure.
+- **FanFiction.net**
+- **FictionPress**
+- **Royal Road**
+- **Scribble Hub**
+- **SpaceBattles**
+- **Sufficient Velocity**
+- **Questionable Questing**
+- **Fiction.live**
+- **Wattpad**
+- **Tapas**
+- **WebNovel**
+- **NovelUpdates** — valuable translation/series/release aggregation if a supported structured integration can be used.
+- **RanobeDB** — structured light-novel/web-novel series/release metadata.
+- **NovelArchive / LNORI** — keep as discovery/catalog adapters subject to existing rights and connector controls.
+- **generic RSS/Atom** — first-class serialized-text provider whenever a site exposes a feed.
+
+Site-specific adapters must respect authentication, robots/terms, rate limits, and content rights. Metadata discovery does not itself authorize copying restricted chapter content.
+
+### Public-domain / open ebooks and open scholarly books
+
+These are both metadata aggregators and potential direct-content providers:
+
+- **Project Gutenberg** — daily machine-readable RDF/XML metadata, CSV/MARC catalogs, RSS/OPDS, and public-domain ebook files.
+- **Standard Ebooks** — OPDS 1/2 plus RSS/Atom catalog/release feeds and carefully produced public-domain ebooks.
+- **DOAB**
+- **OAPEN**
+- **Internet Archive / Open Library availability links**
+- **HathiTrust** — metadata/rights-aware discovery where API access permits; content acquisition must respect item rights.
+- **Google Books** — metadata plus preview/full-view availability flags, not a generic downloader.
+- **institutional repositories using OAI-PMH** — generic open-publication discovery source.
+
+### Images / open visual media / audio assets
+
+- **Openverse** — open-licensed image and audio aggregation with source/provider/license metadata.
+- **Wikimedia Commons** — media files, categories, structured metadata and licenses through MediaWiki APIs.
+- **Flickr API** — image metadata where licensing and API terms permit.
+- **Unsplash/Pexels** — candidate visual enrichment sources under their API/attribution rules; not canonical media-work metadata.
+- **Internet Archive images/collections** — archival/open visual items where rights permit.
+
+## Actual-content aggregation layer
+
+Metadata discovery and content acquisition must remain separate capabilities. A provider may say an item exists without granting Media Intake permission to download or copy it.
+
+Build a generic content-source layer capable of ingesting explicitly legal/authorized content from:
+
+- HTTP(S) direct files
+- RSS/Atom enclosures
+- Podcast RSS
+- OPDS 1.x and OPDS 2.x
+- OAI-PMH records that expose open-access locations
+- Internet Archive files/derivatives when item rights allow access
+- Project Gutenberg catalog/file links
+- Standard Ebooks feeds/files
+- LibriVox audio
+- DOAB/OAPEN open-access full-text links
+- PubMed Central / Europe PMC open-access full text where licensing permits
+- arXiv source/PDF links
+- PeerTube public video objects
+- Wikimedia Commons
+- Openverse-provided licensed media URLs
+- creator/publisher feeds and first-party direct downloads
+- user-authenticated personal libraries when an official API/connector permits access
+- local files/folders and Calibre/OPDS servers
+
+Do not infer download permission merely from metadata availability. Preserve license/rights evidence, source URL, acquisition timestamp, checksum, and terms/provenance for every acquired item.
+
+## Generic protocol adapters
+
+Prioritize protocol-level adapters because one implementation can unlock many sources:
+
+1. **RSS / Atom**
+2. **OPDS 1.x / OPDS 2.x**
+3. **OAI-PMH**
+4. **ActivityPub**
+5. **MediaWiki API**
+6. **Schema.org / JSON-LD embedded metadata**
+7. **OpenGraph / standard HTML metadata**
+8. **MARC / MARCXML**
+9. **ONIX**
+10. **Dublin Core**
+11. **Crossref/DataCite DOI resolution**
+12. **generic sitemap + structured-page discovery where allowed**
+
+A source using one of these protocols should often be addable declaratively through configuration before requiring bespoke Python code.
+
+## Provider registry persistence
+
+Add provider-registry concepts such as:
+
+- `media_providers`
+- `media_provider_capabilities`
+- `media_provider_media_types`
+- `media_provider_credentials`
+- `media_provider_rate_limits`
+- `media_provider_terms`
+- `media_provider_field_authority`
+- `media_provider_health`
+- `media_provider_sync_state`
+
+Keep secrets out of Git/repository configuration. Store only credential references and provider setup metadata.
+
+## Provider health and graceful degradation
+
+The resolver must continue working when one aggregator is unavailable.
+
+Track:
+
+- last successful request
+- last error
+- latency
+- rate-limit state
+- authentication state
+- schema/API version
+- degraded/disabled state
+- stale-cache age
+
+A failed provider should reduce evidence coverage, not halt the entire Add Anything flow.
+
+## Research backlog rule
+
+When future research discovers a service that aggregates useful metadata for any supported or plausible media type, add it to the provider registry backlog unless it is clearly unusable, unlawful to integrate, or technically irrelevant. Record why it was rejected rather than silently forgetting it.
+

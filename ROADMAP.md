@@ -1285,3 +1285,42 @@ When multiple layers exist, prefer efficient aggregation before fan-out:
 6. Preserve provider disagreement instead of selecting a silent winner.
 
 This should reduce API calls while increasing coverage and identity precision.
+
+
+## Additional open-content and scholarly aggregators
+
+Add the following provider candidates discovered during continued aggregator research.
+
+### Scholarly / open-access expansion
+
+- **CORE** — P0/P1 scholarly aggregator. CORE collects, harmonizes and enriches metadata and full text from thousands of repositories/journals/providers and exposes searchable metadata plus open-access full-text content through its API. Treat metadata lookup and full-text acquisition as separate capabilities and retain the originating repository/provider and license/access provenance.
+- **Semantic Scholar Academic Graph** — P1 scholarly identity/discovery provider for papers, authors, citations, references, venues and related IDs. Also expose its Recommendations API as an optional discovery capability and its dataset releases/diffs as a bulk/local-index route when appropriate.
+- **Semantic Scholar Datasets** — bulk JSON graph snapshots/diffs should be a distinct provider capability from interactive API search so a future local scholarly index can avoid excessive API fan-out.
+- **Unpaywall** — retain as optional DOI-level open-access-status/location enrichment. Do **not** use it as a general search provider: its `/v2/search` endpoint was retired on 2026-09-18 and its own documentation directs search workloads to OpenAlex. Prefer OpenAlex for discovery and use Unpaywall only where its DOI OA record adds useful evidence.
+
+### Open / creator-licensed audio and music
+
+- **Freesound API v2** — P1 audio metadata/content provider for sounds, packs, users, tags, descriptions, formats, licenses, geotags, ratings, similarity and content-analysis/audio descriptors. Capture the per-sound Creative Commons license and any creator-supplied generative-AI preference metadata. Download/acquisition must honor each sound's content license and API terms.
+- **Jamendo API** — P1 open/creator music catalog candidate for artists, albums, tracks, playlists/radios and music discovery. Treat direct download as conditional: the API exposes fields such as `zip_allowed` and `audiodownload_allowed`; only expose acquisition when the current record explicitly permits it.
+- **Openverse** — retain as the general cross-provider open image/audio discovery layer; preserve upstream source/provider and license and verify current licensing at acquisition time instead of treating aggregation as a guarantee.
+- **Wikimedia Commons** — retain as a structured open-media provider and potential direct-content source subject to each file's license.
+
+### Provider lifecycle/deprecation handling
+
+Provider-registry entries need lifecycle state:
+
+- `candidate`
+- `active`
+- `degraded`
+- `deprecated`
+- `retired`
+- `rejected`
+
+Track replacement/successor providers and endpoint-level retirement dates, not just whole-provider status. A service can remain useful for ID lookup while a search endpoint has been retired.
+
+Known example:
+
+- Unpaywall DOI lookup: active enrichment.
+- Unpaywall general search: retired 2026-09-18; successor route = OpenAlex works search.
+
+Do not add dead APIs as live supported providers merely because historical documentation exists. Keep a rejected/retired-provider ledger so future research does not repeatedly rediscover and attempt to integrate the same dead endpoint.

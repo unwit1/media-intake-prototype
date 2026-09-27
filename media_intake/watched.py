@@ -22,7 +22,8 @@ from .media_catalogs import (discover_novelarchive_chapters, english_release_dat
                              search_ranobedb,
                              search_lnori, search_novelarchive)
 from .core import download, enqueue, http_get, search_catalog, search_opds
-from .media_graph import sync_watch_entity
+from .media_graph import (add_media_relationship, sync_watch_entity,
+                          upsert_media_entity)
 from .fanfiction import story_url_key
 from .irc import enqueue_irc, search_irc
 from .serial import discover_feed, enqueue_serial
@@ -546,21 +547,55 @@ def add_from_goodreads_metadata(db, parsed, url, kind=None, title=None, author='
         saved['goodreads_baseline_pending'] = True
     watch_id = add_watch(db, detected_kind, name, writer, parsed.get('source_url') or url,
                          date, saved)
-    if detected_kind in ('series', 'author'):
-        # A selected series represents its full listed bibliography. An author
-        # watch follows future releases and should not enqueue the whole backlist.
+    if detected_kind == 'series':
+        watch = dict(db.execute('SELECT * FROM watched_items WHERE id=?', (watch_id,)).fetchone())
+        _sync_goodreads_series_members(db, watch, parsed.get('books', []))
+    elif detected_kind == 'author':
+        # An author watch follows future releases and should not enqueue the backlist.
         for book in parsed.get('books', []):
             if not book.get('title') or not book.get('source_url'):
                 continue
-            if detected_kind == 'author' and not (
+            if not (
                     book.get('release_date') and
                     book['release_date'] > dt.date.today().isoformat()):
                 continue
-            book_author = book.get('author') or (name if detected_kind == 'author' else writer)
+            book_author = book.get('author') or name
             add_watch(db, 'book', book['title'], book_author,
                       book.get('source_url'), book.get('release_date'),
                       {'sources': sources or {}}, watch_id)
     return watch_id, parsed
+
+
+def _sync_goodreads_series_members(db, watch, books):
+    """Save Goodreads series membership in the graph without creating book watches."""
+    if watch.get('kind') != 'series':
+        return 0
+    series_entity_id = watch.get('media_entity_id') or sync_watch_entity(db, watch['id'])
+    saved = 0
+    for book in books or []:
+        title = str(book.get('title') or '').strip()
+        source_url = str(book.get('source_url') or '').strip()
+        if not title or not source_url:
+            continue
+        path = urllib.parse.urlsplit(source_url).path
+        match = re.search(r'/book/show/(\d+)', path, flags=re.I)
+        external_id = match.group(1) if match else source_url
+        member_id = upsert_media_entity(
+            db, 'work', title, media_type='book', canonical_url=source_url,
+            release_date=book.get('release_date'),
+            metadata={'catalog_provider': 'Goodreads'},
+            external_ids=[{'provider': 'goodreads', 'external_id': external_id,
+                           'source_url': source_url}], provider='Goodreads')
+        add_media_relationship(
+            db, series_entity_id, member_id, 'contains', confidence=0.9,
+            inferred=False, status='accepted', provider='Goodreads',
+            provider_entity_id=external_id, raw_relationship_type='series listing',
+            source_url=watch.get('source_url'),
+            evidence={'title': title, 'member_url': source_url,
+                      'release_date': book.get('release_date')}, is_explicit=True)
+        saved += 1
+    db.commit()
+    return saved
 
 
 def list_watches(db):
@@ -640,24 +675,25 @@ def _search_candidates(watch, source_overrides=None):
                 item.setdefault('rights_work_key', approval['rights_work_key'])
             results.append(item)
 
-    if options.get('openlibrary', True) and _approved_source_record(options, 'openlibrary'):
+    book_kind = watch.get('kind') in {'book', 'series', 'lightnovel'}
+    if book_kind and options.get('openlibrary', True) and _approved_source_record(options, 'openlibrary'):
         try:
             add_results(search_openlibrary(query, limit=15), 'openlibrary')
         except Exception as exc:
             errors.append(f'Open Library: {exc}')
-    for feed_url in (options.get('opds_feeds', []) if _approved_source_record(
+    for feed_url in (options.get('opds_feeds', []) if book_kind and _approved_source_record(
             options, 'opds_feeds') else []):
         try:
             add_results(search_opds(feed_url, query), 'opds_feeds')
         except Exception as exc:
             errors.append(f'OPDS {feed_url}: {exc}')
-    for catalog_path in (options.get('catalogs', []) if _approved_source_record(
+    for catalog_path in (options.get('catalogs', []) if book_kind and _approved_source_record(
             options, 'json_catalogs') else []):
         try:
             add_results(search_catalog(catalog_path, query), 'json_catalogs')
         except Exception as exc:
             errors.append(f'Catalog {catalog_path}: {exc}')
-    for site in ('libgen', 'annas'):
+    for site in (('libgen', 'annas') if book_kind else ()):
         source_key = 'annas_archive' if site == 'annas' else 'libgen'
         if (not options.get(site, True) or not _approved_source_record(options, source_key)):
             continue
@@ -675,7 +711,7 @@ def _search_candidates(watch, source_overrides=None):
         except Exception as exc:
             errors.append(f'{site}: {exc}')
     irc_configs = options.get('irc_configs') or ([options['irc_config']] if options.get('irc_config') else [])
-    if not _approved_source_record(options, 'irc'):
+    if not book_kind or not _approved_source_record(options, 'irc'):
         irc_configs = []
     for irc_config_path in irc_configs:
         try:
@@ -692,7 +728,7 @@ def _search_candidates(watch, source_overrides=None):
                     'public_domain_comic_mirror')
         except Exception as exc:
             errors.append(f'Comic mirror / rights evidence: {exc}')
-    if watch.get('kind') in COMIC_KINDS | {'comic_issue'}:
+    if watch.get('kind') in {'comic', 'comic_issue'}:
         approval = _approved_source_record(options, 'getcomics.org', watch)
         if approval:
             try:
@@ -701,7 +737,7 @@ def _search_candidates(watch, source_overrides=None):
                     add_results(resolve_getcomics_post(post, approval), 'getcomics.org', approval)
             except Exception as exc:
                 errors.append(f'GetComics / rights evidence: {exc}')
-    if watch.get('kind') in {'book', 'lightnovel'}:
+    if watch.get('kind') in {'book', 'series', 'lightnovel'}:
         for source_key, searcher in (('lnori.com', search_lnori),
                                      ('novelarchive.cc', search_novelarchive)):
             approval = _approved_source_record(options, source_key)
@@ -755,6 +791,17 @@ def _process_goodreads_collection(db, watch):
     current = {book.get('source_url'): book for book in page.get('books', []) if book.get('source_url')}
     sources = metadata.get('sources') or {}
     added = 0
+    if watch['kind'] == 'series':
+        # Keep series membership discoverable without creating one watched row
+        # per book. The series itself is searched through connected sources.
+        added = _sync_goodreads_series_members(db, watch, current.values())
+        metadata['known_books'] = sorted(current)
+        now = _now()
+        db.execute("UPDATE watched_items SET metadata=?,last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (json.dumps(metadata, ensure_ascii=False), now.isoformat(sep='T'),
+                    _next_day(now).isoformat(sep='T'), watch['id']))
+        db.commit()
+        return added
     if metadata.pop('goodreads_baseline_pending', False):
         # When direct access was blocked, establish a baseline on the first
         # successful fetch so old books are not mistaken for new releases.
@@ -1412,12 +1459,20 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
             continue
         if watch['kind'] in ('series', 'author'):
             try:
+                if watch['kind'] == 'series':
+                    if _search_book(db, watch, library_folder, source_options):
+                        continue
                 metadata = json.loads(watch.get('metadata') or '{}')
                 if (watch['kind'] == 'author' and
                         metadata.get('catalog_provider') == 'Open Library'):
                     _process_openlibrary_author_collection(db, watch)
-                else:
+                elif watch.get('source_url') and (urllib.parse.urlsplit(
+                        watch['source_url']).hostname or '').casefold().endswith('goodreads.com'):
                     _process_goodreads_collection(db, watch)
+                else:
+                    db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                               (now.isoformat(sep='T'), _next_day(now).isoformat(sep='T'), watch['id']))
+                    db.commit()
             except Exception as exc:
                 logger.exception('Author or series watch %s (%s) failed',
                                  watch['id'], watch['title'])

@@ -11,8 +11,7 @@ from media_intake.media_graph import (add_media_relationship, capture_graph_snap
                                      list_graph_reviews, queue_graph_review,
                                      resolve_graph_review, upsert_media_entity)
 from media_intake.watched import add_watch
-from media_intake.wikidata import (expand_watched_book_series, import_wikidata_entity,
-                                   search_wikidata)
+from media_intake.wikidata import import_wikidata_entity, search_wikidata
 
 
 class MediaGraphTest(unittest.TestCase):
@@ -215,7 +214,7 @@ class MediaGraphTest(unittest.TestCase):
                                    entity_payload=root, related_payloads=related)
             self.assertTrue(capture_graph_snapshot(db, result['root_entity_id'])['unchanged'])
 
-    def test_wikidata_book_series_auto_adds_explicit_book_members_only(self):
+    def test_wikidata_series_members_stay_in_graph_without_becoming_watches(self):
         series_type = {'id': 'Q101', 'labels': {'en': {'value': 'book series'}}}
         book_type = {'id': 'Q100', 'labels': {'en': {'value': 'book'}}}
         edition_type = {'id': 'Q103', 'labels': {'en': {'value': 'book edition'}}}
@@ -249,23 +248,20 @@ class MediaGraphTest(unittest.TestCase):
                                (series_watch,)).fetchone()
             result = import_wikidata_entity(db, 'Q10', watch_entity_id=watch['media_entity_id'],
                                             entity_payload=series, related_payloads=related)
-            expansion = expand_watched_book_series(db, series_watch, result)
-            self.assertEqual([item['title'] for item in expansion['added']], ['Book One'])
-            self.assertEqual(expansion['added'][0]['release_date'], '2030-01-02')
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE kind='book'").fetchone()[0], 1)
-            child = db.execute("SELECT * FROM watched_items WHERE kind='book'").fetchone()
-            self.assertEqual(child['state'], 'upcoming')
-            self.assertEqual(child['parent_id'], series_watch)
-            self.assertEqual(child['media_entity_id'],
-                             db.execute('''SELECT entity_id FROM media_external_ids
-                                 WHERE provider='wikidata' AND external_id='Q11' ''').fetchone()['entity_id'])
-            self.assertTrue(json.loads(child['metadata'])['sources']['openlibrary'])
-            again = expand_watched_book_series(db, series_watch, result)
-            self.assertEqual(again['added'], [])
-            self.assertEqual(len(again['existing']), 1)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE kind='book'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE kind='series'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE kind='book'").fetchone()[0], 0)
+            relation = db.execute('''SELECT r.relationship_type,e.release_date
+                FROM media_relationships r JOIN media_entities e
+                  ON e.id=r.target_entity_id
+                WHERE r.source_entity_id=?''', (watch['media_entity_id'],)).fetchone()
+            self.assertEqual(relation['relationship_type'], 'contains')
+            self.assertEqual(relation['release_date'], '2030-01-02')
+            self.assertEqual(db.execute('''SELECT entity_id FROM media_external_ids
+                WHERE provider='wikidata' AND external_id='Q11' ''').fetchone()['entity_id'],
+                db.execute('''SELECT target_entity_id FROM media_relationships
+                    WHERE source_entity_id=?''', (watch['media_entity_id'],)).fetchone()['target_entity_id'])
 
-    def test_book_series_duplicate_is_queued_instead_of_added_twice(self):
+    def test_wikidata_series_member_does_not_duplicate_existing_book_watch(self):
         book_type = {'id': 'Q100', 'labels': {'en': {'value': 'book'}}}
         series = {'id': 'Q10', 'labels': {'en': {'value': 'Example Series'}},
                   'claims': {'P31': [{'mainsnak': {'datavalue': {'value': {'id': 'Q101'}}}}],
@@ -283,11 +279,9 @@ class MediaGraphTest(unittest.TestCase):
                                (series_watch,)).fetchone()
             result = import_wikidata_entity(db, 'Q10', watch_entity_id=watch['media_entity_id'],
                                             entity_payload=series, related_payloads=related)
-            expansion = expand_watched_book_series(db, series_watch, result)
-            self.assertEqual(expansion['added'], [])
-            self.assertEqual(len(expansion['review']), 1)
+            self.assertEqual(len(result['relationships']), 1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE kind='book'").fetchone()[0], 1)
-            self.assertEqual([row['issue_type'] for row in list_graph_reviews(db)], ['suspected_duplicate'])
+            self.assertEqual(list_graph_reviews(db), [])
 
 
 if __name__ == '__main__':

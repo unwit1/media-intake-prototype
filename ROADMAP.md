@@ -25,7 +25,7 @@ The normal user flow should be:
 1. Enter or select one title.
 2. Media Intake resolves the entity and media type.
 3. The app discovers its series/franchise/continuity relationships.
-4. High-confidence direct continuations and installments are added according to the user's watch policy.
+4. High-confidence direct continuations and installments are discovered and linked; individual watch rows are created only according to the user's media watch policy.
 5. Related but weaker connections are retained as discovered candidates without blocking the import.
 6. Future refreshes discover newly announced installments, sequels, spin-offs, release-date changes, and other relevant changes automatically.
 
@@ -41,6 +41,11 @@ Default policy target:
 - Discover and surface: spin-offs, character continuations, interquels, crossovers, shared-universe branches.
 - Track separately: adaptations, remakes, reboots, alternate continuities, editions.
 - Ignore by default: unrelated works that merely share a creator.
+
+When the user selects a series from search, keep that series as one Watched item.
+Record its books and related works in the graph; do not turn the series lookup into
+a list of per-book watches. The series title is searched as a series through the
+connected sources.
 
 ### Provenance over silent guesses
 
@@ -766,17 +771,18 @@ Live providers should not be required for the normal unit test suite.
 - [x] Migration path linking existing watches without merging uncertain identities
 - [x] Wikidata search/import path surfaced from the Watched tab
 
-Wikidata discovery stores linked entities and source claims in the graph. It does not
-add related items to Watched yet; watch-policy-based expansion is part of the book
-franchise proof of concept in Milestone 2.
+Wikidata discovery stores linked entities and source claims in the graph. A selected
+series remains one Watched row; direct book membership is graph metadata. The series
+title is searched through connected book sources, and Goodreads list refreshes update
+the graph without creating per-book watches.
 
 ## Milestone 2 — Book franchise proof of concept
 
-Status: In progress. Wikidata can now populate a watched book series' explicit
-`contains` relationships and add directly listed book works as child watches.
-Editions and collections are excluded from that automatic expansion; likely title
-duplicates are sent to the shared review queue. This does not yet discover sequel
-series or refresh newly announced members automatically.
+Status: In progress. Wikidata and Goodreads can populate a watched series' explicit
+`contains` relationships. Series selection creates one Watched item, and the series
+title is searched through connected book sources. Goodreads refreshes update the graph
+without creating child watches. Sequel-series traversal and provider disagreement
+handling remain open.
 
 Use the existing book stack to prove the architecture.
 
@@ -793,9 +799,18 @@ Prove:
 - related-continuity discovery
 - future installment refresh
 
+Current behavior deliberately keeps discovered members in the graph rather than
+creating one Watched row per book when a series is selected.
+
 ## Milestone 3 — Unified GUI workflow
 
-- Add Anything
+Status: In progress. The Search and add dashboard now routes category searches to
+all available providers for Books, Comics, Manga, Anime, Videos, Games, Light novels,
+Web serials, and Fanfiction URL lookup. Per-category full watch support and future
+release connectors remain incomplete.
+
+- [x] Category-based Add Anything search routing
+- [ ] Add Anything automatic media-type/provider routing
 - automatic media-type/provider routing
 - import summary
 - continuity/related panel

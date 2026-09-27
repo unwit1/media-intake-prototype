@@ -51,13 +51,16 @@ def _anilist_release_date(value):
         return None
 
 
-def search_anilist(query, limit=20):
-    """Search AniList's public manga catalog and normalize its metadata."""
+def search_anilist(query, limit=20, media_type='MANGA'):
+    """Search AniList's public manga or anime catalog and normalize its metadata."""
     query = _query_text(query)
     limit = max(1, min(int(limit), 30))
+    media_type = str(media_type or 'MANGA').upper()
+    if media_type not in {'MANGA', 'ANIME'}:
+        raise ValueError('AniList media type must be MANGA or ANIME')
     gql = '''query ($search: String!, $limit: Int!) {
       Page(page: 1, perPage: $limit) {
-        media(search: $search, type: MANGA, isAdult: false) {
+        media(search: $search, type: MEDIA_TYPE, isAdult: false) {
           id siteUrl format status chapters volumes countryOfOrigin genres
           title { english romaji native }
           description(asHtml: false)
@@ -69,6 +72,7 @@ def search_anilist(query, limit=20):
         }
       }
     }'''
+    gql = gql.replace('MEDIA_TYPE', media_type)
     request = urllib.request.Request(
         ANILIST_URL,
         data=json.dumps({'query': gql, 'variables': {'search': query, 'limit': limit}}).encode('utf-8'),
@@ -106,7 +110,8 @@ def search_anilist(query, limit=20):
                     break
         results.append({
             'provider': 'anilist',
-            'kind': 'webtoon' if str(media.get('format') or '').upper() == 'WEBTOON' else 'manga',
+            'kind': ('anime' if media_type == 'ANIME' else
+                     'webtoon' if str(media.get('format') or '').upper() == 'WEBTOON' else 'manga'),
             'title': title,
             'author': ', '.join(creators) or 'Unknown',
             'release_date': _anilist_release_date(media.get('startDate')),

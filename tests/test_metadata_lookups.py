@@ -5,9 +5,12 @@ from contextlib import closing
 from unittest.mock import patch
 
 from media_intake.core import connect
+from media_intake.media_graph import get_media_graph
 from media_intake.sources import search_openlibrary_metadata
 from media_intake.watched import (add_from_goodreads_metadata, add_watch,
                                   _process_openlibrary_author_collection,
+                                  _process_goodreads_collection,
+                                  process_due_watches,
                                   search_book_metadata,
                                   search_goodreads, search_goodreads_with_fallback)
 
@@ -69,7 +72,7 @@ class MetadataLookupTest(unittest.TestCase):
         self.assertIn(('RanobeDB', 'lightnovel'), kinds)
         self.assertTrue(all(row['source_url'] for row in results))
 
-    def test_series_selection_watches_every_listed_book(self):
+    def test_series_selection_adds_one_watch_and_records_members_in_graph(self):
         series = {
             'provider': 'Goodreads', 'kind': 'series', 'title': 'The Stormlight Archive',
             'source_url': 'https://www.goodreads.com/series/49075',
@@ -85,14 +88,51 @@ class MetadataLookupTest(unittest.TestCase):
                 add_from_goodreads_metadata(db, series, series['source_url'],
                                             sources={'openlibrary': True})
                 rows = [dict(row) for row in db.execute(
-                    'SELECT kind,title,parent_id FROM watched_items ORDER BY id')]
+                    'SELECT kind,title,parent_id,media_entity_id FROM watched_items ORDER BY id')]
+                graph = get_media_graph(db, rows[0]['media_entity_id'])
 
-        self.assertEqual([row['title'] for row in rows], [
-            'The Stormlight Archive', 'The Way of Kings', 'Words of Radiance',
-        ])
-        self.assertEqual([row['kind'] for row in rows], ['series', 'book', 'book'])
+        self.assertEqual([row['title'] for row in rows], ['The Stormlight Archive'])
+        self.assertEqual([row['kind'] for row in rows], ['series'])
         self.assertIsNone(rows[0]['parent_id'])
-        self.assertEqual([row['parent_id'] for row in rows[1:]], [1, 1])
+        self.assertEqual(len(graph['relationships']), 2)
+        self.assertTrue(all(row['relationship_type'] == 'contains'
+                            for row in graph['relationships']))
+        self.assertEqual({row['title'] for row in graph['entities']}, {
+            'The Stormlight Archive', 'The Way of Kings', 'Words of Radiance'})
+
+    def test_series_refresh_updates_graph_without_creating_book_watches(self):
+        page = {'books': [
+            {'title': 'The Way of Kings', 'author': 'Brandon Sanderson',
+             'source_url': 'https://www.goodreads.com/book/show/7235533'},
+            {'title': 'Words of Radiance', 'author': 'Brandon Sanderson',
+             'source_url': 'https://www.goodreads.com/book/show/17332218'},
+        ]}
+        with tempfile.TemporaryDirectory() as temp:
+            with closing(connect(temp)) as db:
+                watch_id = add_watch(db, 'series', 'The Stormlight Archive',
+                                     source_url='https://www.goodreads.com/series/49075',
+                                     metadata={'known_books': []})
+                watch = dict(db.execute('SELECT * FROM watched_items WHERE id=?', (watch_id,)).fetchone())
+                with patch('media_intake.watched.fetch_goodreads', return_value=page):
+                    _process_goodreads_collection(db, watch)
+                rows = [dict(row) for row in db.execute('SELECT kind,title FROM watched_items ORDER BY id')]
+                count = db.execute('SELECT COUNT(*) FROM media_relationships').fetchone()[0]
+
+        self.assertEqual(rows, [{'kind': 'series', 'title': 'The Stormlight Archive'}])
+        self.assertEqual(count, 2)
+
+    def test_due_series_scan_searches_the_series_title_before_refreshing_goodreads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with closing(connect(temp)) as db:
+                add_watch(db, 'series', 'Example Series', author='Example Author',
+                          source_url='https://www.goodreads.com/series/123')
+                with patch('media_intake.watched._search_book', return_value=False) as search, \
+                     patch('media_intake.watched._process_goodreads_collection', return_value=0) as refresh:
+                    process_due_watches(db, temp, force=True)
+
+        self.assertEqual(search.call_args.args[1]['kind'], 'series')
+        self.assertEqual(search.call_args.args[1]['title'], 'Example Series')
+        refresh.assert_called_once()
 
     def test_openlibrary_author_watch_schedules_future_works(self):
         payload = json.dumps({'entries': [

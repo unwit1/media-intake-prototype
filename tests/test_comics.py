@@ -169,6 +169,29 @@ class ComicCatalogTest(unittest.TestCase):
         self.assertEqual(results[0]['release_date'], '2024-03-04')
         self.assertEqual(results[0]['chapters'], 12)
 
+    def test_anilist_can_search_anime_for_the_category_dashboard(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def read(self, _limit):
+                return json.dumps({'data': {'Page': {'media': [{
+                    'id': 43, 'siteUrl': 'https://anilist.co/anime/43/example',
+                    'format': 'TV', 'title': {'english': 'Example Anime'},
+                    'staff': {'edges': []}, 'externalLinks': [],
+                }]}}}).encode()
+
+        with patch('media_intake.comics.urllib.request.urlopen', return_value=Response()) as request:
+            results = search_anilist('Example Anime', media_type='ANIME')
+        query = json.loads(request.call_args.args[0].data.decode('utf-8'))['query']
+        self.assertIn('type: ANIME', query)
+        self.assertEqual(results[0]['kind'], 'anime')
+        with self.assertRaises(ValueError):
+            search_anilist('Example', media_type='BOOK')
+
 
 class WatchedComicDownloadTest(unittest.TestCase):
     def setUp(self):

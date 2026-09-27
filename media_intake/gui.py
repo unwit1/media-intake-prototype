@@ -18,6 +18,7 @@ from .core import connect, download, enqueue, list_items
 from .comics import (list_comicvine_issues, mangadex_id_from_url, search_anilist,
                      search_comicvine, search_mangadex, search_taddy)
 from .comic_sources import search_getcomics, search_public_domain_comic_mirror
+from .discovery import CATEGORY_CONNECTORS, CATEGORIES, search_media_category
 from .fmhy import candidates
 from .media_catalogs import (search_lnori, search_mangaupdates, search_novelarchive,
                              search_ranobedb)
@@ -31,8 +32,7 @@ from .watched import (add_from_goodreads, add_from_goodreads_metadata, add_watch
                       process_due_watches, remove_watch,
                       search_book_metadata, set_setting)
 from .media_graph import capture_graph_snapshot
-from .wikidata import (expand_watched_book_series, import_wikidata_entity,
-                       search_wikidata)
+from .wikidata import import_wikidata_entity, search_wikidata
 
 
 class MediaIntakeApp:
@@ -51,7 +51,9 @@ class MediaIntakeApp:
         self.queue_rows = []
         self.status = tk.StringVar(value='Ready')
         self.query = tk.StringVar()
-        self.source = tk.StringVar(value='Open Library')
+        self.source = tk.StringVar(value='All connected in category')
+        self.search_category = tk.StringVar(value='Books')
+        self.search_category_info = tk.StringVar()
         self.site_base = tk.StringVar()
         self.title = tk.StringVar()
         self.author = tk.StringVar()
@@ -68,6 +70,8 @@ class MediaIntakeApp:
         self.watch_lightnovel_profile = {}
         self.watch_comic_mirror_base = tk.StringVar(value=get_setting(self.db, 'watch_comic_mirror_base', ''))
         self.comicvine_api_key = os.environ.get('COMICVINE_API_KEY', '').strip()
+        self.taddy_user_id = os.environ.get('TADDY_USER_ID', '').strip()
+        self.taddy_api_key = os.environ.get('TADDY_API_KEY', '').strip()
         self.watch_goodreads_profile = {}
         self.watch_openlibrary = tk.BooleanVar(value=get_setting(self.db, 'watch_openlibrary', '1') == '1')
         self.watch_libgen = tk.BooleanVar(value=get_setting(self.db, 'watch_libgen', '1') == '1')
@@ -168,13 +172,24 @@ class MediaIntakeApp:
         entry = ttk.Entry(controls, textvariable=self.query, width=42)
         entry.pack(side='left', padx=6)
         entry.bind('<Return>', lambda _event: self.search())
-        ttk.Combobox(controls, textvariable=self.source, state='readonly', width=20,
-                     values=['Open Library', 'LibGen', "Anna's Archive", 'FMHY directory',
-                             'Snahp forum threads', 'NovelArchive', 'LNORI', 'RanobeDB',
-                             'MangaUpdates', 'GetComics', 'Public-domain comic mirror']).pack(side='left')
-        ttk.Entry(controls, textvariable=self.site_base, width=28).pack(side='left', padx=6)
-        ttk.Button(controls, text='Search', command=self.search).pack(side='left')
-        ttk.Button(controls, text='Snahp browser helper', command=self.open_forum_helper).pack(side='left', padx=6)
+        ttk.Label(controls, text='Category').pack(side='left')
+        category = ttk.Combobox(controls, textvariable=self.search_category, state='readonly', width=15,
+                                values=CATEGORIES)
+        category.pack(side='left', padx=6)
+        category.bind('<<ComboboxSelected>>', lambda _event: self._update_search_category_info())
+        ttk.Button(controls, text='Search all connected sources', command=self.search).pack(side='left')
+        advanced = ttk.Frame(parent)
+        advanced.pack(fill='x', pady=(4, 0))
+        ttk.Label(advanced, text='Single connector (optional)').pack(side='left')
+        ttk.Combobox(advanced, textvariable=self.source, state='readonly', width=27,
+                     values=['All connected in category', 'Open Library', 'LibGen', "Anna's Archive",
+                             'FMHY directory', 'Snahp forum threads', 'NovelArchive', 'LNORI',
+                             'RanobeDB', 'MangaUpdates', 'GetComics',
+                             'Public-domain comic mirror']).pack(side='left', padx=6)
+        ttk.Entry(advanced, textvariable=self.site_base, width=28).pack(side='left', padx=4)
+        ttk.Button(advanced, text='Snahp browser helper', command=self.open_forum_helper).pack(side='left', padx=6)
+        ttk.Label(parent, textvariable=self.search_category_info).pack(anchor='w', pady=(4, 6))
+        self._update_search_category_info()
         ttk.Label(parent, text='Optional site base URL (LibGen, Anna’s Archive, or a separate public-domain comic mirror)').pack(anchor='w', pady=(4, 6))
 
         columns = ('title', 'author', 'format', 'source')
@@ -187,7 +202,9 @@ class MediaIntakeApp:
         buttons = ttk.Frame(parent)
         buttons.pack(fill='x', pady=(8, 0))
         ttk.Button(buttons, text='Queue selected result', command=self.queue_result).pack(side='left')
-        ttk.Button(buttons, text='Open selected link', command=self.open_selected_link).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Add catalog result to Watched',
+                   command=self.add_selected_search_to_watched).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Open selected link', command=self.open_selected_link).pack(side='left')
 
         add = ttk.LabelFrame(parent, text='Add a direct file')
         add.pack(fill='x', pady=(12, 0))
@@ -378,6 +395,21 @@ class MediaIntakeApp:
             self.logger.exception('Could not open diagnostics log')
             messagebox.showerror('Media Intake', f'Could not open the log: {exc}\n{self.log_file}')
 
+    def _update_search_category_info(self):
+        category = self.search_category.get()
+        providers = ', '.join(CATEGORY_CONNECTORS.get(category, ()))
+        note = ''
+        if category == 'Comics':
+            note = (' GetComics and mirror file searches obey the local rights approval file. '
+                    'Comic Vine and Taddy are searched when their API credentials are configured.')
+        elif category == 'Fanfiction':
+            note = ' Paste a supported story URL; site-wide text search is not available yet.'
+        elif category in {'Videos', 'Games'}:
+            note = ' This category currently has metadata discovery only; file and release connectors are roadmap work.'
+        elif category == 'Manga':
+            note = ' Taddy is searched when its API credentials are configured.'
+        self.search_category_info.set(f'Connected sources for {category}: {providers}.{note}')
+
     def search(self):
         query = self.query.get().strip()
         if not query:
@@ -386,6 +418,17 @@ class MediaIntakeApp:
         source = self.source.get()
         if source == 'Snahp forum threads':
             self.open_forum_helper()
+            return
+        if source == 'All connected in category':
+            category = self.search_category.get()
+            options = self._watch_sources()
+            credentials = {'comicvine_api_key': self.comicvine_api_key,
+                           'taddy_user_id': self.taddy_user_id,
+                           'taddy_api_key': self.taddy_api_key}
+            self._worker(
+                f'Searching {category} across its connected sources…',
+                lambda: search_media_category(query, category, options, credentials),
+                self.show_category_results)
             return
         base = self.site_base.get().strip() or None
         def action():
@@ -421,6 +464,48 @@ class MediaIntakeApp:
                     continue
             return resolved
         self._worker(f'Searching {source}…', action, self.show_results)
+
+    def show_category_results(self, response):
+        results = response.get('results') or []
+        errors = response.get('errors') or []
+        self.show_results(results)
+        searched = len(response.get('searched') or [])
+        if errors:
+            self._done(f'{len(results)} result(s); {len(errors)} connector error(s) across {searched} searches (details in logs)')
+        else:
+            self._done(f'{len(results)} result(s) across {searched} connected searches')
+
+    def add_selected_search_to_watched(self):
+        selected = self.results_view.selection()
+        if not selected:
+            return
+        item = dict(self.results[int(selected[0])])
+        if not item.get('discovery_only') and item.get('format') not in {'catalog', 'link'}:
+            messagebox.showinfo('Add to Watched', 'This result is a downloadable file. Use “Queue selected result” to add it to the download queue.')
+            return
+        category = item.get('category') or self.search_category.get()
+        if category in {'Books', 'Light novels', 'Web serials'}:
+            self._associate_book_metadata(item)
+            return
+        if category in {'Comics', 'Manga'}:
+            item.update(item.get('metadata') or {})
+            if item.get('provider') == 'MangaUpdates':
+                item['kind'] = 'manga'
+                item['source_url'] = item.get('source_url') or item.get('url')
+            item.setdefault('kind', 'comic' if category == 'Comics' else 'manga')
+            self.associate_comic_metadata(item)
+            return
+        if category == 'Fanfiction':
+            self.watch_goodreads_profile = {}
+            self.watch_url.set(item.get('source_url') or item.get('url') or '')
+            self.watch_title.set(item.get('title') or 'Fanfiction story')
+            self.watch_author.set(item.get('author') or '')
+            self.watch_kind.set('Fanfiction')
+            self.add_watched(auto_scan=True)
+            return
+        messagebox.showinfo(
+            'Add to Watched',
+            f'{category} metadata is available to open. Scheduled {category.casefold()} watching is part of the media roadmap.')
 
     def open_forum_helper(self):
         window = tk.Toplevel(self.root)
@@ -863,8 +948,8 @@ class MediaIntakeApp:
         query = query.strip()
         if not query:
             return
-        user_id = os.environ.get('TADDY_USER_ID', '').strip()
-        api_key = os.environ.get('TADDY_API_KEY', '').strip()
+        user_id = self.taddy_user_id or os.environ.get('TADDY_USER_ID', '').strip()
+        api_key = self.taddy_api_key or os.environ.get('TADDY_API_KEY', '').strip()
         if not user_id:
             user_id = simpledialog.askstring('Taddy credentials', 'Taddy numeric user ID:') or ''
         if not user_id:
@@ -873,6 +958,8 @@ class MediaIntakeApp:
             api_key = simpledialog.askstring('Taddy credentials', 'Taddy API key (used for this lookup only):', show='*') or ''
         if not api_key:
             return
+        self.taddy_user_id = user_id
+        self.taddy_api_key = api_key
         self._worker(f'Searching Taddy for {query}…',
                      lambda: search_taddy(query, user_id, api_key),
                      lambda results: self.show_comic_matches('Taddy', results))
@@ -1407,7 +1494,7 @@ class MediaIntakeApp:
         dialog.transient(self.root)
         ttk.Label(dialog, text=f'Select the Wikidata entry that represents {watch.get("title", "this watch")}.').pack(
             anchor='w', padx=10, pady=(10, 3))
-        ttk.Label(dialog, text='Sourced relationships will be saved. Explicit book members of a watched book series can be added automatically.').pack(
+        ttk.Label(dialog, text='Sourced relationships will be saved to the media graph; selecting a series keeps it as one watched item.').pack(
             anchor='w', padx=10, pady=(0, 6))
         matches = ttk.Treeview(dialog, columns=('title', 'description', 'qid'),
                                show='headings', selectmode='browse')
@@ -1437,7 +1524,6 @@ class MediaIntakeApp:
                                          (watch_id,)).fetchone()
                     linked_id = entity_id or (int(current['media_entity_id']) if current and current['media_entity_id'] else None)
                     imported = import_wikidata_entity(db, candidate['qid'], watch_entity_id=linked_id)
-                    imported['expansion'] = expand_watched_book_series(db, watch_id, imported)
                     imported['graph_diff'] = capture_graph_snapshot(db, imported['root_entity_id'])
                     db.commit()
                     return imported
@@ -1469,15 +1555,8 @@ class MediaIntakeApp:
         else:
             graph_status = f'{change_count} graph change(s) recorded.'
         unresolved = int(result.get('unresolved_entities') or 0)
-        expansion = result.get('expansion') or {}
-        added_watches = expansion.get('added') or []
-        review_items = expansion.get('review') or []
         message = (f"Saved {len(relationships)} sourced relationship(s) across "
                    f"{result.get('related_entities', 0)} related item(s). {graph_status}")
-        if added_watches:
-            message += f' Added {len(added_watches)} explicit book-series member(s) to Watched.'
-        if review_items:
-            message += f' Skipped {len(review_items)} uncertain item(s) and queued them for review.'
         if unresolved:
             message += f' {unresolved} related entity label(s) could not be fetched and were queued for review.'
         ttk.Label(dialog, text=message, wraplength=730).pack(anchor='w', padx=10, pady=(10, 4))
@@ -1496,10 +1575,7 @@ class MediaIntakeApp:
                 item.get('target_title', ''), item.get('target_type', '').title(),
                 item.get('series_position') or ''))
         ttk.Button(dialog, text='Close', command=dialog.destroy).pack(anchor='e', padx=10, pady=(4, 10))
-        if added_watches:
-            self.refresh_watches()
-            self.root.after(100, self._run_added_watch_scan)
-        self._done(f'Saved {len(relationships)} Wikidata relationship(s); added {len(added_watches)} series member(s)')
+        self._done(f'Saved {len(relationships)} Wikidata relationship(s)')
 
     def open_rights_evidence(self):
         try:

@@ -1830,3 +1830,990 @@ A preset should define:
 - optional local storage policy
 
 This keeps the codebase small while still presenting many specialized connectors in the UI.
+
+
+---
+
+# Phase 4 — Universal automated acquisition, indexers, torrents, Usenet, and dependency-optional downloading
+
+**Priority: P0 / High priority**
+
+This phase turns Media Intake from a watched-media/discovery application into a **media-agnostic automated acquisition and library-reconciliation system**. The guiding rule is that Media Intake owns the durable intent, state, provenance, history, scoring, and policy. External tools such as Prowlarr, Sonarr, Radarr, Lidarr, qBittorrent, SABnzbd, NZBGet, aria2, Transmission, Deluge, Suwayomi, Pinchflat, Tube Archivist, Chaptarr, Mylar/Kapowarr, or similar systems may be used as optional execution backends, but none should be required for Media Intake to retain a complete understanding of what the user wants, what is missing, what candidates were found, why one was selected, how it was acquired, and what remains to do.
+
+The default architectural goal is:
+
+- **zero mandatory external applications**
+- **standard-library-first Python core where practical**
+- external/bundled engines supported through stable APIs when available
+- native protocol implementations added incrementally behind the same interfaces
+- all provider-specific behavior hidden behind provider-neutral contracts
+- broad search/discovery separated from actual acquisition authorization
+- all automatic acquisition routed through existing rights/provenance policy checks
+
+## Core acquisition pipeline
+
+Normalize every automatic acquisition into this pipeline:
+
+1. watched intent / library gap / upgrade opportunity is identified
+2. generate structured search request and alternate query forms
+3. search all appropriate enabled sources
+4. normalize results into release candidates
+5. merge duplicate observations of the same release
+6. score candidates
+7. apply rights, policy, safety, quota, and quality gates
+8. choose a candidate
+9. choose an acquisition engine
+10. submit/grab the release
+11. monitor transfer state
+12. validate downloaded content
+13. quarantine unsafe/uncertain content
+14. extract/repair/post-process when required
+15. import into the destination library
+16. reconcile the resulting asset against the logical media graph
+17. continue watching for missing items, future releases, and upgrades
+
+Provider-independent interfaces should include concepts similar to:
+
+- `media.search(request)`
+- `media.search.providers(request)`
+- `media.release.normalize(raw_result)`
+- `media.release.dedupe(candidate)`
+- `media.release.score(candidate, profile)`
+- `media.acquire.plan(entity_id)`
+- `media.acquire.submit(candidate_id)`
+- `media.acquire.status(job_id)`
+- `media.acquire.retry(job_id)`
+- `media.acquire.cancel(job_id)`
+- `media.library.reconcile(entity_id)`
+
+## Universal watch intent
+
+Replace media-specific acquisition assumptions with a generic watch intent.
+
+Suggested fields:
+
+- entity_id
+- media_kind
+- monitor_mode
+- acquisition_policy
+- quality_profile_id
+- language_profile_id
+- release_policy_id
+- search_policy_id
+- retention_policy_id
+- preferred_acquisition_backend
+- allowed_protocols
+- provider_scope
+- parent_policy_id
+
+Suggested monitor modes:
+
+- none
+- metadata_only
+- future_only
+- new_releases
+- missing
+- all
+- selected
+- upgrade_until_cutoff
+
+Policy inheritance should continue through:
+
+1. global defaults
+2. media-family defaults
+3. subtype defaults
+4. franchise
+5. series
+6. season/arc/collection
+7. individual work/release
+
+## Search Broker
+
+Introduce a central `SearchBroker` that fans out one structured search request to many source adapters and returns normalized candidates.
+
+The initial source protocol set should include:
+
+- Torznab
+- Newznab
+- RSS
+- Atom
+- OPDS
+- JSON APIs
+- generic HTTP APIs
+- configurable HTML/site definitions
+- existing Media Intake native catalog/download adapters
+- optional external search aggregators
+
+Do not require Prowlarr/Jackett/NZBHydra for core operation, but support them as optional adapters because they provide useful ecosystem compatibility and broad site coverage.
+
+### Generic standardized indexers
+
+Implement first-class native support for:
+
+- generic Torznab endpoints
+- generic Newznab endpoints
+- capability discovery
+- API key authentication
+- category mapping
+- paging
+- recent/release feeds
+- ID-aware searches where supported
+- media-specific search functions where supported
+- per-indexer rate limits
+- health probes
+- response statistics
+
+Adding a standard indexer should normally require only:
+
+- URL
+- API key or credentials where required
+- optional enabled categories
+- optional rate/quota settings
+
+### Automatic source probing
+
+When a source URL is added, try to identify its capabilities automatically:
+
+1. Newznab/Torznab CAPS probe
+2. RSS/Atom feed discovery
+3. OPDS discovery
+4. JSON/OpenSearch/API hints
+5. generic configurable source-definition path
+
+Store the result as source capabilities rather than baking assumptions into UI code.
+
+## Declarative site-definition engine
+
+Build a Cardigann-like **Media Source Definition** engine so new searchable/downloadable websites can be added primarily through data definitions rather than Python code.
+
+Prefer JSON as the built-in definition format to avoid requiring YAML parsing dependencies.
+
+Definitions should support:
+
+- source ID/name
+- base URLs/mirrors
+- source protocol
+- categories
+- authentication mode
+- cookies
+- headers
+- API keys
+- login forms where appropriate
+- GET/POST search actions
+- pagination
+- query templates
+- result selectors/parsers
+- HTML/XML/JSON result parsing
+- release fields
+- torrent/magnet/NZB/direct-download links
+- source-specific rate limits
+- source health checks
+- configurable timeout/retry behavior
+- capability flags
+
+Maintain definitions separately from the core application so source integrations can be updated without a full application release.
+
+Do not blindly copy GPL source code or third-party definitions without a license review. Prefer compatible protocol implementations, independently authored definitions, or explicit integration with existing services where licensing makes direct reuse inappropriate.
+
+## Normalized release candidate
+
+Every source result should normalize into a common `ReleaseCandidate` model.
+
+Suggested fields:
+
+- candidate_id
+- logical_entity_id
+- title
+- normalized_release_name
+- source_id
+- source_type
+- source_result_id
+- source_url
+- protocol
+- download_uri / magnet / NZB locator
+- info_hash where applicable
+- published_at
+- size
+- language
+- media format
+- quality
+- resolution
+- codec
+- audio codec
+- channels
+- HDR/DV flags
+- edition
+- release group
+- version/revision
+- seeders
+- leechers
+- Usenet age
+- provider completion/availability
+- trusted/verified flags
+- source metadata
+- provenance
+- initial match confidence
+- score explanation
+- rejection reasons
+
+The candidate object should be independent from the downloader used to retrieve it.
+
+## Candidate deduplication
+
+The same underlying release may appear through several indexers. Merge provider observations rather than presenting them as independent releases.
+
+Preferred release identities:
+
+### Torrent
+- v1/v2 info hash
+- normalized torrent metadata fingerprint
+
+### Usenet
+- NZB content fingerprint
+- message-ID set fingerprint
+- normalized release name + size where no stronger identifier is available
+
+### Direct/file sources
+- SHA-256 where known
+- canonical file URL
+- source asset ID
+- logical edition/release identity
+
+A normalized release may therefore have multiple availability routes:
+
+- provider A
+- provider B
+- provider C
+
+If one provider fails, the acquisition planner can try another route without rediscovering the release.
+
+## Release scoring and quality profiles
+
+Move beyond fixed source priority and format priority.
+
+Use data-driven quality profiles and custom rules.
+
+Possible scoring dimensions:
+
+- entity/title match confidence
+- exact external-ID match
+- quality target
+- preferred format
+- language
+- edition
+- release group
+- source trust
+- provider historical success
+- availability/completion
+- torrent health
+- Usenet retention/age
+- file size expectations
+- wanted/unwanted traits
+- codec preferences
+- source latency
+- quota/cost considerations
+- prior failure history
+- suspicious-match penalties
+
+Media-specific dimensions should remain profile data.
+
+Examples:
+
+### Video
+- resolution
+- source type
+- HDR/DV
+- codec
+- audio codec/channels
+- release group
+- language/subtitles
+
+### Books
+- EPUB/AZW3/PDF preference
+- ISBN/edition match
+- publisher
+- language
+
+### Audiobooks
+- M4B/other format
+- narrator
+- unabridged status
+- bitrate
+- chapters
+- edition
+
+### Music
+- FLAC/lossless
+- bit depth
+- sample rate
+- edition
+- MusicBrainz match
+
+### Comics/manga
+- CBZ/CBR/PDF
+- language
+- completeness
+- volume/issue/chapter mapping
+- image quality
+
+Expose score components and rejection reasons in manual search UI so users can understand why a candidate was accepted or rejected.
+
+## Adaptive provider ranking
+
+Track source performance and learn which providers work best for each media family/query type.
+
+Metrics should include:
+
+- response latency
+- availability rate
+- search success rate
+- acquisition success rate
+- false-match rate
+- timeout/error rate
+- torrent seed availability
+- Usenet completion
+- average observed speed where measurable
+- API throttling
+- quota exhaustion
+- provider uptime
+- duplicate-result rate
+- metadata quality
+- historical success by media type
+
+Use these statistics to bias provider order and reduce unnecessary requests.
+
+A useful long-term objective is maximizing:
+
+`expected successful acquisition / request cost`
+
+without allowing adaptive ranking to hide all results from lower-ranked sources.
+
+## Search query generation
+
+Generate multiple structured search variants from the media graph.
+
+Inputs may include:
+
+- canonical title
+- aliases
+- original-language title
+- year
+- creator/author
+- series name
+- season/episode
+- volume/chapter
+- edition
+- ISBN
+- IMDb
+- TMDB
+- TVDB
+- MusicBrainz
+- AniList
+- provider IDs
+
+Learn which query forms are most effective per provider while preserving deterministic fallback behavior.
+
+## Separate new-release monitoring, backlog hunting, and upgrades
+
+Do not treat every search as the same type of job.
+
+Create three independent scheduler classes:
+
+### RecentReleaseScanner
+Processes recent provider feeds/events and asks:
+“Does this newly observed release satisfy anything currently watched?”
+
+### BacklogHunter
+Periodically searches older missing items using pacing, cooldowns, and provider budgets.
+
+### UpgradeHunter
+Searches assets that exist but remain below their configured quality cutoff.
+
+Each scheduler should support:
+
+- rate budgets
+- per-provider cooldowns
+- per-entity cooldowns
+- maximum searches per period
+- priority queues
+- manual pause/resume
+- retry backoff
+- recent-failure suppression
+
+This prevents constant brute-force searching while ensuring old missing items do not remain forgotten forever.
+
+## Event-driven release ingestion
+
+Add a common release-event endpoint so Media Intake can react immediately to new release signals.
+
+Possible event sources:
+
+- RSS
+- Atom
+- IRC release announcements
+- webhooks
+- Torznab/Newznab feeds
+- Prowlarr
+- autobrr-like event sources
+- filesystem watchers
+- provider APIs
+- external manager notifications
+
+Normalize all events into:
+
+`ReleaseEvent -> candidate normalization -> watched-intent matching -> scoring -> policy check -> acquisition`
+
+The event origin should not change the rest of the pipeline.
+
+## Acquisition engine abstraction
+
+Define a generic engine interface such as:
+
+- submit
+- status
+- pause
+- resume
+- cancel/remove
+- list_files
+- set_file_priority
+- health
+- get_transfer_stats
+
+Media Intake should support multiple engines for the same protocol.
+
+### Torrent engines
+
+Target adapters:
+
+- NativeTorrentEngine
+- qBittorrent
+- Transmission
+- aria2
+- Deluge
+- future compatible torrent clients
+
+External adapters should use their HTTP/RPC APIs through the Python standard library where practical so no client-specific Python package is required.
+
+### Usenet engines
+
+Target adapters:
+
+- NativeUsenetEngine
+- SABnzbd
+- NZBGet
+- future compatible NZB downloaders
+
+### Direct/specialized engines
+
+Target adapters:
+
+- direct HTTP/HTTPS
+- aria2
+- pyLoad-compatible APIs
+- yt-dlp
+- gallery-dl
+- FanFicFare
+- Suwayomi
+- source-specific direct file adapters
+
+Specialized tools remain optional.
+
+## Native BitTorrent engine roadmap
+
+A fully native BitTorrent engine is desirable for dependency independence, but should be implemented in stages behind the same engine interface.
+
+### Stage 1
+- bencode encode/decode
+- .torrent parsing
+- v1 info hash
+- HTTP trackers
+- TCP peer handshake
+- bitfield/have handling
+- piece requests
+- SHA-1 verification
+- single/multi-file torrents
+- selective file download
+- resumable piece state
+- seeding basics
+
+### Stage 2
+- magnet URI parsing
+- BitTorrent extension protocol
+- metadata exchange
+- reconstruct metainfo from peers
+
+### Stage 3
+- UDP trackers
+- DHT/Kademlia routing
+- bootstrap nodes
+- get_peers
+- announce_peer
+- peer cache
+
+### Stage 4
+- PEX
+- multi-tracker behavior
+- IPv6
+- web seeds
+- local peer discovery
+- uTP
+- NAT traversal where practical
+- protocol encryption where appropriate
+- BitTorrent v2/hybrid torrent support
+- queue/seeding policies
+
+The native engine should not block support for mature external engines; both use the same abstraction.
+
+## Native Usenet engine roadmap
+
+Implement a standard-library-first NNTP/NZB engine incrementally.
+
+### Core
+- NNTP TCP connection
+- TLS
+- authentication
+- capability negotiation
+- multiple servers
+- server priority
+- fallback servers
+- connection pools
+- retries/timeouts
+- quotas
+- article retrieval
+
+### NZB processing
+- XML NZB parser
+- segment ordering
+- article scheduling
+- multi-server failover
+- yEnc decoding
+- CRC verification
+- file assembly
+- resumable state
+
+### Repair/extraction
+Native support should initially include straightforward archive handling available through standard Python libraries. Advanced PAR2 repair and RAR/7z extraction may use optional external tools until robust native implementations are available.
+
+Optional helpers may include:
+
+- par2cmdline
+- 7-Zip
+- unrar-compatible tools
+
+A future native PAR2 implementation may be researched separately if eliminating all external repair dependencies is worth the engineering cost.
+
+## Provider/source registry
+
+Create a single provider registry rather than separate hard-coded lists for torrents, Usenet, feeds, and direct sites.
+
+A source should declare capabilities such as:
+
+- search
+- recent releases
+- categories
+- movie search
+- TV search
+- book search
+- music search
+- comic/manga search
+- magnet
+- torrent file
+- NZB
+- direct file
+- stream
+- authentication type
+- quota availability
+
+Persist:
+
+- provider ID
+- protocol
+- base URLs/mirrors
+- capabilities
+- category mapping
+- authentication configuration reference
+- rate limits
+- quotas
+- last health result
+- last successful request
+- rolling latency
+- rolling error rate
+- rolling success rate
+- last throttle/ban
+- media-family success statistics
+
+## Canonical media taxonomy
+
+Do not make tracker/indexer category IDs canonical.
+
+Use Media Intake categories such as:
+
+- media.video.movie
+- media.video.tv
+- media.video.anime
+- media.audio.music
+- media.audio.audiobook
+- media.text.book
+- media.text.lightnovel
+- media.comic.comic
+- media.comic.manga
+- media.game
+- media.asset.*
+- media.education.*
+- other future types
+
+Each provider adapter maps the canonical category to provider-specific categories.
+
+## Acquisition job state machine
+
+Replace simplistic queued/downloading/downloaded state assumptions with a durable state machine.
+
+Suggested states:
+
+- discovered
+- wanted
+- search_queued
+- searching
+- candidate_selected
+- grabbed
+- queued
+- downloading
+- downloaded
+- verifying
+- repairing
+- extracting
+- postprocessing
+- importing
+- reconciling
+- complete
+- retry_scheduled
+- blocked
+- needs_review
+- failed
+- cancelled
+
+Persist every meaningful transition in a history table.
+
+A failed candidate should be able to trigger:
+
+1. record failure
+2. block/penalize candidate or release when appropriate
+3. select next candidate
+4. retry through another provider or engine
+5. stop only after policy-defined exhaustion
+
+## Quarantine and verification
+
+Broad automated source support requires a strict quarantine stage.
+
+Suggested layout:
+
+- incoming/quarantine
+- incoming/verified
+- incoming/rejected
+
+Verify as appropriate:
+
+- file type and magic bytes
+- expected media family
+- archive integrity
+- torrent hashes
+- CRC/checksum
+- size plausibility
+- path traversal
+- symlink escape
+- unexpected executables
+- metadata/entity match
+- expected season/episode/volume/chapter
+- duplicate assets
+
+Never automatically execute acquired binaries.
+
+Executable/software/game acquisitions should have stricter policies and explicit trust/authorization rules.
+
+## Post-processing pipeline
+
+Create provider-independent post-processing steps.
+
+Possible stages:
+
+- archive extraction
+- PAR2 verification/repair
+- filename normalization
+- container inspection
+- checksum
+- metadata identification
+- tagging
+- media conversion where user-configured
+- subtitle/caption matching
+- chapter/track splitting or joining
+- cover/artwork handling
+- Calibre import
+- beets/music tagging
+- FFmpeg processing
+- library move/link/copy
+- deduplication
+
+Model post-processors as optional capabilities so a missing optional tool does not break unrelated media types.
+
+## External manager adapters
+
+Media Intake should be able to delegate acquisition execution to mature media managers without surrendering canonical state.
+
+Target adapters:
+
+- Sonarr
+- Radarr
+- Lidarr
+- Chaptarr
+- Mylar3
+- Kapowarr
+- Suwayomi
+- Pinchflat
+- Tube Archivist
+- ytdl-sub
+- Audiobookshelf where relevant
+
+Example:
+
+1. Media Intake resolves and stores the logical entity.
+2. Policy chooses Sonarr as the current TV acquisition backend.
+3. Media Intake creates/updates the monitored series in Sonarr.
+4. Sonarr performs its normal acquisition.
+5. Media Intake receives/polls completion.
+6. Media Intake reconciles the imported file into its own asset/provenance history.
+
+Changing the acquisition backend later must not alter the canonical watched entity.
+
+## Library assets and versions
+
+Do not assume one work equals one file.
+
+Represent:
+
+- logical entity
+- edition/release
+- acquired asset
+- asset version
+- physical file
+- source/provenance
+- quality
+- language
+- acquisition history
+
+One logical work may legitimately have multiple assets, such as:
+
+- ebook
+- audiobook
+- illustrated edition
+- alternate narrator
+- subtitle variants
+- remaster/remake-related assets
+- source project + rendered asset
+
+Track quality cutoffs independently per asset role.
+
+## Database additions
+
+Add tables/concepts similar to:
+
+- watch_policies
+- quality_profiles
+- custom_format_rules
+- source_instances
+- source_capabilities
+- source_health
+- source_quotas
+- source_statistics
+- source_category_mappings
+- search_jobs
+- search_attempts
+- release_candidates
+- release_observations
+- candidate_scores
+- candidate_rejections
+- release_identities
+- blocked_releases
+- acquisition_jobs
+- acquisition_history
+- download_jobs
+- download_files
+- postprocess_jobs
+- import_jobs
+- library_assets
+- asset_versions
+- scheduler_jobs
+- scheduler_budgets
+- provider_query_performance
+
+Keep migration paths from current `items` and `watched_items`.
+
+## UI requirements
+
+Add universal views:
+
+### Wanted
+- Missing
+- Upcoming
+- Searching
+- Unavailable
+- Waiting for retry
+
+### Activity
+- Queued
+- Downloading
+- Verifying
+- Repairing
+- Processing
+- Importing
+- Failed
+- Blocked
+- Needs Review
+
+### Upgrades
+Show:
+- current asset quality
+- target profile
+- cutoff status
+- better candidate availability
+- score improvement
+- reason an upgrade is or is not wanted
+
+### Manual Search
+Show all normalized candidates with:
+- score
+- provider(s)
+- protocol
+- quality
+- size
+- availability
+- score explanation
+- rejection reasons
+- manual grab override where permitted
+
+### Sources
+Show:
+- health
+- protocol
+- supported categories
+- recent success rate
+- latency
+- quota/rate status
+- last error
+- last successful request
+- enable/disable
+- test button
+
+### Download Engines
+Show:
+- active engine
+- queue
+- health
+- transfer stats
+- external/native backend
+- optional dependency status
+
+## Security and credentials
+
+- Keep provider credentials outside Git.
+- Use environment variables or an OS/keychain/secret-store abstraction where possible.
+- Never expose credentials in logs.
+- Treat source URLs, cookies, API keys, NNTP credentials, and remote downloader credentials as secrets.
+- Support per-source TLS verification and explicit opt-in for exceptional cases; do not disable TLS validation globally.
+- Respect rate limits and provider terms.
+- Keep broad discovery separate from authorization to acquire a specific work/source.
+- Preserve rights/source provenance in all acquisition decisions.
+
+## Implementation order
+
+Recommended sequence:
+
+### Phase 4A — acquisition data model
+- normalized SearchRequest
+- ReleaseCandidate
+- quality profiles
+- acquisition job state machine
+- source registry
+- library asset/version model
+- migrations
+
+### Phase 4B — standardized search
+- native Newznab
+- native Torznab
+- RSS/Atom
+- provider health
+- category mapping
+- SearchBroker
+- candidate normalization/deduplication
+
+### Phase 4C — scoring and scheduler split
+- release scoring
+- custom rules
+- RecentReleaseScanner
+- BacklogHunter
+- UpgradeHunter
+- cooldowns/budgets
+- manual-search explanations
+
+### Phase 4D — download engine abstraction
+- existing direct HTTP wrapped as engine
+- qBittorrent adapter
+- Transmission adapter
+- aria2 adapter
+- SABnzbd adapter
+- NZBGet adapter
+- engine health/status UI
+
+### Phase 4E — external manager adapters
+- Sonarr
+- Radarr
+- Lidarr
+- Chaptarr
+- comic/manga/video-specialized managers
+
+### Phase 4F — declarative site definitions
+- JSON schema
+- generic HTML/XML/JSON interpreter
+- definition validation
+- source-definition test harness
+- hot-reload/update mechanism
+
+### Phase 4G — native torrent engine
+Implement staged BitTorrent functionality behind the existing TorrentEngine interface.
+
+### Phase 4H — native Usenet engine
+Implement staged NNTP/NZB/yEnc functionality behind the existing UsenetEngine interface.
+
+### Phase 4I — advanced post-processing and repair
+- extraction
+- repair
+- tagging
+- conversion
+- stronger validation
+- failed-download retry/blocking
+
+### Phase 4J — adaptive optimization
+- provider-performance learning
+- query-strategy learning
+- score calibration
+- automatic routing by expected success/request cost
+- search-efficiency dashboards
+
+## Acceptance criteria
+
+This phase is successful when:
+
+- Media Intake can search multiple Torznab/Newznab sources without Prowlarr.
+- Prowlarr/Jackett/NZBHydra can still be added as optional compatible sources.
+- Media Intake can use at least one torrent downloader and one Usenet downloader through provider-neutral engine APIs.
+- A source result is normalized independently from the downloader that later retrieves it.
+- Duplicate release observations from multiple providers merge into one logical release.
+- Candidate ranking explains why a release was accepted or rejected.
+- missing, new-release, and upgrade searches operate as separate scheduler concerns.
+- failed acquisitions can automatically fall back to another candidate/provider according to policy.
+- all acquired content passes through quarantine/verification before final import.
+- Media Intake's own database remains canonical if every external manager/downloader is disconnected.
+- users can choose external mature engines or native engines without changing their watched-media state.
+- native torrent and Usenet implementations can be improved incrementally without changing higher-level orchestration.
+- no source credentials or secrets are committed to Git.
+- existing rights/provenance gates continue to control whether a discovered candidate may actually be acquired.

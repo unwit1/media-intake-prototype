@@ -5,7 +5,9 @@ import re
 import urllib.parse
 import urllib.request
 
-from .core import http_get, validate_item
+from .core import validate_item
+from .file_hosts import FILE_HOSTS, MANUAL_HOSTS, public_get as http_get, resolve_hosted_file
+from .webcomics.http import HttpClient
 
 GETCOMICS_HOSTS = {'getcomics.info', 'www.getcomics.info', 'getcomics.org', 'www.getcomics.org'}
 _COMIC_FILE_EXTENSIONS = {'.cbz', '.pdf'}
@@ -114,7 +116,7 @@ def parse_getcomics_results(content, page_url, limit=20):
             continue
         seen.add(link['url'])
         found.append({
-            'provider': 'GetComics', 'title': link['text'], 'author': 'Comic release',
+            'provider': 'GetComics', 'title': link['text'], 'author': 'Unknown',
             'url': link['url'], 'source': link['url'], 'format': 'link',
             'discovery_only': True,
         })
@@ -134,7 +136,12 @@ def search_getcomics(query, limit=20):
     # while keeping all page parsing local to this app.
     for page_number in range(1, 6):
         url = 'https://getcomics.org/page/' + str(page_number) + '/?' + urllib.parse.urlencode({'s': query})
-        raw, final = http_get(url, max_bytes=5_000_000)
+        try:
+            raw, final = http_get(url, max_bytes=5_000_000)
+        except OSError as exc:
+            if results and getattr(exc, 'status', getattr(exc, 'code', None)) == 404:
+                break
+            raise
         if urllib.parse.urlsplit(final).hostname not in GETCOMICS_HOSTS:
             raise ValueError('GetComics search redirected away from its official site')
         page_results = parse_getcomics_results(raw.decode('utf-8', 'replace'), final, max_results)
@@ -162,14 +169,12 @@ _MIME_EXTENSIONS = {
 
 def _head_download_target(url):
     """Follow a GetComics server redirect without downloading its response body."""
-    request = urllib.request.Request(url, method='HEAD', headers={
-        'User-Agent': 'MediaIntakePrototype/0.3 (personal library intake)',
-    })
-    with urllib.request.urlopen(request, timeout=30) as response:
-        final_url = response.geturl()
-        content_type = response.headers.get('Content-Type', '').split(';', 1)[0].strip().casefold()
-        disposition = response.headers.get('Content-Disposition', '')
-    return final_url, content_type, disposition
+    def share_host(target):
+        host = (urllib.parse.urlsplit(target).hostname or '').casefold()
+        return host in FILE_HOSTS or host.removeprefix('www.') in MANUAL_HOSTS
+    response = HttpClient(user_agent='MediaArchiveImporter/0.3 (+public file resolution)').head(url, stop_at=share_host)
+    content_type = response.headers.get('content-type', '').split(';', 1)[0].strip().casefold()
+    return response.url, content_type, response.headers.get('content-disposition', '')
 
 
 def _download_extension(url, content_type='', disposition=''):
@@ -206,7 +211,30 @@ def resolve_getcomics_post(item, approval, limit=20):
         raise ValueError('GetComics post redirected away from its official site')
     parser = _ReleasePage(final)
     parser.feed(raw.decode('utf-8', 'replace'))
-    results, seen = [], set()
+    results, seen, resolved_urls = [], set(), set()
+    item['connector_warnings'] = []
+    max_results = max(1, min(int(limit), 50))
+    def add_hosted(files):
+        for file in files:
+            if file.url in resolved_urls:
+                continue
+            resolved_urls.add(file.url)
+            results.append(validate_item({
+                'provider': 'GetComics', 'source_key': 'getcomics.org',
+                'title': item.get('title') or 'Comic release',
+                'author': item.get('author') or 'Unknown', 'url': file.url,
+                'source': final, 'format': file.format,
+                'release_identity': final,
+                'file_host': file.host, 'file_host_share_url': file.share_url,
+                'source_filename': file.filename, 'expected_size': file.size,
+                'expected_sha256': file.sha256,
+                **({'rights_work_key': approval['rights_work_key']}
+                   if approval.get('rights_work_key') else {}),
+                'rights_approval': 'rights-evidence.json approved_for_download: true',
+            }))
+            if len(results) >= max_results:
+                return True
+        return False
     for link in parser.links:
         candidate_url = link['href']
         file_parts = urllib.parse.urlsplit(candidate_url)
@@ -222,27 +250,51 @@ def resolve_getcomics_post(item, approval, limit=20):
                 or file_parts.password or candidate_url in seen):
             continue
         seen.add(candidate_url)
+        try:
+            hosted = resolve_hosted_file(candidate_url, _FILE_EXTENSIONS)
+        except (ValueError, OSError) as exc:
+            item['connector_warnings'].append(str(exc))
+            continue
+        if hosted is not None:
+            if add_hosted(hosted):
+                return results
+            continue
         content_type = disposition = ''
         file_url = candidate_url
         if not ext and (server_redirect or download_action):
             try:
                 file_url, content_type, disposition = _head_download_target(candidate_url)
-            except Exception:
+            except Exception as exc:
                 # MediaFire and other browser-oriented hosts may not expose
                 # a direct file to HEAD. Like the referenced CLI, leave those
                 # pages for a user to open instead of treating HTML as a file.
+                item['connector_warnings'].append(f'Download link unavailable: {exc}')
                 continue
             target = urllib.parse.urlsplit(file_url)
             if (target.scheme not in ('https', 'http') or not target.hostname
                     or target.username or target.password):
                 continue
             ext = _download_extension(file_url, content_type, disposition)
+            if target.scheme == 'https':
+                try:
+                    hosted = resolve_hosted_file(file_url, _FILE_EXTENSIONS)
+                except (ValueError, OSError) as exc:
+                    item['connector_warnings'].append(str(exc))
+                    continue
+                if hosted is not None:
+                    if add_hosted(hosted):
+                        return results
+                    continue
         if not ext:
             continue
+        if file_url in resolved_urls:
+            continue
+        resolved_urls.add(file_url)
         results.append(validate_item({
             'provider': 'GetComics', 'source_key': 'getcomics.org',
             'title': item.get('title') or 'Comic release', 'author': item.get('author') or 'Unknown',
             'url': file_url, 'source': final, 'format': ext,
+            'release_identity': final,
             **({'rights_work_key': approval['rights_work_key']}
                if approval.get('rights_work_key') else {}),
             'rights_approval': 'rights-evidence.json approved_for_download: true',

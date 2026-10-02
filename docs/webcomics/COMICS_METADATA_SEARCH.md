@@ -1,0 +1,64 @@
+# Comics metadata search: issue catalogs without redundant results
+
+Implemented 2026-09-29 in the existing **Add Anything → Comics → All connected in category** search. This is separate from URL ingestion in the Webcomics tab. It uses the existing discovery workers, import preview, Watched rows, library profiles and media graph; no second scheduler or destructive migration.
+
+## Using it
+
+Search a title, or narrow it with an issue and the **series start year**: `Batman (2016) #12`. The year identifies the publication run, not the issue's cover/publication year. Individual issues appear first, followed by series and collected editions. An explicit `TPB`/hardcover/omnibus query puts collected editions first instead. Numeric issue ordering handles zero padding and decimals; reboot labels show the run year.
+
+Open **Settings → Metadata APIs**, enter a Comic Vine key and/or Metron token, and choose **Apply to this session**. Environment variables `COMICVINE_API_KEY` and `METRON_API_TOKEN` also work after restart. These credentials stay in memory; they are not stored in watched metadata, the database or this session's hashed cache keys. GCD and Wikidata are attempted without a key. Existing Taddy configuration adds its participating webcomic catalog.
+
+Matching catalog records become one selectable result. Import preview lists the participating providers, collapsed records, issue number, run year, retained cover editions and download candidates. **Add to Watched** on an individual issue watches that issue, rather than the whole series. Approved applicable download connectors are searched together through the existing shared pool; source/format preferences and failed-host fallback remain intact. A trade, issue-range pack or unnumbered title cannot satisfy a numbered issue watch. Source approval settings are preserved.
+
+## Coverage and current research
+
+| Provider | Implemented search | Current access / limits | Verification |
+|---|---|---|---|
+| Comic Vine | Series (its API calls these volumes), run year, publisher, covers, individual issue number/title, store/cover dates; separate parent and issue IDs | Optional key; 20 candidate series, expand best 3 related runs, up to 100 recent issues per run; numbered queries use the server filter. Cached and spaced calls | Documented API-compatible synthetic responses; no live key configured |
+| Grand Comics Database | Name/run search, numbered issue lookup, bounded series overview; language, source IDs, dates/covers where the response includes them; source-declared cover-variant relationships | Public API attempted; its [official documentation](https://github.com/GrandComicsDatabase/gcd-django/wiki/API) warns that fields and anonymous access may change. 20 series, 2 overview expansions or up to 2 issue-result pages | Fixtures match the [published serializers](https://github.com/GrandComicsDatabase/gcd-django/blob/beta/apps/api/serializers.py) and [routes](https://github.com/GrandComicsDatabase/gcd-django/blob/beta/apps/api/urls.py); one live request timed out, so live issue retrieval is not claimed verified |
+| Metron | Name/run search, individual issues, publisher, series type, dates/covers; Comic Vine/GCD cross-IDs when supplied | Optional Bearer token according to the [official API reference](https://github.com/Metron-Project/metron/blob/master/api/README.md). Sequential calls spaced 3.1 seconds; bounded pages and cooldowns. See [current rate guidance](https://metron-project.github.io/blog/api-best-practices) | Synthetic series/issue responses, auth-header and filter assertions; no live token configured |
+| Wikidata | Comics-specific catalog matches; excludes character/creator/publisher matches; distinguishes known collected volumes and numbered issues | Existing public search wrapper; useful for work identity, sparse issue coverage | Live `Monstress` lookup returned its series and print volume; fixture regressions cover both classifications |
+| Taddy | Existing participating comic-series metadata and content/feed pathways | Existing optional credentials; webcomic episodes differ from printed issue numbering | Existing adapter tests retained |
+
+Generic book catalogs stay in Books: adding every ISBN/novel provider to Comics would flood issue searches with collected editions and unrelated titles. Manga-specific providers remain in Manga. Cross-category edition relationships are expansion work, not hidden copies of every search result. This implementation does not promise complete history from a broad title query: refine by number/run to find an older issue beyond a recent/bounded page. UI results cap at 500 and report truncation at that level; upstream page limits still apply.
+
+GCD catalog provenance retains attribution and `CC-BY-SA-4.0`; its [site license notice](https://www.comics.org/?lang=en) distinguishes database content from site code. Cover images have their own rights. No upstream code was copied, vendored or subsumed. Every API client is original code against documented endpoints; fixtures contain invented titles and IDs, not copied catalog content. Stored provider variants retain provider-specific attribution rather than flattening it away.
+
+## Identity and provenance rules
+
+Standalone GCD/Metron/Wikidata series records currently remain metadata lookups: the GUI explains the missing series tracking backend instead of creating a broken RSS watch from a catalog page. Select individual issues to use the implemented watch/download path. A merged Comic Vine series continues to use its existing issue-release watcher. Live Wikidata evidence is saved in [research/comics-metadata-live-probes.json](research/comics-metadata-live-probes.json); repeat bounded checks with `tools/smoke_comics_metadata.py --query Monstress --provider Wikidata`. The smoke tool touches no user database and never downloads comic content.
+
+`comic_metadata.py` normalizes `comic_entity` (`issue`, `series`, `collection`), `series_title`, `series_start_year`, `issue_number`, publisher, language, external IDs and parent IDs. Comic Vine `volume` means a series resource; it is not automatically classified as a trade. Explicit format/type evidence and multi-issue ranges identify collected releases.
+
+Issue identifiers use `comicvine_issue`, `gcd_issue`, `metron_issue`; series identifiers use existing `comicvine`, `gcd_series`, `metron_series`. Parent IDs never become IDs of the issue itself. This prevents a series watch and its issue watch from merging in the media graph.
+
+Shared issue IDs establish identity across alternate titles. Otherwise normalized series title and exact issue number must agree; known run, publisher and language conflicts prevent merging. Conflicting same-provider issue/parent IDs remain separate. A source-declared `variant_of` can link cover editions to one issue; alternate edition records and IDs remain attached. Unknown-run releases can join one compatible group, but remain separate when two reboot runs are plausible. No fuzzy title-only automatic merge bridges that ambiguity.
+
+Each merged result retains `metadata_variants`, `download_variants`, `edition_variants`, all IDs, parent IDs and `comic_metadata_provenance` candidates for selected fields. Preferred metadata comes from Comic Vine, Metron, then GCD when present, with missing fields filled from other records. A stable preferred metadata URL avoids changing the watch target because a faster download source happened to win. Catalog disagreements remain inspectable. Existing watch matching reuses shared issue IDs across URLs.
+
+## Reliability and tests
+
+Validation: the full suite passed **384 tests** in 297.498 seconds (`build/comics-metadata-final-tests.log`). The 45 focused tests were rerun after the queue association refinement. Issue files use the existing `enqueue_for_watch`/IRC watch handoff rather than creating a parallel queue identity; ordinary file candidates carry the selected catalog IDs and field provenance into their saved queue metadata.
+
+The existing bounded category executor overlaps independent sources. Within each new catalog client, calls serialize per provider, search responses cache for five minutes (maximum 128 entries), and HTTP 429 pauses that provider for Retry-After or a default cooldown. Authenticated HTTPError URLs are redacted. GCD/Metron JSON responses have an 8 MB limit and 25-second request timeout; pagination is bounded, loop-checked and restricted to the official HTTPS host. Automatic redirects are disabled so Metron authorization headers cannot follow redirects. A failed issue expansion retains successful series records and reports a source error.
+
+`tests/test_comic_metadata_search.py` contains 45 tests. Synthetic API fixtures cover three catalogs; tests exercise identity conflicts, reboots, ambiguous unknown years, language/publisher separation, numeric sorting, trades and packs, cover variants, provenance, retained mirrors, auth/rate/cache/pagination behavior, concurrent partial searches, GUI import routing, watch reuse and issue-versus-series ID isolation. The local HTTP integration performs an actual CBZ transfer from a different approved connector while rejecting trade and conflicting-run candidates. No ordinary user library, remote release download, delivery email or device is used by these tests.
+
+```powershell
+python -m unittest discover -s tests -p test_comic_metadata_search.py -q
+python -m unittest discover -s tests -q
+```
+
+## Structured expansion backlog
+
+| Priority | Dependency / files | Recommended implementation and research | Acceptance criteria |
+|---|---|---|---|
+| P1 detailed selected-issue metadata | `comic_metadata.py`, import preview, existing credentials | Lazy bounded detail lookup for credits, synopsis, ISBN/UPC, variants and cross-IDs; use provider issue-detail contracts above instead of fetching details for every broad search hit | Selected issue gains field provenance/creator roles; no secret persists; detail failure keeps the search result; explicit reprint/variant identities do not collapse distinct stories |
+| P1 search continuation and cancellation | `discovery.py`, `gui.py`, new catalog page cursors | Explicit load-more per run, progress/partial results and cancelable workers; upstream limits visible alongside the 500-result cap | User can find issue 1 of a 900-issue run without scanning every issue per keystroke; failed/slow GCD does not hide already completed results |
+| P1 Metron/GCD series watchers | Durable shared watched metadata; `watched.py`, `comic_metadata.py` | Provider-neutral issue enumeration/refresh with known IDs, new-release baseline policy and future-date corrections; use Metron incremental filters and GCD bounded overviews | Adding these providers' series can watch future individual issues without treating an HTML catalog page as RSS or downloading the historical series automatically; restart and transient failures preserve known IDs |
+| P1 expanded identity review | Media graph review UI, current group evidence | Persist uncertain cross-catalog candidates; manual merge/split and preferred provider/edition selection; namespace reprints/translations separately | Two same-year runs with uncertain publisher or missing IDs remain reviewable; corrected decisions survive later searches; no silent cross-run merge |
+| P2 verified live catalog matrix | User-configured API credentials; connector diagnostics | Small polite contract probes for each catalog; optional legitimate GCD Basic/session client only if anonymous service becomes unavailable | Report response/status/schema/limits without logging keys; auth failures isolate one provider; credentials never forward to another host |
+| P2 quota-aware shared catalog transport | Existing HTTP infrastructure + credential/session boundary | Capture Metron quota headers and conditional detail validators; unify spacing with legacy direct Comic Vine buttons and scheduled polls; bounded disk cache if warranted | Simultaneous UI searches and watches share rate budgets; quota exhaustion suspends requests before repeated 429; cache remains source/credential scoped |
+| P2 collections and franchise relations | `media_graph.py`, Books/Manga providers | Explicit ISBN/provider relationships for trades, omnibus contents, reprints and translated editions; verify service terms before adding Marvel/DC/other optional catalogs | An issue remains the primary result and watch; its containing collections can be explored without replacing it or duplicating the comic in the library |
+
+Rare numbering such as fractions, negative numbers, annual/special labels, and legacy combined-number issues needs source-specific typed numbering before expanding exact-number matching. Creator and publication-year matching can strengthen currently unknown-run candidates. Generic title search is intentionally bounded; it is not a complete database mirror.

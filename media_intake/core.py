@@ -5,6 +5,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -21,7 +22,17 @@ GAME_FORMATS = {
     '.iso', '.chd', '.cso', '.xci', '.nsp', '.gba', '.gbc', '.gb', '.nds',
     '.3ds', '.cia', '.nes', '.sfc', '.smc', '.n64', '.z64', '.v64', '.wbfs',
 }
-EXTENSIONS = BOOK_FORMATS | AUDIO_FORMATS | COMIC_FORMATS | VIDEO_FORMATS | GAME_FORMATS
+GAME_PACKAGE_FORMATS = GAME_FORMATS | {
+    '.zip', '.rar', '.7z', '.exe', '.msi', '.dmg', '.pkg', '.deb', '.bin',
+}
+SOFTWARE_FORMATS = {
+    '.7z', '.apk', '.appimage', '.bin', '.cab', '.deb', '.dmg', '.exe', '.flatpak',
+    '.iso', '.jar', '.msi', '.msix', '.pkg', '.rpm', '.snap', '.tar',
+    '.tar.bz2', '.tar.gz', '.tar.xz', '.tar.zst', '.tbz2', '.tgz', '.txz',
+    '.whl', '.zip', '.zst',
+}
+EXTENSIONS = (BOOK_FORMATS | AUDIO_FORMATS | COMIC_FORMATS | VIDEO_FORMATS |
+              GAME_FORMATS | GAME_PACKAGE_FORMATS | SOFTWARE_FORMATS)
 ATOM = '{http://www.w3.org/2005/Atom}'
 DC = '{http://purl.org/dc/terms/}'
 MAX_FILE_BYTES = 1024 * 1024 * 1024
@@ -61,7 +72,12 @@ def validate_item(item):
 def connect(root):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(root / 'intake.sqlite3')
+    # Watch scans and manual batch downloads use independent worker connections.
+    # Give SQLite time to serialize their short writes while network transfers run
+    # concurrently. Keep check_same_thread at its safe default: each worker owns
+    # the connection it creates.
+    db = sqlite3.connect(root / 'intake.sqlite3', timeout=30)
+    db.execute('PRAGMA busy_timeout=30000')
     db.row_factory = sqlite3.Row
     db.execute('''CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, metadata TEXT NOT NULL,
@@ -85,7 +101,17 @@ def connect(root):
         FOREIGN KEY(parent_id) REFERENCES watched_items(id))''')
     db.execute('''CREATE TABLE IF NOT EXISTS gui_settings (
         key TEXT PRIMARY KEY, value TEXT NOT NULL)''')
+    db.execute('CREATE INDEX IF NOT EXISTS watched_source_url ON watched_items(source_url)')
+    db.execute('CREATE INDEX IF NOT EXISTS watched_parent_kind ON watched_items(parent_id,kind)')
+    db.execute('''CREATE INDEX IF NOT EXISTS items_watch_request ON items(
+        CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_request_id') END AS TEXT))''')
+    db.execute('''CREATE INDEX IF NOT EXISTS items_watch_id ON items(
+        CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_id') END AS TEXT))''')
     initialize_media_graph(db)
+    from .webcomics.storage import migrate as migrate_webcomics
+    migrate_webcomics(db)
+    from .book_batch import migrate as migrate_book_batches
+    migrate_book_batches(db)
     db.commit()
     return db
 
@@ -95,6 +121,90 @@ def enqueue(db, item):
     db.execute("INSERT INTO items(url, metadata) VALUES (?, ?) ON CONFLICT(url) DO UPDATE SET metadata=excluded.metadata, updated_at=CURRENT_TIMESTAMP", (item['url'], json.dumps(item, ensure_ascii=False)))
     db.commit()
     return dict(db.execute('SELECT * FROM items WHERE url=?', (item['url'],)).fetchone())
+
+
+def queue_watch_search(db, watch_id, title, author='Unknown', release_date=None,
+                       upcoming=False, series=None, series_index=None,
+                       publication_status=None):
+    """Keep a book visible in Queue while its watched sources are being searched."""
+    watch_id = int(watch_id)
+    request_url = f'watch-search://{watch_id}'
+    item = {'title': str(title or 'Untitled'), 'author': str(author or 'Unknown'),
+            'format': '—', 'watch_search': True, 'watch_id': watch_id,
+            'release_date': release_date}
+    if series:
+        item['series'] = str(series)
+    if series_index is not None:
+        item['series_index'] = series_index
+    if publication_status:
+        item['publication_status'] = str(publication_status)
+    payload = json.dumps(item, ensure_ascii=False)
+    state = 'upcoming' if upcoming else 'searching'
+    row = db.execute('''SELECT * FROM items WHERE
+        CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_request_id') END AS TEXT)=?
+        ORDER BY id LIMIT 1''', (str(watch_id),)).fetchone()
+    if row:
+        return dict(row)
+    db.execute('''INSERT INTO items(url,metadata,state) VALUES (?,?,?)
+        ON CONFLICT(url) DO UPDATE SET metadata=excluded.metadata,state=excluded.state,
+        error=NULL,progress_message=CASE WHEN excluded.state='searching'
+            THEN 'Preparing connector search' ELSE NULL END,
+        updated_at=CURRENT_TIMESTAMP''', (request_url, payload, state))
+    db.commit()
+    return dict(db.execute('SELECT * FROM items WHERE url=?', (request_url,)).fetchone())
+
+
+def update_watch_search(db, watch_id, state='searching', error=None,
+                        progress_message=None):
+    """Update the visible search request without turning it into a fake download."""
+    request_url = f'watch-search://{int(watch_id)}'
+    db.execute('''UPDATE items SET state=?,error=?,progress_message=?,
+        updated_at=CURRENT_TIMESTAMP WHERE url=?''',
+        (state, str(error or '')[:1000] or None,
+         str(progress_message or '')[:200] or None, request_url))
+    db.commit()
+
+
+def enqueue_for_watch(db, item, watch_id):
+    """Resolve a watched-book queue request into its real, automatically started file."""
+    watch_id = int(watch_id)
+    item = validate_item(dict(item))
+    item['watch_request_id'] = watch_id
+    payload = json.dumps(item, ensure_ascii=False)
+    existing = db.execute('SELECT * FROM items WHERE url=?', (item['url'],)).fetchone()
+
+    # A connector may have already queued this exact source (or a previous scan may
+    # have tried it). Reuse one row per watched work and preserve completed files.
+    request_row = db.execute('''SELECT * FROM items WHERE
+        (CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_id') END AS TEXT)=?
+         AND CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_search') END)
+        OR CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_request_id') END AS TEXT)=?
+        ORDER BY id LIMIT 1''', (str(watch_id), str(watch_id))).fetchone()
+
+    if existing:
+        if request_row and int(request_row['id']) != int(existing['id']):
+            db.execute('DELETE FROM items WHERE id=?', (request_row['id'],))
+        try:
+            state = existing['state']
+            if state in ('failed', 'searching', 'upcoming'):
+                state = 'queued'
+            db.execute('''UPDATE items SET metadata=?,state=?,error=NULL,
+                progress_bytes=NULL,progress_total=NULL,progress_message=NULL,
+                updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+                       (payload, state, existing['id']))
+        except Exception:
+            raise
+        db.commit()
+        return dict(db.execute('SELECT * FROM items WHERE id=?', (existing['id'],)).fetchone())
+
+    if request_row:
+        db.execute('''UPDATE items SET url=?,metadata=?,state='queued',file_path=NULL,
+            sha256=NULL,error=NULL,progress_bytes=NULL,progress_total=NULL,
+            progress_message=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+                   (item['url'], payload, request_row['id']))
+        db.commit()
+        return dict(db.execute('SELECT * FROM items WHERE id=?', (request_row['id'],)).fetchone())
+    return enqueue(db, item)
 
 
 def list_items(db, state=None):
@@ -113,9 +223,20 @@ def update_download_progress(db, item_id, done=None, total=None, message=None):
     db.commit()
 
 
+def open_url(request, timeout=30):
+    """Open a URL and release HTTP error response streams before propagating them."""
+    try:
+        return urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        # HTTPError is also a response stream. Close it while keeping the
+        # original exception available to callers for status-specific handling.
+        exc.close()
+        raise
+
+
 def http_get(url, max_bytes=10_000_000):
     request = urllib.request.Request(url, headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         size = response.headers.get('Content-Length')
         if size and int(size) > max_bytes:
             raise ValueError('Response exceeds size limit')
@@ -191,10 +312,30 @@ def search_opds(feed_url, query, pages=3):
     return items
 
 
+def _auto_deliver_to_kindle(db, item_id, fallback_root):
+    from .kindle import maybe_auto_send_to_kindle
+
+    database = db.execute('PRAGMA database_list').fetchone()
+    data_root = Path(database['file']).parent if database and database['file'] else Path(fallback_root)
+    try:
+        from .epub_conversion import ensure_book_epub
+        ensure_book_epub(db, item_id)
+    except Exception:
+        # A format conversion issue should be visible in item metadata/logs, but
+        # must not turn a successful source download into a failed queue item.
+        import logging
+        logging.getLogger(__name__).exception(
+            'Local EPUB conversion failed for completed queue item %s', item_id)
+    return maybe_auto_send_to_kindle(db, item_id, data_root)
+
+
 def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
     if row is None: raise ValueError('Unknown queue ID')
-    item = validate_item(json.loads(row['metadata']))
+    item = json.loads(row['metadata'])
+    if item.get('watch_search'):
+        raise ValueError('This book is waiting for an automatic source search; it has no file to download yet.')
+    item = validate_item(item)
     explicit_rights_path = item.get('rights_evidence_path')
     rights_path = explicit_rights_path or (Path(root) / 'rights-evidence.json')
     if explicit_rights_path and not Path(rights_path).is_file():
@@ -213,7 +354,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
             raise ValueError(f'Download not approved: set {source}.approved_for_download to true in {rights_path}')
     if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists() \
             and urllib.parse.urlsplit(item['url']).scheme not in ('fanfic+http', 'fanfic+https'):
-        return dict(row)
+        return _auto_deliver_to_kindle(db, item_id, root)
     db.execute("UPDATE items SET state='downloading', error=NULL, progress_bytes=0, progress_total=NULL, progress_message='Preparing download', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
     db.commit()
     if urllib.parse.urlsplit(item['url']).scheme in ('fanfic+http', 'fanfic+https'):
@@ -221,7 +362,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
             from .fanfiction import download_fanfiction
             result = download_fanfiction(db, row, root, max_bytes, destination)
             update_download_progress(db, item_id, None, None, None)
-            return result
+            return _auto_deliver_to_kindle(db, item_id, root) or result
         except Exception as exc:
             db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
@@ -231,17 +372,20 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
             from .irc import download_irc
             result = download_irc(db, row, root, max_bytes, destination)
             update_download_progress(db, item_id, None, None, None)
-            return result
+            return _auto_deliver_to_kindle(db, item_id, root) or result
         except Exception as exc:
             db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
             raise
     if urllib.parse.urlsplit(item['url']).scheme in ('serial+http', 'serial+https'):
         try:
-            from .serial import download_serial
+            if item.get('webcomic_job'):
+                from .webcomics.downloads import download_entry as download_serial
+            else:
+                from .serial import download_serial
             result = download_serial(db, row, root, max_bytes, destination)
             update_download_progress(db, item_id, None, None, None)
-            return result
+            return _auto_deliver_to_kindle(db, item_id, root) or result
         except Exception as exc:
             db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
@@ -254,7 +398,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
         with os.fdopen(fd, 'wb') as out:
             req = urllib.request.Request(item['url'], headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with open_url(req, timeout=60) as response:
                 content_type = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
                 if content_type in ('text/html', 'application/xhtml+xml'):
                     raise ValueError('URL returned an HTML page, not a media file')
@@ -275,6 +419,12 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         if total:
             update_download_progress(db, item_id, total, expected, 'Validating downloaded file')
         if not total: raise ValueError('Empty download')
+        if expected is not None and total != expected:
+            raise ValueError('Download truncated: byte count differs from Content-Length')
+        if item.get('expected_size') is not None and total != int(item['expected_size']):
+            raise ValueError('Downloaded size differs from host metadata')
+        if item.get('expected_sha256') and digest.hexdigest().casefold() != str(item['expected_sha256']).casefold():
+            raise ValueError('Downloaded checksum differs from host metadata')
         check_download(tmp, item['format'])
         base = folder / file_name(item)
         dest = base
@@ -295,7 +445,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
         db.commit()
         raise
-    return dict(db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone())
+    return _auto_deliver_to_kindle(db, item_id, root)
 
 
 def import_calibre(db, item_id, library=None, executable='calibredb'):

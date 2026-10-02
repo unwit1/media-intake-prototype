@@ -1,0 +1,28 @@
+{
+  "notice": "Synthetic catalog responses matching the documented APIs; no copied catalog content or cover images.",
+  "comicvine_series": [
+    {"id": 10, "name": "Sample Hero", "start_year": 2016, "publisher": {"name": "Example Press"}, "count_of_issues": 12, "site_detail_url": "https://comicvine.gamespot.com/sample-hero/4050-10/"},
+    {"id": 20, "name": "Sample Hero", "start_year": 2024, "publisher": {"name": "Example Press"}, "count_of_issues": 3, "site_detail_url": "https://comicvine.gamespot.com/sample-hero/4050-20/"},
+    {"id": 30, "name": "Sample Hero TPB", "start_year": 2020, "count_of_issues": 1, "site_detail_url": "https://comicvine.gamespot.com/sample-hero-tpb/4050-30/"}
+  ],
+  "comicvine_issues": [
+    {"id": 100, "name": "A New Start", "issue_number": "1", "store_date": "2016-07-06 00:00:00", "cover_date": "2016-09-01 00:00:00", "image": {"small_url": "https://covers.example/100.jpg"}, "site_detail_url": "https://comicvine.gamespot.com/sample-hero-1/4000-100/"}
+  ],
+  "gcd_series": {"count": 1, "next": null, "results": [
+    {"api_url": "https://www.comics.org/api/series/40/", "name": "Sample Hero", "year_began": 2016, "language": "en", "publisher": "https://www.comics.org/api/publisher/5/"}
+  ]},
+  "gcd_issues": {"count": 2, "next": null, "results": [
+    {"api_url": "https://www.comics.org/api/issue/400/", "series": "https://www.comics.org/api/series/40/", "series_name": "Sample Hero (2016)", "descriptor": "Sample Hero (2016) #1", "publication_date": "September 2016", "variant_of": null},
+    {"api_url": "https://www.comics.org/api/issue/401/", "series": "https://www.comics.org/api/series/40/", "series_name": "Sample Hero (2016)", "descriptor": "Sample Hero (2016) #1 [Alternate cover]", "publication_date": "September 2016", "variant_of": "https://www.comics.org/api/issue/400/"}
+  ]},
+  "gcd_overview": {"count": 2, "next": null, "results": [
+    {"issue_id": 400, "number": "1", "descriptor": "Sample Hero (2016) #1", "publication_date": "September 2016", "on_sale_date": "2016-07-06", "cover_url": "https://covers.example/gcd-400.jpg"},
+    {"issue_id": 410, "number": "2", "descriptor": "Sample Hero (2016) #2", "publication_date": "October 2016", "on_sale_date": "2016-08-03", "cover_url": ""}
+  ]},
+  "metron_series": {"count": 1, "next": null, "results": [
+    {"id": 50, "series": "Sample Hero (2016)", "year_began": 2016, "volume": 2, "issue_count": 12, "publisher": {"id": 6, "name": "Example Press"}, "series_type": {"id": 1, "name": "Single Issue"}, "cv_id": 10, "gcd_id": 40}
+  ]},
+  "metron_issues": {"count": 1, "next": null, "results": [
+    {"id": 500, "series": {"id": 50, "name": "Sample Hero", "volume": 2, "year_began": 2016}, "number": "1", "issue": "Sample Hero (2016) #1", "store_date": "2016-07-06", "cover_date": "2016-09-01", "image": "https://covers.example/metron-500.jpg"}
+  ]}
+}

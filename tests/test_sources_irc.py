@@ -10,7 +10,10 @@ from pathlib import Path
 from urllib.error import HTTPError
 from unittest.mock import patch
 from media_intake.core import connect, download
-from media_intake.irc import enqueue_irc, parse_offer, send_user_command, parse_search_index, search_irc
+from media_intake.irc import (configured_search_sources, enqueue_irc, irc_source_priority_label,
+                              parse_offer, search_configured_sources, send_user_command,
+                              parse_search_index, search_irc, discover_irc_channels,
+                              _irc_ssl_context, receive_offer)
 from media_intake.sources import (parse_site_results, resolve_detail, search_forum_threads,
                                   search_openlibrary)
 
@@ -58,7 +61,132 @@ class SearchIRC(socketserver.BaseRequestHandler):
         except TimeoutError: pass
 
 
+class ListIRC(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(5)
+        reader = self.request.makefile('rb')
+        reader.readline()  # NICK
+        reader.readline()  # USER
+        self.request.sendall(b':server 001 Test :Welcome\r\n')
+        self.server.command = reader.readline().decode()
+        self.request.sendall(b'PING :channel-list-check\r\n')
+        self.server.pong = reader.readline().decode()
+        self.request.sendall(
+            b':server 322 Test #ebooks 42 :Public books channel\r\n'
+            b':server 322 Test #Bookz 8 :Public domain archive\r\n'
+            b':server 323 Test :End of /LIST\r\n')
+
+
+class RejectChannelIRC(socketserver.BaseRequestHandler):
+    def handle(self):
+        reader = self.request.makefile('rb')
+        reader.readline()
+        reader.readline()
+        self.request.sendall(b':server 001 Test :Welcome\r\n')
+        self.server.join_command = reader.readline().decode()
+        self.request.sendall(b':server 403 Test #missing :No such channel\r\n')
+
+
 class SourceAndIRCTest(unittest.TestCase):
+    def test_irc_tls_verification_is_enabled_by_default_and_can_be_explicitly_disabled(self):
+        self.assertTrue(_irc_ssl_context({}).check_hostname)
+        unverified = _irc_ssl_context({'verify_tls': False})
+        self.assertFalse(unverified.check_hostname)
+
+    def test_irc_channel_discovery_sends_list_and_parses_checkbox_entries(self):
+        irc = socketserver.ThreadingTCPServer(('127.0.0.1', 0), ListIRC)
+        irc.command, irc.pong = None, None
+        thread = threading.Thread(target=irc.serve_forever, daemon=True)
+        thread.start()
+        try:
+            channels = discover_irc_channels({
+                'server': '127.0.0.1', 'port': irc.server_address[1],
+                'tls': False, 'nick': 'Test', 'timeout': 5,
+            })
+            self.assertEqual(irc.command, 'LIST\r\n')
+            self.assertEqual(irc.pong, 'PONG :channel-list-check\r\n')
+            self.assertEqual(channels, [
+                {'channel': '#Bookz', 'users': 8, 'topic': 'Public domain archive'},
+                {'channel': '#ebooks', 'users': 42, 'topic': 'Public books channel'},
+            ])
+        finally:
+            irc.shutdown()
+            irc.server_close()
+            thread.join()
+
+    def test_irc_channel_discovery_can_limit_the_server_list(self):
+        irc = socketserver.ThreadingTCPServer(('127.0.0.1', 0), ListIRC)
+        irc.command, irc.pong = None, None
+        thread = threading.Thread(target=irc.serve_forever, daemon=True)
+        thread.start()
+        try:
+            channels = discover_irc_channels({
+                'server': '127.0.0.1', 'port': irc.server_address[1],
+                'tls': False, 'nick': 'Test', 'channel_mask': '#Bookz,#ebooks',
+                'timeout': 5,
+            })
+            self.assertEqual(irc.command, 'LIST #Bookz,#ebooks\r\n')
+            self.assertEqual([row['channel'] for row in channels], ['#Bookz', '#ebooks'])
+        finally:
+            irc.shutdown()
+            irc.server_close()
+            thread.join()
+
+    def test_irc_channel_discovery_rejects_unsafe_list_masks(self):
+        with patch('media_intake.irc.socket.create_connection') as create_connection:
+            with self.assertRaisesRegex(ValueError, 'channel listing filter'):
+                discover_irc_channels({
+                    'server': '127.0.0.1', 'port': 6667, 'tls': False,
+                    'nick': 'Test', 'channel_mask': '#books\r\nQUIT',
+                })
+            create_connection.assert_not_called()
+
+    def test_irc_channel_rejection_is_reported_without_waiting_for_search_timeout(self):
+        irc = socketserver.ThreadingTCPServer(('127.0.0.1', 0), RejectChannelIRC)
+        irc.join_command = None
+        thread = threading.Thread(target=irc.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config = {'server': '127.0.0.1', 'port': irc.server_address[1],
+                      'tls': False, 'nick': 'Test', 'channel': '#missing', 'timeout': 5}
+            with self.assertRaisesRegex(ConnectionError, 'No such channel'):
+                with receive_offer(config):
+                    self.fail('A rejected channel cannot provide an offer.')
+            self.assertEqual(irc.join_command, 'JOIN #missing\r\n')
+        finally:
+            irc.shutdown()
+            irc.server_close()
+            thread.join()
+
+    def test_irc_search_uses_saved_per_server_priority(self):
+        options = {'irc_sources': [
+            {'name': 'Primary', 'server': 'irc.primary.test', 'port': 6667,
+             'tls': False, 'nick': 'Reader', 'channel': '#books', 'bot': 'IndexBot',
+             'categories': ['Books']},
+            {'name': 'Backup', 'server': 'irc.backup.test', 'port': 6667,
+             'tls': False, 'nick': 'Reader', 'channel': '#ebooks', 'bot': 'IndexBot',
+             'categories': ['Books']},
+        ]}
+        priority = [irc_source_priority_label('Backup', options['irc_sources'][1]),
+                    irc_source_priority_label('Primary', options['irc_sources'][0])]
+        ordered = configured_search_sources(options, 'Books', priority=priority)
+        self.assertEqual([name for name, _config in ordered], ['Backup', 'Primary'])
+
+        def fake_search(_query, config, limit=100):
+            if config['server'] == 'irc.backup.test':
+                return [{'title': 'Example', 'author': 'Writer', 'format': '.epub'}]
+            return []
+
+        progress = []
+        with patch('media_intake.irc.search_irc', side_effect=fake_search):
+            results, errors = search_configured_sources(
+                'Example', options, 'Books', {'.epub'}, priority=priority,
+                progress_callback=progress.append)
+        self.assertEqual(errors, [])
+        self.assertEqual(results[0]['irc_source_name'], 'Backup')
+        self.assertEqual(results[0]['download_priority_label'], priority[0])
+        self.assertEqual(progress, [priority[0]])
+
     def test_forum_search_exposes_thread_references_only(self):
         markup = '''
           <div class="topiclist">

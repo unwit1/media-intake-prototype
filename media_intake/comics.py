@@ -7,7 +7,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from .core import http_get
+from .core import http_get, open_url
 
 ANILIST_URL = 'https://graphql.anilist.co'
 TADDY_URL = 'https://api.taddy.org'
@@ -40,15 +40,25 @@ def _query_text(query):
 
 
 def _anilist_release_date(value):
-    if not value or not value.get('year'):
+    if not value or not value.get('year') or not value.get('month') or not value.get('day'):
         return None
     year = int(value['year'])
-    month = int(value.get('month') or 1)
-    day = int(value.get('day') or 1)
+    month = int(value['month'])
+    day = int(value['day'])
     try:
         return dt.date(year, month, day).isoformat()
     except ValueError:
         return None
+
+
+def anilist_video_subtype(media_format):
+    """Map AniList's anime formats into the shared Video subtype vocabulary."""
+    return {
+        'TV': 'anime_series', 'TV_SHORT': 'anime_short_series',
+        'ONA': 'anime_web_series', 'MOVIE': 'anime_movie',
+        'SPECIAL': 'anime_special', 'OVA': 'anime_ova',
+        'MUSIC': 'anime_music_video',
+    }.get(str(media_format or '').upper(), 'anime')
 
 
 def search_anilist(query, limit=20, media_type='MANGA'):
@@ -79,7 +89,7 @@ def search_anilist(query, limit=20, media_type='MANGA'):
         headers={'Content-Type': 'application/json', 'Accept': 'application/json',
                  'User-Agent': 'MediaIntakePrototype/0.2'},
         method='POST')
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         raw = response.read(2_000_001)
     if len(raw) > 2_000_000:
         raise ValueError('AniList response exceeds size limit')
@@ -92,7 +102,8 @@ def search_anilist(query, limit=20, media_type='MANGA'):
     media_rows = payload.get('data', {}).get('Page', {}).get('media') or []
     for media in media_rows:
         titles = media.get('title') or {}
-        title = titles.get('english') or titles.get('romaji') or titles.get('native') or 'Untitled manga'
+        title = titles.get('english') or titles.get('romaji') or titles.get('native') or (
+            'Untitled anime' if media_type == 'ANIME' else 'Untitled manga')
         creators = []
         for edge in (media.get('staff') or {}).get('edges') or []:
             role = str(edge.get('role') or '').casefold()
@@ -108,14 +119,36 @@ def search_anilist(query, limit=20, media_type='MANGA'):
                 if match:
                     mangadex_id = match.group(1)
                     break
+        anilist_id = media.get('id')
+        external_ids = ([{'provider': 'anilist', 'external_id': str(anilist_id),
+                          'source_url': media.get('siteUrl')}]
+                        if anilist_id else [])
+        if mangadex_id:
+            external_ids.append({'provider': 'mangadex', 'external_id': str(mangadex_id),
+                                 'source_url': f'https://mangadex.org/title/{mangadex_id}'})
+        anime_format = str(media.get('format') or '').upper() if media_type == 'ANIME' else ''
+        anime_series = anime_format in {'TV', 'TV_SHORT', 'ONA'}
+        anime_subtype = anilist_video_subtype(anime_format) if media_type == 'ANIME' else None
+        catalog_metadata = {
+            'catalog_provider': 'AniList', 'catalog_id': str(anilist_id or ''),
+            'external_ids': external_ids,
+            'format': media.get('format'), 'status': media.get('status'),
+            'chapters': media.get('chapters'), 'volumes': media.get('volumes'),
+            'country_of_origin': media.get('countryOfOrigin'),
+            'genres': media.get('genres') or [],
+            'description': re.sub(r'\s+', ' ', str(media.get('description') or '')).strip(),
+        }
         results.append({
             'provider': 'anilist',
             'kind': ('anime' if media_type == 'ANIME' else
                      'webtoon' if str(media.get('format') or '').upper() == 'WEBTOON' else 'manga'),
+            'entity_type': 'series' if anime_series else 'work',
+            'video_subtype': anime_subtype,
             'title': title,
             'author': ', '.join(creators) or 'Unknown',
             'release_date': _anilist_release_date(media.get('startDate')),
-            'source_url': media.get('siteUrl') or f'https://anilist.co/manga/{media.get("id")}',
+            'source_url': media.get('siteUrl') or
+                          f'https://anilist.co/{"anime" if media_type == "ANIME" else "manga"}/{media.get("id")}',
             'anilist_id': media.get('id'),
             'mangadex_id': mangadex_id,
             'description': re.sub(r'\s+', ' ', str(media.get('description') or '')).strip(),
@@ -123,11 +156,59 @@ def search_anilist(query, limit=20, media_type='MANGA'):
             'chapters': media.get('chapters'), 'volumes': media.get('volumes'),
             'country_of_origin': media.get('countryOfOrigin'),
             'genres': media.get('genres') or [],
+            'publication_status': media.get('status'),
+            'external_ids': external_ids,
+            'catalog_metadata': catalog_metadata,
             'external_links': [{'site': link.get('site'), 'url': link.get('url'),
                                 'type': link.get('type')}
                                for link in external_links if link.get('url')],
         })
     return results
+
+
+def fetch_anilist_media(media_id):
+    """Refresh one AniList anime/manga record, including dated follow-ups."""
+    media_id = int(media_id)
+    if media_id <= 0:
+        raise ValueError('AniList ID must be positive')
+    gql = '''query ($id: Int!) {
+      Media(id: $id) {
+        id siteUrl type format status episodes chapters volumes
+        title { english romaji native }
+        description(asHtml: false)
+        startDate { year month day }
+        endDate { year month day }
+        nextAiringEpisode { airingAt episode timeUntilAiring }
+        relations {
+          edges {
+            relationType
+            node {
+              id siteUrl type format status
+              title { english romaji native }
+              startDate { year month day }
+            }
+          }
+        }
+      }
+    }'''
+    request = urllib.request.Request(
+        ANILIST_URL,
+        data=json.dumps({'query': gql, 'variables': {'id': media_id}}).encode('utf-8'),
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json',
+                 'User-Agent': 'MediaIntakePrototype/0.2'}, method='POST')
+    with open_url(request, timeout=30) as response:
+        raw, final_url = response.read(3_000_001), response.geturl()
+    if len(raw) > 3_000_000 or urllib.parse.urlsplit(final_url).hostname != 'graphql.anilist.co':
+        raise ValueError('AniList returned an unexpected response')
+    payload = json.loads(raw.decode('utf-8'))
+    if payload.get('errors'):
+        messages = [str(error.get('message') or 'AniList query failed')
+                    for error in payload['errors']]
+        raise ValueError('; '.join(messages[:2]))
+    result = (payload.get('data') or {}).get('Media')
+    if not isinstance(result, dict) or int(result.get('id') or 0) != media_id:
+        raise ValueError('AniList did not return that media record')
+    return result
 
 
 def search_mangadex(query, limit=20):
@@ -187,7 +268,7 @@ def search_taddy(query, user_id, api_key, limit=20):
                  'X-USER-ID': user_id, 'X-API-KEY': api_key,
                  'User-Agent': 'MediaIntakePrototype/0.2'},
         method='POST')
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         raw = response.read(2_000_001)
     if len(raw) > 2_000_000:
         raise ValueError('Taddy response exceeds size limit')
@@ -246,7 +327,7 @@ def search_comicvine(query, api_key, limit=20):
         COMICVINE_API + '/search/?' + params,
         headers={'Accept': 'application/json', 'User-Agent': 'MediaIntakePrototype/0.3'},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         raw = response.read(2_000_001)
     if len(raw) > 2_000_000:
         raise ValueError('Comic Vine response exceeds size limit')
@@ -268,11 +349,13 @@ def search_comicvine(query, api_key, limit=20):
             'author': 'Unknown', 'source_url': source_url,
             'comicvine_id': str(volume_id), 'start_year': row.get('start_year'),
             'issue_count': row.get('count_of_issues'), 'format': 'catalog',
+            'publisher': (row.get('publisher') or {}).get('name') if isinstance(row.get('publisher'), dict) else row.get('publisher'),
+            'cover': (row.get('image') or {}).get('small_url') if isinstance(row.get('image'), dict) else None,
         })
     return results
 
 
-def list_comicvine_issues(volume_id, api_key, limit=100):
+def list_comicvine_issues(volume_id, api_key, limit=100, number=None):
     """List the most recent scheduled issues in a volume, including store dates."""
     volume_id = str(volume_id or '').strip()
     api_key = str(api_key or '').strip()
@@ -280,17 +363,19 @@ def list_comicvine_issues(volume_id, api_key, limit=100):
         raise ValueError('Invalid Comic Vine volume ID')
     if not api_key or len(api_key) > 500:
         raise ValueError('Set COMICVINE_API_KEY or enter a Comic Vine API key')
+    if number is not None and not re.fullmatch(r'\d+(?:\.\d+)?[a-zA-Z]?', str(number)):
+        raise ValueError('Invalid Comic Vine issue number')
     limit = max(1, min(int(limit), 100))
     params = urllib.parse.urlencode({
-        'api_key': api_key, 'format': 'json', 'filter': f'volume:{volume_id}',
+        'api_key': api_key, 'format': 'json', 'filter': f'volume:{volume_id}' + (f',issue_number:{number}' if number is not None else ''),
         'sort': 'store_date:desc', 'limit': limit,
-        'field_list': 'id,name,issue_number,store_date,cover_date,site_detail_url',
+        'field_list': 'id,name,issue_number,store_date,cover_date,site_detail_url,image',
     })
     request = urllib.request.Request(
         COMICVINE_API + '/issues/?' + params,
         headers={'Accept': 'application/json', 'User-Agent': 'MediaIntakePrototype/0.3'},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         raw = response.read(4_000_001)
     if len(raw) > 4_000_000:
         raise ValueError('Comic Vine issue response exceeds size limit')
@@ -312,6 +397,7 @@ def list_comicvine_issues(volume_id, api_key, limit=100):
             'provider': 'Comic Vine', 'comicvine_id': str(issue_id),
             'title': title, 'number': number, 'store_date': store_date,
             'cover_date': cover_date, 'release_date': store_date or cover_date,
+            'cover': (row.get('image') or {}).get('small_url') if isinstance(row.get('image'), dict) else None,
             'source_url': row.get('site_detail_url') or f'https://comicvine.gamespot.com/issue/{issue_id}/',
         })
     return issues

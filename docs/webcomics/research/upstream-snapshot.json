@@ -1,0 +1,735 @@
+{
+  "retrieved_at": "2026-09-30T01:53:16.612615+00:00",
+  "purpose": "Dated upstream facts and references only; no source or README text vendored.",
+  "repositories": [
+    {
+      "repository": "webcomics/dosage",
+      "url": "https://github.com/webcomics/dosage",
+      "description": "dosage is a comic strip downloader and archiver",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-24T07:12:53Z",
+      "updated_at": "2026-09-04T10:14:26Z",
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/webcomics/dosage",
+      "references": [
+        "https://github.com/webcomics/dosage/tree/main",
+        "https://github.com/webcomics/dosage/commits/main"
+      ]
+    },
+    {
+      "repository": "mikf/gallery-dl",
+      "url": "https://github.com/mikf/gallery-dl",
+      "description": "Command-line program to download image galleries and collections from several image hosting sites",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-27T10:07:40Z",
+      "updated_at": "2026-09-30T00:52:07Z",
+      "default_branch": "master",
+      "license": {
+        "key": "gpl-2.0",
+        "name": "GNU General Public License v2.0",
+        "spdx_id": "GPL-2.0",
+        "url": "https://api.github.com/licenses/gpl-2.0",
+        "node_id": "MDc6TGljZW5zZTg="
+      },
+      "html_url": "https://github.com/mikf/gallery-dl",
+      "references": [
+        "https://github.com/mikf/gallery-dl/tree/master",
+        "https://github.com/mikf/gallery-dl/commits/master"
+      ]
+    },
+    {
+      "repository": "yt-dlp/yt-dlp",
+      "url": "https://github.com/yt-dlp/yt-dlp",
+      "description": "A feature-rich command-line audio/video downloader",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-27T22:09:13Z",
+      "updated_at": "2026-09-30T01:41:26Z",
+      "default_branch": "master",
+      "license": {
+        "key": "unlicense",
+        "name": "The Unlicense",
+        "spdx_id": "Unlicense",
+        "url": "https://api.github.com/licenses/unlicense",
+        "node_id": "MDc6TGljZW5zZTE1"
+      },
+      "html_url": "https://github.com/yt-dlp/yt-dlp",
+      "references": [
+        "https://github.com/yt-dlp/yt-dlp/tree/master",
+        "https://github.com/yt-dlp/yt-dlp/commits/master"
+      ]
+    },
+    {
+      "repository": "manga-download/hakuneko",
+      "url": "https://github.com/manga-download/hakuneko",
+      "description": "Manga & Anime Downloader for Linux, Windows & MacOS",
+      "language": "JavaScript",
+      "archived": false,
+      "pushed_at": "2026-03-29T11:43:19Z",
+      "updated_at": "2026-09-29T00:23:36Z",
+      "default_branch": "master",
+      "license": {
+        "key": "unlicense",
+        "name": "The Unlicense",
+        "spdx_id": "Unlicense",
+        "url": "https://api.github.com/licenses/unlicense",
+        "node_id": "MDc6TGljZW5zZTE1"
+      },
+      "html_url": "https://github.com/manga-download/hakuneko",
+      "references": [
+        "https://github.com/manga-download/hakuneko/tree/master",
+        "https://github.com/manga-download/hakuneko/commits/master"
+      ]
+    },
+    {
+      "repository": "manga-download/haruneko",
+      "url": "https://github.com/manga-download/haruneko",
+      "description": "Prototype of HakuNeko based on TypeScript + Electron / NW.js",
+      "language": "TypeScript",
+      "archived": false,
+      "pushed_at": "2026-09-29T17:10:44Z",
+      "updated_at": "2026-09-29T14:30:18Z",
+      "default_branch": "master",
+      "license": {
+        "key": "unlicense",
+        "name": "The Unlicense",
+        "spdx_id": "Unlicense",
+        "url": "https://api.github.com/licenses/unlicense",
+        "node_id": "MDc6TGljZW5zZTE1"
+      },
+      "html_url": "https://github.com/manga-download/haruneko",
+      "references": [
+        "https://github.com/manga-download/haruneko/tree/master",
+        "https://github.com/manga-download/haruneko/commits/master"
+      ]
+    },
+    {
+      "repository": "manga-py/manga-py",
+      "url": "https://github.com/manga-py/manga-py",
+      "description": "Universal manga downloader (for your offline reading) upd: Please, use this tool: https://github.com/mikf/gallery-dl",
+      "language": "Python",
+      "archived": true,
+      "pushed_at": "2023-07-27T13:21:40Z",
+      "updated_at": "2026-09-11T05:40:07Z",
+      "default_branch": "stable_1.x",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/manga-py/manga-py",
+      "references": [
+        "https://github.com/manga-py/manga-py/tree/stable_1.x",
+        "https://github.com/manga-py/manga-py/commits/stable_1.x"
+      ]
+    },
+    {
+      "repository": "metafates/mangal",
+      "url": "https://github.com/metafates/mangal",
+      "description": "📖 The most advanced (yet simple) cli manga downloader in the entire universe! Lua scrapers, export formats, anilist integration, fancy TUI and more!",
+      "language": "Go",
+      "archived": true,
+      "pushed_at": "2025-04-02T09:35:09Z",
+      "updated_at": "2026-09-29T01:48:04Z",
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/metafates/mangal",
+      "references": [
+        "https://github.com/metafates/mangal/tree/main",
+        "https://github.com/metafates/mangal/commits/main"
+      ]
+    },
+    {
+      "repository": "fmd-project-team/FMD",
+      "url": "https://github.com/fmd-project-team/FMD",
+      "description": "The new FMD fork! Join our community on Discord!",
+      "language": "Pascal",
+      "archived": true,
+      "pushed_at": "2020-10-31T02:26:15Z",
+      "updated_at": "2026-08-10T17:33:40Z",
+      "default_branch": "master",
+      "license": {
+        "key": "gpl-2.0",
+        "name": "GNU General Public License v2.0",
+        "spdx_id": "GPL-2.0",
+        "url": "https://api.github.com/licenses/gpl-2.0",
+        "node_id": "MDc6TGljZW5zZTg="
+      },
+      "html_url": "https://github.com/fmd-project-team/FMD",
+      "references": [
+        "https://github.com/fmd-project-team/FMD/tree/master",
+        "https://github.com/fmd-project-team/FMD/commits/master"
+      ]
+    },
+    {
+      "repository": "dazedcat19/FMD2",
+      "url": "https://github.com/dazedcat19/FMD2",
+      "description": null,
+      "language": "Pascal",
+      "archived": false,
+      "pushed_at": "2026-09-29T08:35:32Z",
+      "updated_at": "2026-09-29T08:35:28Z",
+      "default_branch": "master",
+      "license": {
+        "key": "gpl-2.0",
+        "name": "GNU General Public License v2.0",
+        "spdx_id": "GPL-2.0",
+        "url": "https://api.github.com/licenses/gpl-2.0",
+        "node_id": "MDc6TGljZW5zZTg="
+      },
+      "html_url": "https://github.com/dazedcat19/FMD2",
+      "references": [
+        "https://github.com/dazedcat19/FMD2/tree/master",
+        "https://github.com/dazedcat19/FMD2/commits/master"
+      ]
+    },
+    {
+      "repository": "mihonapp/mihon",
+      "url": "https://github.com/mihonapp/mihon",
+      "description": "Free and open source manga reader for Android",
+      "language": "Kotlin",
+      "archived": false,
+      "pushed_at": "2026-09-28T21:33:54Z",
+      "updated_at": "2026-09-30T01:09:30Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "html_url": "https://github.com/mihonapp/mihon",
+      "references": [
+        "https://github.com/mihonapp/mihon/tree/main",
+        "https://github.com/mihonapp/mihon/commits/main"
+      ]
+    },
+    {
+      "repository": "keiyoushi/extensions-source",
+      "url": "https://github.com/keiyoushi/extensions-source",
+      "description": "Source code of extensions in https://github.com/keiyoushi/extensions",
+      "language": "Kotlin",
+      "archived": false,
+      "pushed_at": "2026-09-29T05:47:56Z",
+      "updated_at": "2026-09-29T19:34:32Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "html_url": "https://github.com/keiyoushi/extensions-source",
+      "references": [
+        "https://github.com/keiyoushi/extensions-source/tree/main",
+        "https://github.com/keiyoushi/extensions-source/commits/main"
+      ]
+    },
+    {
+      "repository": "Paperback-iOS/extensions-common",
+      "url": "https://github.com/Paperback-iOS/extensions-common",
+      "description": "Common models and type definitions for developing a Paperback source",
+      "language": "TypeScript",
+      "archived": true,
+      "pushed_at": "2023-03-05T03:44:20Z",
+      "updated_at": "2026-08-22T07:05:15Z",
+      "default_branch": "master",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/Paperback-iOS/extensions-common",
+      "references": [
+        "https://github.com/Paperback-iOS/extensions-common/tree/master",
+        "https://github.com/Paperback-iOS/extensions-common/commits/master"
+      ]
+    },
+    {
+      "repository": "Paperback-iOS/extensions",
+      "url": "https://github.com/Paperback-iOS/extensions",
+      "description": "Trackers and other misc extensions for Paperback",
+      "language": "TypeScript",
+      "archived": false,
+      "pushed_at": "2023-07-20T15:49:24Z",
+      "updated_at": "2026-05-28T14:46:53Z",
+      "default_branch": "main",
+      "license": {
+        "key": "gpl-3.0",
+        "name": "GNU General Public License v3.0",
+        "spdx_id": "GPL-3.0",
+        "url": "https://api.github.com/licenses/gpl-3.0",
+        "node_id": "MDc6TGljZW5zZTk="
+      },
+      "html_url": "https://github.com/Paperback-iOS/extensions",
+      "references": [
+        "https://github.com/Paperback-iOS/extensions/tree/main",
+        "https://github.com/Paperback-iOS/extensions/commits/main"
+      ]
+    },
+    {
+      "repository": "potatoeggy/mandown",
+      "url": "https://github.com/potatoeggy/mandown",
+      "description": "Comic/manga/webtoon downloader and CBZ/EPUB/MOBI/PDF converter",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2025-07-18T21:31:47Z",
+      "updated_at": "2026-09-19T22:24:07Z",
+      "default_branch": "master",
+      "license": {
+        "key": "agpl-3.0",
+        "name": "GNU Affero General Public License v3.0",
+        "spdx_id": "AGPL-3.0",
+        "url": "https://api.github.com/licenses/agpl-3.0",
+        "node_id": "MDc6TGljZW5zZTE="
+      },
+      "html_url": "https://github.com/potatoeggy/mandown",
+      "references": [
+        "https://github.com/potatoeggy/mandown/tree/master",
+        "https://github.com/potatoeggy/mandown/commits/master"
+      ]
+    },
+    {
+      "repository": "Girbons/comics-downloader",
+      "url": "https://github.com/Girbons/comics-downloader",
+      "description": "tool to download comics and manga in pdf/epub/cbr/cbz from a website",
+      "language": "Go",
+      "archived": false,
+      "pushed_at": "2026-07-04T05:21:31Z",
+      "updated_at": "2026-09-18T22:17:59Z",
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/Girbons/comics-downloader",
+      "references": [
+        "https://github.com/Girbons/comics-downloader/tree/main",
+        "https://github.com/Girbons/comics-downloader/commits/main"
+      ]
+    },
+    {
+      "repository": "Zehina/Webtoon-Downloader",
+      "url": "https://github.com/Zehina/Webtoon-Downloader",
+      "description": "A fast CLI for downloading chapters of Webtoons ",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-07-08T20:00:35Z",
+      "updated_at": "2026-09-29T01:34:03Z",
+      "default_branch": "master",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/Zehina/Webtoon-Downloader",
+      "references": [
+        "https://github.com/Zehina/Webtoon-Downloader/tree/master",
+        "https://github.com/Zehina/Webtoon-Downloader/commits/master"
+      ]
+    },
+    {
+      "repository": "TilCreator/Tapas-Comic-Downloader",
+      "url": "https://github.com/TilCreator/Tapas-Comic-Downloader",
+      "description": "This is a downloader to download whole comics from https://tapas.io/. (Not official!)",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2022-08-16T13:14:20Z",
+      "updated_at": "2026-09-27T13:55:48Z",
+      "default_branch": "master",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/TilCreator/Tapas-Comic-Downloader",
+      "references": [
+        "https://github.com/TilCreator/Tapas-Comic-Downloader/tree/master",
+        "https://github.com/TilCreator/Tapas-Comic-Downloader/commits/master"
+      ]
+    },
+    {
+      "repository": "Webtoon-Studio/webtoon",
+      "url": "https://github.com/Webtoon-Studio/webtoon",
+      "description": "Rust based client for interacting with various webtoon websites.",
+      "language": "Rust",
+      "archived": false,
+      "pushed_at": "2026-08-08T07:26:04Z",
+      "updated_at": "2026-08-08T07:26:11Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "html_url": "https://github.com/Webtoon-Studio/webtoon",
+      "references": [
+        "https://github.com/Webtoon-Studio/webtoon/tree/main",
+        "https://github.com/Webtoon-Studio/webtoon/commits/main"
+      ]
+    },
+    {
+      "repository": "Haaglar/webcomic-scrape",
+      "url": "https://github.com/Haaglar/webcomic-scrape",
+      "description": "A collection of C# tools for batch downloading pages off various webcomic content management systems.",
+      "language": "C#",
+      "archived": false,
+      "pushed_at": "2016-09-17T04:31:09Z",
+      "updated_at": "2024-10-08T02:26:00Z",
+      "default_branch": "master",
+      "license": null,
+      "html_url": "https://github.com/Haaglar/webcomic-scrape",
+      "references": [
+        "https://github.com/Haaglar/webcomic-scrape/tree/master",
+        "https://github.com/Haaglar/webcomic-scrape/commits/master"
+      ]
+    },
+    {
+      "repository": "heyeinin/comicfury-documentation",
+      "url": "https://github.com/heyeinin/comicfury-documentation",
+      "description": "Documentation of the list of variables, conditionals, and loops used in the ComicFury Template Engine.",
+      "language": null,
+      "archived": false,
+      "pushed_at": "2023-09-23T18:17:59Z",
+      "updated_at": "2026-09-05T16:14:10Z",
+      "default_branch": "main",
+      "license": {
+        "key": "unlicense",
+        "name": "The Unlicense",
+        "spdx_id": "Unlicense",
+        "url": "https://api.github.com/licenses/unlicense",
+        "node_id": "MDc6TGljZW5zZTE1"
+      },
+      "html_url": "https://github.com/heyeinin/comicfury-documentation",
+      "references": [
+        "https://github.com/heyeinin/comicfury-documentation/tree/main",
+        "https://github.com/heyeinin/comicfury-documentation/commits/main"
+      ]
+    },
+    {
+      "repository": "mgsisk/webcomic",
+      "url": "https://github.com/mgsisk/webcomic",
+      "description": "Comic publishing power for the web. Turn your WordPress-powered site into a comic publishing platform with Webcomic.",
+      "language": "PHP",
+      "archived": true,
+      "pushed_at": "2022-12-01T22:19:06Z",
+      "updated_at": "2026-09-09T09:01:41Z",
+      "default_branch": "master",
+      "license": {
+        "key": "gpl-2.0",
+        "name": "GNU General Public License v2.0",
+        "spdx_id": "GPL-2.0",
+        "url": "https://api.github.com/licenses/gpl-2.0",
+        "node_id": "MDc6TGljZW5zZTg="
+      },
+      "html_url": "https://github.com/mgsisk/webcomic",
+      "references": [
+        "https://github.com/mgsisk/webcomic/tree/master",
+        "https://github.com/mgsisk/webcomic/commits/master"
+      ]
+    },
+    {
+      "repository": "DIYgod/RSSHub",
+      "url": "https://github.com/DIYgod/RSSHub",
+      "description": "🧡 Everything is RSSible",
+      "language": "TypeScript",
+      "archived": false,
+      "pushed_at": "2026-09-29T16:48:33Z",
+      "updated_at": "2026-09-29T19:35:18Z",
+      "default_branch": "master",
+      "license": {
+        "key": "agpl-3.0",
+        "name": "GNU Affero General Public License v3.0",
+        "spdx_id": "AGPL-3.0",
+        "url": "https://api.github.com/licenses/agpl-3.0",
+        "node_id": "MDc6TGljZW5zZTE="
+      },
+      "html_url": "https://github.com/DIYgod/RSSHub",
+      "references": [
+        "https://github.com/DIYgod/RSSHub/tree/master",
+        "https://github.com/DIYgod/RSSHub/commits/master"
+      ]
+    },
+    {
+      "repository": "kurtmckee/feedparser",
+      "url": "https://github.com/kurtmckee/feedparser",
+      "description": "Parse feeds in Python",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-07T22:29:38Z",
+      "updated_at": "2026-09-29T10:26:02Z",
+      "default_branch": "main",
+      "license": {
+        "key": "other",
+        "name": "Other",
+        "spdx_id": "NOASSERTION",
+        "url": null,
+        "node_id": "MDc6TGljZW5zZTA="
+      },
+      "html_url": "https://github.com/kurtmckee/feedparser",
+      "references": [
+        "https://github.com/kurtmckee/feedparser/tree/main",
+        "https://github.com/kurtmckee/feedparser/commits/main"
+      ]
+    },
+    {
+      "repository": "scrapy/scrapy",
+      "url": "https://github.com/scrapy/scrapy",
+      "description": "Scrapy, a fast high-level web crawling & scraping framework for Python.",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-28T15:30:00Z",
+      "updated_at": "2026-09-30T01:22:23Z",
+      "default_branch": "master",
+      "license": {
+        "key": "bsd-3-clause",
+        "name": "BSD 3-Clause \"New\" or \"Revised\" License",
+        "spdx_id": "BSD-3-Clause",
+        "url": "https://api.github.com/licenses/bsd-3-clause",
+        "node_id": "MDc6TGljZW5zZTU="
+      },
+      "html_url": "https://github.com/scrapy/scrapy",
+      "references": [
+        "https://github.com/scrapy/scrapy/tree/master",
+        "https://github.com/scrapy/scrapy/commits/master"
+      ]
+    },
+    {
+      "repository": "microsoft/playwright-python",
+      "url": "https://github.com/microsoft/playwright-python",
+      "description": "Python version of the Playwright testing and automation library.",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-24T17:53:11Z",
+      "updated_at": "2026-09-29T15:19:33Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "html_url": "https://github.com/microsoft/playwright-python",
+      "references": [
+        "https://github.com/microsoft/playwright-python/tree/main",
+        "https://github.com/microsoft/playwright-python/commits/main"
+      ]
+    },
+    {
+      "repository": "Snd-R/komf",
+      "url": "https://github.com/Snd-R/komf",
+      "description": "Komga and Kavita metadata fetcher",
+      "language": "Kotlin",
+      "archived": false,
+      "pushed_at": "2026-09-27T05:08:12Z",
+      "updated_at": "2026-09-28T14:59:31Z",
+      "default_branch": "master",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/Snd-R/komf",
+      "references": [
+        "https://github.com/Snd-R/komf/tree/master",
+        "https://github.com/Snd-R/komf/commits/master"
+      ]
+    },
+    {
+      "repository": "comictagger/comictagger",
+      "url": "https://github.com/comictagger/comictagger",
+      "description": "A multi-platform app for writing metadata to digital comics",
+      "language": "Python",
+      "archived": false,
+      "pushed_at": "2026-09-28T17:27:35Z",
+      "updated_at": "2026-09-29T11:44:39Z",
+      "default_branch": "develop",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "html_url": "https://github.com/comictagger/comictagger",
+      "references": [
+        "https://github.com/comictagger/comictagger/tree/develop",
+        "https://github.com/comictagger/comictagger/commits/develop"
+      ]
+    },
+    {
+      "repository": "anansi-project/comicinfo",
+      "url": "https://github.com/anansi-project/comicinfo",
+      "description": "ComicInfo.xml's new home",
+      "language": null,
+      "archived": false,
+      "pushed_at": "2026-06-23T01:59:40Z",
+      "updated_at": "2026-09-28T21:19:51Z",
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/anansi-project/comicinfo",
+      "references": [
+        "https://github.com/anansi-project/comicinfo/tree/main",
+        "https://github.com/anansi-project/comicinfo/commits/main"
+      ]
+    },
+    {
+      "repository": "gotson/komga",
+      "url": "https://github.com/gotson/komga",
+      "description": "Media server for comics/mangas/BDs/magazines/eBooks with API, OPDS, Kobo Sync and KOReader Sync support",
+      "language": "Kotlin",
+      "archived": false,
+      "pushed_at": "2026-09-29T08:14:13Z",
+      "updated_at": "2026-09-29T22:02:42Z",
+      "default_branch": "master",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "html_url": "https://github.com/gotson/komga",
+      "references": [
+        "https://github.com/gotson/komga/tree/master",
+        "https://github.com/gotson/komga/commits/master"
+      ]
+    },
+    {
+      "repository": "Kareadita/Kavita",
+      "url": "https://github.com/Kareadita/Kavita",
+      "description": "Kavita is a fast, feature rich, cross platform reading server. Built with the goal of being a full solution for all your reading needs. Setup your own server and share your reading collection with your friends and family.",
+      "language": "C#",
+      "archived": false,
+      "pushed_at": "2026-09-29T09:53:43Z",
+      "updated_at": "2026-09-30T01:42:44Z",
+      "default_branch": "develop",
+      "license": {
+        "key": "gpl-3.0",
+        "name": "GNU General Public License v3.0",
+        "spdx_id": "GPL-3.0",
+        "url": "https://api.github.com/licenses/gpl-3.0",
+        "node_id": "MDc6TGljZW5zZTk="
+      },
+      "html_url": "https://github.com/Kareadita/Kavita",
+      "references": [
+        "https://github.com/Kareadita/Kavita/tree/develop",
+        "https://github.com/Kareadita/Kavita/commits/develop"
+      ]
+    },
+    {
+      "repository": "internetarchive/wayback",
+      "url": "https://github.com/internetarchive/wayback",
+      "description": "IA's public Wayback Machine (moved from SourceForge)",
+      "language": "Java",
+      "archived": false,
+      "pushed_at": "2024-03-01T23:58:07Z",
+      "updated_at": "2026-09-29T08:12:09Z",
+      "default_branch": "master",
+      "license": null,
+      "html_url": "https://github.com/internetarchive/wayback",
+      "references": [
+        "https://github.com/internetarchive/wayback/tree/master",
+        "https://github.com/internetarchive/wayback/commits/master"
+      ]
+    },
+    {
+      "repository": "readium/opds",
+      "url": "https://github.com/readium/opds",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "repository": "Frumph/comicpress",
+      "url": "https://github.com/Frumph/comicpress",
+      "description": "ComicPress the Comic Publishing Theme for WordPress",
+      "language": "PHP",
+      "archived": false,
+      "pushed_at": "2022-09-20T08:45:17Z",
+      "updated_at": "2026-06-27T15:58:44Z",
+      "default_branch": "master",
+      "license": null,
+      "html_url": "https://github.com/Frumph/comicpress",
+      "references": [
+        "https://github.com/Frumph/comicpress/tree/master",
+        "https://github.com/Frumph/comicpress/commits/master"
+      ]
+    },
+    {
+      "repository": "Frumph/comic-easel",
+      "url": "https://github.com/Frumph/comic-easel",
+      "description": "Comic Easel is a plugin for WordPress that let's you have a WebComic with any WordPress theme.",
+      "language": "PHP",
+      "archived": false,
+      "pushed_at": "2026-09-20T18:52:55Z",
+      "updated_at": "2026-09-20T18:52:13Z",
+      "default_branch": "master",
+      "license": null,
+      "html_url": "https://github.com/Frumph/comic-easel",
+      "references": [
+        "https://github.com/Frumph/comic-easel/tree/master",
+        "https://github.com/Frumph/comic-easel/commits/master"
+      ]
+    },
+    {
+      "repository": "kmhcreative/comicpost",
+      "url": "https://github.com/kmhcreative/comicpost",
+      "description": "A comic management plugin with anti-AI features",
+      "language": "PHP",
+      "archived": false,
+      "pushed_at": "2024-12-25T18:45:55Z",
+      "updated_at": "2024-12-25T19:04:58Z",
+      "default_branch": "main",
+      "license": {
+        "key": "gpl-3.0",
+        "name": "GNU General Public License v3.0",
+        "spdx_id": "GPL-3.0",
+        "url": "https://api.github.com/licenses/gpl-3.0",
+        "node_id": "MDc6TGljZW5zZTk="
+      },
+      "html_url": "https://github.com/kmhcreative/comicpost",
+      "references": [
+        "https://github.com/kmhcreative/comicpost/tree/main",
+        "https://github.com/kmhcreative/comicpost/commits/main"
+      ]
+    }
+  ]
+}

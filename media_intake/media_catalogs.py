@@ -10,13 +10,14 @@ import time
 import urllib.parse
 import urllib.request
 
-from .core import http_get
+from .core import http_get, open_url
 
 NOVELARCHIVE_API = 'https://novelarchive.cc/api'
 NOVELARCHIVE_SITE = 'https://novelarchive.cc'
 LNORI_SITE = 'https://lnori.com'
 RANOBEDB_API = 'https://ranobedb.org/api/v0'
 MANGAUPDATES_API = 'https://api.mangaupdates.com/v1'
+HARDCOVER_API = 'https://api.hardcover.app/v1/graphql'
 _RANOBEDB_LOCK = threading.Lock()
 _RANOBEDB_LAST_REQUEST = 0.0
 
@@ -30,6 +31,100 @@ def _query(value):
 
 def _limit(value, maximum=30):
     return max(1, min(int(value), maximum))
+
+
+def fetch_hardcover_list(url, api_token):
+    """Read a Hardcover custom list through its documented GraphQL API."""
+    parts = urllib.parse.urlsplit(str(url or '').strip())
+    host = (parts.hostname or '').casefold()
+    path = [urllib.parse.unquote(item) for item in parts.path.split('/') if item]
+    if (parts.scheme != 'https' or not (host == 'hardcover.app' or host.endswith('.hardcover.app'))
+            or parts.username or parts.password):
+        raise ValueError('Enter a public HTTPS Hardcover list URL.')
+    if not api_token:
+        raise ValueError('Add a Hardcover API token in Settings → Metadata APIs to refresh this list.')
+    try:
+        list_index = path.index('lists')
+        list_slug = path[list_index + 1]
+    except (ValueError, IndexError):
+        raise ValueError('Hardcover URL must point to a custom list, such as /@username/lists/slug.')
+    if not list_slug or len(list_slug) > 160:
+        raise ValueError('The Hardcover list URL does not contain a valid list name.')
+    username = ''
+    if list_index > 0 and path[list_index - 1].startswith('@'):
+        username = path[list_index - 1][1:]
+    books_fragment = ('list_books(limit: 1000) { book { id title slug release_date '
+                      'contributions { author { name } } } }')
+
+    def select_list(data, container):
+        users = data.get(container)
+        user = users[0] if isinstance(users, list) and users else users
+        if not isinstance(user, dict):
+            return None
+        lists = user.get('lists') or []
+        return next(iter(lists), None) if isinstance(lists, list) else None
+
+    if username:
+        query = ('query UserList($username: String!, $slug: String!) { '
+                 'users(where: {username: {_eq: $username}}) { '
+                 'lists(where: {slug: {_eq: $slug}}) { id name slug ' +
+                 books_fragment + ' } } }')
+        variables = {'username': username, 'slug': list_slug}
+        selector = lambda data: select_list(data, 'users')
+    elif list_slug.isdigit():
+        query = ('query ListById($listId: Int!) { lists(where: {id: {_eq: $listId}}) '
+                 '{ id name slug ' + books_fragment + ' } }')
+        variables = {'listId': int(list_slug)}
+        selector = lambda data: next(iter(data.get('lists') or []), None)
+    else:
+        query = ('query MyList($slug: String!) { me { lists(where: {slug: {_eq: $slug}}) '
+                 '{ id name slug ' + books_fragment + ' } } }')
+        variables = {'slug': list_slug}
+        selector = lambda data: select_list(data, 'me')
+    payload = json.dumps({'query': query, 'variables': variables}).encode('utf-8')
+    request = urllib.request.Request(
+        HARDCOVER_API, data=payload, method='POST',
+        headers={'Authorization': 'Bearer ' + str(api_token).strip(),
+                 'Content-Type': 'application/json', 'Accept': 'application/json',
+                 'User-Agent': 'MediaIntakePrototype/0.1'})
+    with open_url(request, timeout=35) as response:
+        raw = response.read(5_000_001)
+        if len(raw) > 5_000_000:
+            raise ValueError('Hardcover response exceeds the 5 MB safety limit.')
+    result = json.loads(raw.decode('utf-8'))
+    if result.get('errors'):
+        message = '; '.join(str(error.get('message') or 'GraphQL error')
+                            for error in result['errors'][:3] if isinstance(error, dict))
+        raise ValueError('Hardcover list lookup failed: ' + (message or 'check the API token and list URL'))
+    listing = selector(result.get('data') or {})
+    if not isinstance(listing, dict):
+        raise ValueError('Hardcover did not return a list for this URL and account.')
+    books = []
+    for item in listing.get('list_books') or []:
+        book = item.get('book') if isinstance(item, dict) else None
+        if not isinstance(book, dict) or not str(book.get('title') or '').strip():
+            continue
+        author_names = []
+        for contribution in book.get('contributions') or []:
+            author = contribution.get('author') if isinstance(contribution, dict) else None
+            name = str((author or {}).get('name') or '').strip() if isinstance(author, dict) else ''
+            if name and name not in author_names:
+                author_names.append(name)
+        slug = str(book.get('slug') or book.get('id') or '').strip()
+        book_url = f'https://hardcover.app/books/{urllib.parse.quote(slug)}' if slug else ''
+        release_date = str(book.get('release_date') or '')[:10] or None
+        books.append({
+            'title': str(book['title']).strip(), 'author': ', '.join(author_names) or 'Unknown',
+            'source_url': book_url,
+            'release_date': release_date,
+            'provider': 'Hardcover',
+            'catalog_metadata': {'catalog_id': str(book.get('id') or ''),
+                                 'list_name': str(listing.get('name') or '')},
+        })
+    return {'kind': 'book_list', 'provider': 'Hardcover',
+            'title': str(listing.get('name') or list_slug),
+            'author': 'Various authors', 'source_url': url,
+            'books': books}
 
 
 def _discovery_item(provider, title, author, url, **metadata):
@@ -80,12 +175,12 @@ class _LnoriCards(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        classes = set(attrs.get('class', '').split())
+        classes = set(str(attrs.get('class') or '').split())
         if tag == 'article' and 'card' in classes and self.card is None:
             self.card = {
-                'id': attrs.get('data-id', ''), 'title': attrs.get('data-t', ''),
-                'author': attrs.get('data-a', ''), 'year': attrs.get('data-d', ''),
-                'volumes': attrs.get('data-v', ''), 'tags': attrs.get('data-tags', ''),
+                'id': str(attrs.get('data-id') or ''), 'title': str(attrs.get('data-t') or ''),
+                'author': str(attrs.get('data-a') or ''), 'year': str(attrs.get('data-d') or ''),
+                'volumes': str(attrs.get('data-v') or ''), 'tags': str(attrs.get('data-tags') or ''),
                 'url': '',
             }
             self.depth = 1
@@ -283,7 +378,7 @@ def _ranobedb_get(path, params=None):
             'User-Agent': 'MediaIntakePrototype/0.3 (+https://github.com/unwit1/media-intake-prototype; metadata lookup)',
         })
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with open_url(request, timeout=30) as response:
                 raw = response.read(3_000_001)
         finally:
             _RANOBEDB_LAST_REQUEST = time.monotonic()
@@ -331,7 +426,7 @@ def _mangaupdates_detail(series_id):
         MANGAUPDATES_API + '/series/' + str(series_id),
         headers={'Accept': 'application/json',
                  'User-Agent': 'MediaIntakePrototype/0.3 (personal metadata lookup)'})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         raw = response.read(1_000_001)
     if len(raw) > 1_000_000:
         raise ValueError('MangaUpdates response exceeds size limit')
@@ -348,7 +443,7 @@ def search_mangaupdates(query, limit=10):
         headers={'Content-Type': 'application/json', 'Accept': 'application/json',
                  'User-Agent': 'MediaIntakePrototype/0.3 (personal metadata lookup)'},
         method='POST')
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         raw = response.read(2_000_001)
     if len(raw) > 2_000_000:
         raise ValueError('MangaUpdates response exceeds size limit')

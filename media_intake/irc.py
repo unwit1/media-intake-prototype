@@ -9,6 +9,7 @@ import socket
 import ssl
 import struct
 import tempfile
+import time
 import urllib.parse
 import zipfile
 from contextlib import contextmanager
@@ -19,7 +20,13 @@ _SEARCHABLE_EXTENSIONS = '|'.join(
     re.escape(extension[1:]) for extension in sorted(EXTENSIONS, key=len, reverse=True))
 
 
-def enqueue_irc(db, config):
+def _irc_ssl_context(config):
+    if config.get('verify_tls', True):
+        return ssl.create_default_context()
+    return ssl._create_unverified_context()
+
+
+def enqueue_irc(db, config, watch_id=None):
     config = dict(config)
     for key in ('server', 'channel', 'bot', 'title', 'format'):
         if not config.get(key): raise ValueError(f'Missing IRC {key}')
@@ -37,7 +44,7 @@ def enqueue_irc(db, config):
     if config.get('request') and (not re.fullmatch(r'![\w\-\[\]{}^|`]+ [^\x00-\x1f]{1,350}', config['request'])
                                   or config['request'].split(' ', 1)[0][1:].casefold() != config['bot'].casefold()):
         raise ValueError('IRC request must start with !bot and contain one filename')
-    from .core import enqueue
+    from .core import enqueue, enqueue_for_watch
     token = str(config.get('pack') or config['request'])
     url = 'irc+xdcc://' + config['server'].lower() + '/' + urllib.parse.quote(config['channel'], safe='') + '/' + config['bot'].lower() + '/' + urllib.parse.quote(token, safe='')
     item = {'title': config['title'], 'author': config.get('author', 'Unknown'),
@@ -45,10 +52,14 @@ def enqueue_irc(db, config):
             'source': 'irc://' + config['server'] + '/' + config['channel'],
             'series': config.get('series'), 'series_index': config.get('series_index'),
             'source_key': config.get('source_key') or 'irc', 'irc': config}
+    for key in ('kindle_email_auto_send', 'kindle_email_targets_override',
+                'library_profile_ids', 'book_lists', 'goodreads_lists'):
+        if config.get(key):
+            item[key] = config[key]
     for key in ('rights_evidence_path', 'rights_work_key'):
         if config.get(key):
             item[key] = config[key]
-    return enqueue(db, item)
+    return enqueue_for_watch(db, item, watch_id) if watch_id is not None else enqueue(db, item)
 
 
 def parse_offer(line, bot, max_bytes=MAX_FILE_BYTES):
@@ -79,6 +90,98 @@ def send_line(sock, line):
     sock.sendall((line + '\r\n').encode('utf-8'))
 
 
+def discover_irc_channels(config, limit=500, timeout=25):
+    """Connect to an IRC server and return channels from its standard LIST reply."""
+    config = dict(config or {})
+    server = str(config.get('server') or '').strip()
+    nick = str(config.get('nick') or 'MediaIntake').strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*[A-Za-z0-9]', server) or '..' in server:
+        raise ValueError('Enter a valid IRC server hostname.')
+    if not re.fullmatch(r'[\w\-\[\]{}^|`]{1,30}', nick):
+        raise ValueError('Enter a valid IRC nickname.')
+    try:
+        port = int(config.get('port', 6697 if config.get('tls', True) else 6667))
+    except (TypeError, ValueError) as exc:
+        raise ValueError('IRC port must be a number from 1 to 65535.') from exc
+    if not 1 <= port <= 65535:
+        raise ValueError('IRC port must be a number from 1 to 65535.')
+    if not 1 <= int(limit) <= 2000:
+        raise ValueError('IRC channel list limit must be between 1 and 2000.')
+    channel_mask = str(config.get('channel_mask') or '').strip()
+    if channel_mask and (len(channel_mask) > 300 or not re.fullmatch(
+            r'#[\w\-\[\]{}^|`*?]+(?:,#[\w\-\[\]{}^|`*?]+)*', channel_mask)):
+        raise ValueError('IRC channel listing filter must contain comma-separated channel masks.')
+    timeout = max(3, min(int(timeout), 90))
+    channels = {}
+    password_env = str(config.get('password_env') or '').strip()
+    password = os.environ.get(password_env) if password_env else None
+    if password_env and not password:
+        raise ValueError(f'IRC password variable {password_env} is unset.')
+
+    plain = socket.create_connection((server, port), timeout=min(timeout, 20))
+    sock = None
+    try:
+        sock = (_irc_ssl_context(config).wrap_socket(plain, server_hostname=server)
+                if config.get('tls', True) else plain)
+        sock.settimeout(timeout)
+        if password:
+            send_line(sock, 'PASS ' + password)
+        send_line(sock, 'NICK ' + nick)
+        send_line(sock, 'USER ' + nick + ' 0 * :Media Intake')
+        deadline = time.monotonic() + timeout
+        requested = False
+        with sock.makefile('rb') as reader:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('IRC server did not finish listing channels before timeout.')
+                sock.settimeout(remaining)
+                raw = reader.readline(4096)
+                if not raw:
+                    raise ConnectionError('IRC server closed the connection before channel listing finished.')
+                line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
+                if line.startswith('PING '):
+                    send_line(sock, 'PONG ' + line[5:])
+                    continue
+                if re.search(r'\s(?:432|433|464)\s', line):
+                    raise ConnectionError('IRC registration was rejected: ' + line[:250])
+                if re.search(r'\s001\s', line) and not requested:
+                    send_line(sock, 'LIST' + (' ' + channel_mask if channel_mask else ''))
+                    requested = True
+                    continue
+                if re.search(r'\s421\s[^ ]+\sLIST(?:\s|$)', line, re.I):
+                    raise ConnectionError('This IRC server does not allow the standard LIST command.')
+                if re.search(r'\s323\s', line) and requested:
+                    break
+                if not requested or not re.search(r'\s322\s', line):
+                    continue
+                parts = line.split(' ', 4)
+                if len(parts) < 4:
+                    continue
+                channel = parts[3]
+                if not re.fullmatch(r'#[\w\-\[\]{}^|`]+', channel):
+                    continue
+                user_count, topic = 0, ''
+                if len(parts) == 5:
+                    details = parts[4]
+                    user_text, separator, topic_text = details.partition(' :')
+                    try:
+                        user_count = int(user_text.strip())
+                    except ValueError:
+                        pass
+                    topic = topic_text.strip() if separator else ''
+                channels[channel.casefold()] = {
+                    'channel': channel, 'users': user_count, 'topic': topic[:240],
+                }
+                if len(channels) >= limit:
+                    raise ValueError(f'The server returned more than {limit} channels; narrow its LIST first.')
+    except (socket.timeout, TimeoutError) as exc:
+        raise TimeoutError('Timed out connecting to the IRC server or listing its channels.') from exc
+    finally:
+        (sock or plain).close()
+    return sorted(channels.values(), key=lambda item: item['channel'].casefold())
+
+
 def send_user_command(sock, command, config):
     command = command.replace('{bot}', config.get('bot') or '').replace('{pack}', str(config.get('pack', ''))).replace('{channel}', config['channel']).replace('{request}', config.get('request', ''))
     if '\r' in command or '\n' in command: raise ValueError('Invalid IRC command')
@@ -99,7 +202,7 @@ def receive_offer(config, max_bytes=MAX_FILE_BYTES):
     port = int(config.get('port', 6697 if config.get('tls', True) else 6667))
     with socket.create_connection((server, port), timeout=25) as plain:
         plain.settimeout(int(config.get('timeout', 180)))
-        sock = ssl.create_default_context().wrap_socket(plain, server_hostname=server) if config.get('tls', True) else plain
+        sock = _irc_ssl_context(config).wrap_socket(plain, server_hostname=server) if config.get('tls', True) else plain
         with sock:
             password_env = config.get('password_env')
             if password_env:
@@ -115,7 +218,8 @@ def receive_offer(config, max_bytes=MAX_FILE_BYTES):
                     if not raw: raise ConnectionError('IRC connection closed before DCC SEND')
                     line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
                     if line.startswith('PING '): send_line(sock, 'PONG ' + line[5:]); continue
-                    if re.search(r'\s(?:433|432|464|475|474)\s', line): raise ConnectionError('IRC registration or channel rejected: ' + line[:250])
+                    if re.search(r'\s(?:403|432|433|464|471|473|474|475|477)\s', line):
+                        raise ConnectionError('IRC registration or channel rejected: ' + line[:250])
                     if re.search(r'\s001\s', line) and not sent_join:
                         send_line(sock, 'JOIN ' + config['channel']); sent_join = True
                     if (re.search(r'\s366\s', line) or re.search(r'^:' + re.escape(nick) + r'!', line, re.I) and ' JOIN ' in line) and sent_join and not sent_request:
@@ -199,7 +303,17 @@ def has_configured_source(source_options, category=None):
     return False
 
 
-def configured_search_sources(source_options, category=None):
+def irc_source_priority_label(name, config=None):
+    """Return the label used for one configured IRC server in download priorities."""
+    config = config if isinstance(config, dict) else {}
+    name = str(name or config.get('name') or config.get('server') or 'IRC source').strip()
+    server = str(config.get('server') or '').strip()
+    channel = str(config.get('channel') or '').strip()
+    endpoint = ' '.join(value for value in (server, channel) if value)
+    return f'IRC: {name} ({endpoint})' if endpoint else f'IRC: {name}'
+
+
+def configured_search_sources(source_options, category=None, priority=None):
     """Build the ordered IRC source list, with legacy JSON files as fallbacks."""
     options = source_options or {}
     sources = []
@@ -226,13 +340,30 @@ def configured_search_sources(source_options, category=None):
             sources.append((Path(config_path).stem, config))
         except Exception as exc:
             sources.append((str(config_path), exc))
+    if priority:
+        ranks = {str(label).casefold(): index for index, label in enumerate(priority)}
+        indexed = list(enumerate(sources))
+        indexed.sort(key=lambda pair: (
+            ranks.get(irc_source_priority_label(pair[1][0], pair[1][1]).casefold(),
+                      len(ranks) + pair[0]),
+            pair[0]))
+        sources = [source for _index, source in indexed]
     return sources
 
 
-def search_configured_sources(query, source_options, category, allowed_formats, limit=100):
+def search_configured_sources(query, source_options, category, allowed_formats, limit=100,
+                              priority=None, progress_callback=None):
     """Search IRC sources in priority order and stop at the first relevant result set."""
     results, errors = [], []
-    for name, config_or_error in configured_search_sources(source_options, category):
+    for name, config_or_error in configured_search_sources(
+              source_options, category, priority=priority):
+        if progress_callback:
+            try:
+                progress_callback(irc_source_priority_label(name, config_or_error)
+                                  if not isinstance(config_or_error, Exception)
+                                  else f'IRC {name}')
+            except Exception:
+                pass
         if isinstance(config_or_error, Exception):
             errors.append(f'{name}: {config_or_error}')
             continue
@@ -243,6 +374,8 @@ def search_configured_sources(query, source_options, category, allowed_formats, 
                 continue
             for item in found:
                 item['irc_source_name'] = name
+                item['download_priority_label'] = irc_source_priority_label(
+                    name, config_or_error)
                 if isinstance(item.get('irc'), dict):
                     item['irc']['source_name'] = name
             return found, errors
@@ -274,7 +407,9 @@ def parse_search_index(data, config, limit=100):
                 author, sep, title = name.partition(' - ')
                 if not sep: title, author = name, 'Unknown'
                 request = '!' + bot + ' ' + filename
-                item_config = {k: config[k] for k in ('server', 'port', 'tls', 'nick', 'channel', 'password_env', 'timeout') if k in config}
+                item_config = {k: config[k] for k in (
+                    'server', 'port', 'tls', 'verify_tls', 'nick', 'channel',
+                    'password_env', 'timeout') if k in config}
                 item_config.update(bot=bot, request=request, title=title, author=author, format=ext)
                 entries.append({'title': title, 'author': author, 'format': ext,
                                 'source': 'irc://' + config['server'] + '/' + config['channel'],

@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 build/
 dist/
+tools/kindling-cli.exe
+tools/kindling-cli.download
 *.spec
 media-intake-data/
 *.sqlite3

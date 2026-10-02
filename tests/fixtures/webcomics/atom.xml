@@ -1,0 +1,3 @@
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Comic</title><author><name>Creator</name></author>
+<entry><id>urn:entry:2</id><title>Page 2</title><updated>2026-01-02T00:00:00Z</updated><link href="/page/2"/></entry>
+<entry><id>urn:entry:1</id><title>Page 1</title><updated>2026-01-01T00:00:00Z</updated><link href="/page/1"/></entry></feed>

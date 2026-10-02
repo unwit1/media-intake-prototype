@@ -95,6 +95,16 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
                  db.execute('SELECT * FROM webcomic_overrides WHERE source_id=?', (source_id,))}
     chapters = {chapter.source_id: chapter for chapter in snapshot.chapters}
     max_ordinal = db.execute('SELECT COALESCE(MAX(ordinal),0) FROM webcomic_entries WHERE source_id=?', (source_id,)).fetchone()[0]
+    # Entries from older archive pages found after newer ones go before everything
+    # already stored; the source is renumbered afterwards to keep reading order.
+    existing_keys = {row[0] for row in db.execute('SELECT entry_key FROM webcomic_entries WHERE source_id=?', (source_id,))}
+    backfill = [entry.source_id for entry in snapshot.entries
+                if entry.provenance.get('backfill') and entry.source_id not in existing_keys]
+    prepend = {}
+    if backfill and existing_keys:
+        min_ordinal = db.execute('SELECT COALESCE(MIN(ordinal),1) FROM webcomic_entries WHERE source_id=?', (source_id,)).fetchone()[0]
+        prepend = {key: min_ordinal - len(backfill) + index - 1 for index, key in enumerate(backfill)}
+    backfill_state = 'pending' if config.get('archive_existing') else 'known'
     known = set()
     for entry in snapshot.entries:
         known.add(entry.source_id)
@@ -110,11 +120,16 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
                                     (source_id, entry.source_id)).fetchone()
         if previous_entry:
             entry.ordinal = previous_entry['ordinal']
+        elif entry.source_id in prepend:
+            entry.ordinal = prepend[entry.source_id]
         else:
             max_ordinal += 1
             entry.ordinal = max_ordinal
         signature = entry_signature(entry)
         state = 'known' if baseline else 'pending'
+        if not previous_entry and entry.provenance.get('backfill') and not baseline:
+            # Older entries follow the source's "archive existing" choice.
+            state = backfill_state
         if previous_entry:
             state = previous_entry['state']
             if signature != previous_entry['fingerprint']:
@@ -150,6 +165,11 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
     for volume in snapshot.volumes:
         db.execute('INSERT INTO webcomic_volumes VALUES(?,?,?) ON CONFLICT(source_id,volume_key) DO UPDATE SET metadata=excluded.metadata',
                    (source_id, volume.source_id, json.dumps(record(volume))))
+    if prepend:
+        rows = db.execute('SELECT id FROM webcomic_entries WHERE source_id=? ORDER BY ordinal, id', (source_id,)).fetchall()
+        db.executemany('UPDATE webcomic_entries SET ordinal=? WHERE id=?',
+                       [(index, row['id']) for index, row in enumerate(rows, 1)])
+        event(db, source_id, 'ARCHIVE_BACKFILLED', detail={'entries': len(prepend)})
     if snapshot.complete and not snapshot.unchanged:
         for row in db.execute('SELECT entry_key FROM webcomic_entries WHERE source_id=? AND removed=0', (source_id,)):
             if row['entry_key'] not in known:

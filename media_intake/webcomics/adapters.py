@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import re
 import urllib.parse
+import xml.etree.ElementTree as ET
 from .chapters import group_entries
 from .extraction import Document, Recipe
 from .http import ExtractionError
@@ -77,6 +78,37 @@ class Adapter:
                 'metrics': snapshot.metrics}
 
 
+ATOM_NS = '{http://www.w3.org/2005/Atom}'
+HISTORY_NS = '{http://purl.org/syndication/history/1.0}'
+ARCHIVE_PAGES_PER_CHECK = 10
+MAX_ARCHIVE_ENTRIES = 10_000
+
+
+def feed_links(body):
+    """Older-page links of a feed (RFC 5005 paging/archives, JSON Feed next_url).
+
+    Returns ({'next': url?, 'prev-archive': url?}, complete) without network I/O.
+    """
+    try:
+        data = json.loads(body.decode('utf-8-sig'))
+    except (UnicodeDecodeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        return ({'next': data['next_url']} if isinstance(data.get('next_url'), str) else {}), False
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return {}, False
+    container = root.find('channel') if root.find('channel') is not None else root
+    links = {}
+    for link in container.findall(f'{ATOM_NS}link') + container.findall('link'):
+        rel, href = link.get('rel'), link.get('href')
+        if rel in ('next', 'prev-archive') and href and rel not in links:
+            links[rel] = href
+    complete = container.find(f'{HISTORY_NS}complete') is not None
+    return links, complete
+
+
 class FeedAdapter(Adapter):
     id = 'feed'
 
@@ -87,34 +119,95 @@ class FeedAdapter(Adapter):
                 return 90
         return 0
 
-    def resolve_series(self, url, client, cursor=None, config=None):
-        response = client.get(url)
-        manifest = parse_feed(response.body, response.url, 'webcomic', 500)
-        series = new_series(response.url, manifest['title'], self.id)
-        merge_metadata(series, [MetadataCandidate('title', manifest['title'], 'feed', response.url),
-                               MetadataCandidate('creators', [{'name': manifest['author'], 'role': 'author'}], 'feed', response.url)])
+    def _page_entries(self, body, page_url, backfill=False):
+        manifest = parse_feed(body, page_url, 'webcomic', 500)
         entries = []
-        for index, chapter in enumerate(manifest['chapters']):
+        for chapter in manifest['chapters']:
             source_url = canonicalize_url(chapter['url'])
             native = chapter.get('provider_metadata') or {}
             key = str(native.get('entry_id') or source_url)
             assets = [WebcomicAsset(canonicalize_url(image), number + 1,
-                                   provenance={'provider': 'feed', 'source_url': response.url})
+                                   provenance={'provider': 'feed', 'source_url': page_url})
                       for number, image in enumerate(chapter.get('images') or [])]
+            provenance = {'provider': 'feed', 'feed_url': page_url, 'native': native}
+            if backfill:
+                provenance['backfill'] = True
             entries.append(WebcomicEntry(key, source_url, chapter.get('title') or 'Untitled',
-                                        ordinal=index + 1, published_at=chapter.get('published'),
-                                        assets=assets, provenance={'provider': 'feed', 'feed_url': response.url,
-                                                                  'native': native}))
+                                        published_at=chapter.get('published'), assets=assets,
+                                        provenance=provenance))
         # Publication dates improve feed order only when every timestamp is valid;
         # stable source IDs, never timestamps alone, drive update discovery.
         if entries and all(entry.published_at for entry in entries):
             entries.sort(key=lambda entry: (entry.published_at, entry.source_id))
+        return manifest, entries
+
+    def _walk_archive(self, client, head_url, start_url, archive, config, seen_keys):
+        """Follow older pages from `start_url`, within this check's page budget."""
+        budget = int(config.get('archive_pages_per_check', ARCHIVE_PAGES_PER_CHECK))
+        host = urllib.parse.urlsplit(head_url).hostname
+        visited = list(archive.get('visited') or [])
+        pages, next_url, warnings = [], start_url, []
+        while next_url and len(pages) < budget:
+            try:
+                next_url = canonicalize_url(urllib.parse.urljoin(head_url, next_url))
+            except ValueError:
+                warnings.append('Ignored an invalid archive link')
+                next_url = None
+                break
+            if urllib.parse.urlsplit(next_url).hostname != host:
+                warnings.append(f'Ignored an archive link to another site: {next_url}')
+                next_url = None
+                break
+            if next_url in visited or next_url == head_url:
+                warnings.append('Feed archive links loop; stopped following them')
+                next_url = None
+                break
+            visited.append(next_url)
+            response = client.get(next_url, conditional=False)
+            _manifest, entries = self._page_entries(response.body, response.url, backfill=True)
+            fresh = [entry for entry in entries if entry.source_id not in seen_keys]
+            seen_keys.update(entry.source_id for entry in entries)
+            pages.append(fresh)
+            links, _complete = feed_links(response.body)
+            next_url = links.get('next') or links.get('prev-archive')
+            if sum(map(len, pages)) + int(archive.get('entries', 0)) >= MAX_ARCHIVE_ENTRIES:
+                warnings.append(f'Stopped at the {MAX_ARCHIVE_ENTRIES:,}-entry archive limit')
+                next_url = None
+        archive.update({'next_url': next_url, 'exhausted': not next_url, 'visited': visited[-500:],
+                        'pages': int(archive.get('pages', 0)) + len(pages),
+                        'entries': int(archive.get('entries', 0)) + sum(map(len, pages))})
+        return pages, warnings
+
+    def resolve_series(self, url, client, cursor=None, config=None):
+        cursor, config = dict(cursor or {}), dict(config or {})
+        response = client.get(url)
+        manifest, head_entries = self._page_entries(response.body, response.url)
+        series = new_series(response.url, manifest['title'], self.id)
+        merge_metadata(series, [MetadataCandidate('title', manifest['title'], 'feed', response.url),
+                               MetadataCandidate('creators', [{'name': manifest['author'], 'role': 'author'}], 'feed', response.url)])
+        archive = dict(cursor.get('feed_archive') or {})
+        links, complete = feed_links(response.body)
+        if not archive:
+            archive = {'next_url': links.get('next') or links.get('prev-archive'), 'pages': 0, 'entries': 0}
+        warnings = []
+        pages = []
+        if config.get('follow_feed_archive', True) and archive.get('next_url') and not archive.get('exhausted'):
+            # A 304 on the head page never stops an unfinished backlog.
+            seen_keys = {entry.source_id for entry in head_entries}
+            pages, warnings = self._walk_archive(client, response.url, archive['next_url'], archive, config, seen_keys)
+        # Oldest page first, then the head: chronological order for first-time ordinals.
+        entries = [entry for page in reversed(pages) for entry in page] + head_entries
         for index, entry in enumerate(entries):
             entry.ordinal = index + 1
+        backfilled = sum(map(len, pages))
         return Snapshot(series, entries, group_entries(entries), complete=False,
-                        unchanged=response.unchanged, cursor={'feed_url': response.url,
-                        'etag': response.headers.get('etag'), 'last_modified': response.headers.get('last-modified')},
-                        metrics={'entry_count': len(entries), 'http_status': response.status})
+                        unchanged=response.unchanged and not backfilled, warnings=warnings,
+                        cursor={'feed_url': response.url, 'etag': response.headers.get('etag'),
+                                'last_modified': response.headers.get('last-modified'), 'feed_archive': archive},
+                        metrics={'entry_count': len(entries), 'http_status': response.status,
+                                 'archive_pages': archive.get('pages', 0), 'archive_entries': archive.get('entries', 0),
+                                 'archive_complete': bool(archive.get('exhausted')) or complete,
+                                 'backfilled_this_check': backfilled})
 
     def resolve_assets(self, entry, client, config=None):
         if entry.assets:

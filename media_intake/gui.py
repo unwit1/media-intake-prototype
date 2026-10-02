@@ -3168,8 +3168,10 @@ class MediaIntakeApp:
         row = self.db.execute('SELECT state FROM items WHERE id=?', (item_id,)).fetchone()
         if row and row['state'] in ('paused', 'failed', 'queued', 'needs_shortlink'):
             folder = Path(self.library_folder.get().strip() or self.data_root / 'downloads')
+            from .torrents import discard_torrent_partial
             for candidate in {folder, self.data_root / 'downloads'}:
                 transfer.discard_partial(candidate / f'.partial-{item_id}.part')
+                discard_torrent_partial(candidate, item_id)
             self.db.execute("""UPDATE items SET state='cancelled', error=NULL, progress_bytes=NULL,
                 progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?""", (item_id,))
             self.db.commit()
@@ -3258,7 +3260,21 @@ class MediaIntakeApp:
         if not selected: return
         item = self.results[int(selected[0])]
         if item.get('external_download'):
-            self.send_selected_results_to_downloader()
+            from .torrents import available
+            if not available():
+                self.send_selected_results_to_downloader()
+                return
+            items = [dict(self.results[int(index)]) for index in selected
+                     if self.results[int(index)].get('external_download')]
+            def queue_torrents():
+                db = connect(self.data_root)
+                try:
+                    return [enqueue(db, dict(row, rights_evidence_path=str(self.rights_evidence_path)))
+                            for row in items]
+                finally:
+                    db.close()
+            self._worker('Queueing torrents…', queue_torrents,
+                         lambda rows: (self.refresh_queue(), self._done(f'Queued {len(rows)} torrent(s)')))
             return
         category = self._search_result_category(item)
         if item.get('series_bundle'):

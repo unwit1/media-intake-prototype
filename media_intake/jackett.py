@@ -1,8 +1,8 @@
 """Search a user-run Jackett instance through its Torznab API.
 
 Jackett aggregates whichever indexers the user configured in it. Results are
-torrents or magnets, which the built-in HTTP/IRC downloader does not handle, so
-they are handed to an external downloader (external_downloaders.py) after the
+torrents or magnets: they queue for the native torrent engine (torrents.py) when
+libtorrent is installed, or go to an external downloader otherwise, after the
 same rights-evidence approval check, under the 'jackett' source key.
 """
 import urllib.error
@@ -129,7 +129,8 @@ def search_jackett(query, base_url, api_key, category=None, indexer='all', limit
         results.append({
             **hit, 'category': category, 'provider': label, 'source_key': SOURCE_KEY,
             'source_role': 'download', 'site': SOURCE_KEY, 'format': 'torrent',
-            'external_download': True, 'downloadable': False,
+            'external_download': True, 'downloadable': True, 'author': 'Unknown',
+            'url': hit['magnet'] or hit['torrent_url'],
             'handoff_url': hit['magnet'] or hit['torrent_url'],
             'source': redact(hit['details_url'] or hit['torrent_url'] or hit['magnet']),
             'display_source': f"{label} · {hit['seeders'] if hit['seeders'] is not None else '?'} seeders",

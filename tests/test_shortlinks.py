@@ -88,6 +88,23 @@ class ResolutionTests(unittest.TestCase):
             self.assertEqual(file_hosts.resolve_hosted_file('https://ouo.io/a', {'.epub'}), [])
         self.assertIsNone(file_hosts.resolve_hosted_file('https://example.com/page', {'.epub'}))
 
+    def test_connectors_keep_click_only_shortlinks_after_direct_files(self):
+        from media_intake.download_connectors import resolve_meawfy_downloads
+        page = (b'<a href="https://ouo.io/needs-click">Mirror 1</a>'
+                b'<a href="https://files.example/Book.epub">Mirror 2</a>')
+        with patch('media_intake.download_connectors.http_get', return_value=(page, 'https://meawfy.com/post/1')),              patch('media_intake.shortlinks.resolve_shortlink',
+                   side_effect=shortlinks.ShortlinkNeedsBrowser('Shortlink ouo.io needs page interaction')):
+            results = resolve_meawfy_downloads({'title': 'Book', 'detail_url': 'https://meawfy.com/post/1'}, {'.epub'})
+        self.assertEqual([row['url'] for row in results], ['https://files.example/Book.epub', 'https://ouo.io/needs-click'])
+        pending = results[1]
+        self.assertTrue(pending['shortlink_pending'] and pending['format_guessed'])
+        self.assertEqual((pending['format'], pending['file_host'], pending['source_key']), ('.epub', 'shortlink', 'meawfy.com'))
+        self.assertIn('opens helper', pending['display_source'])
+        with patch('media_intake.shortlinks.resolve_shortlink',
+                   side_effect=shortlinks.ShortlinkNeedsBrowser('needs page interaction')):
+            with self.assertRaises(file_hosts.ManualDownloadRequired):
+                file_hosts.resolve_hosted_file('https://ouo.io/needs-click', {'.epub'})
+
 
 class Reply(io.BytesIO):
     status, reason = 200, 'OK'

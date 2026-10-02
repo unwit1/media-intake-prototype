@@ -222,6 +222,9 @@ class MediaIntakeApp:
         self.external_dl_settings = self._load_external_download_settings()
         self._recover_interrupted_downloads()
         self._shortlink_target_item = None
+        self._clipboard_last = None
+        self._clipboard_offer = None
+        self.clipboard_capture = tk.BooleanVar(value=str(get_setting(self.db, 'clipboard_capture') or '') == '1')
         self._build()
         self.root.bind_all('<MouseWheel>', self._scroll_mousewheel, add='+')
         self.root.bind_all('<Button-4>', lambda event: self._scroll_mousewheel(event, units=-3), add='+')
@@ -232,6 +235,7 @@ class MediaIntakeApp:
         self.root.after(1500, self._schedule_watch_scan)
         self._running_book_batches = set()
         self.root.after(2500, self._resume_book_batches)
+        self.root.after(2000, self._poll_clipboard)
 
     def _configure_logging(self):
         self.log_folder = self.data_root / 'logs'
@@ -2896,6 +2900,11 @@ class MediaIntakeApp:
             engine_status.set('Saved; the speed limit applies to running downloads now')
         ttk.Button(engine, text='Save download engine settings', command=save_engine).grid(
             row=3, column=0, sticky='w', pady=(6, 0))
+        ttk.Checkbutton(engine, text='Watch the clipboard for download links (magnets, .torrent, file hosts, '
+                        'shortlinks, direct files)', variable=self.clipboard_capture,
+                        command=lambda: set_setting(self.db, 'clipboard_capture',
+                                                    '1' if self.clipboard_capture.get() else '0')).grid(
+            row=5, column=0, columnspan=2, sticky='w', pady=(8, 0))
         ttk.Label(engine, textvariable=engine_status, wraplength=700, justify='left').grid(
             row=4, column=0, columnspan=2, sticky='w', pady=(4, 0))
         ttk.Label(parent, text='Jackett and optional external download managers',
@@ -3113,6 +3122,75 @@ class MediaIntakeApp:
                 message += f' ({warning})'
             self._done(message + '; review the fields, then Add to queue or Send to download manager')
         self._worker('Reading resolved link…', action, finished)
+
+    def _poll_clipboard(self):
+        try:
+            if self.clipboard_capture.get():
+                try:
+                    text = self.root.clipboard_get()
+                except tk.TclError:
+                    text = ''
+                if self._clipboard_last is None:
+                    self._clipboard_last = text  # ignore whatever was copied before the app started
+                elif text != self._clipboard_last:
+                    self._clipboard_last = text
+                    self._offer_clipboard_links(text)
+            else:
+                self._clipboard_last = None
+            self.root.after(1500, self._poll_clipboard)
+        except tk.TclError:
+            return
+
+    def _offer_clipboard_links(self, text):
+        from .link_capture import KIND_LABELS, classify_links
+        links = classify_links(text)
+        if links:
+            queued = {row[0] for row in self.db.execute(
+                f"SELECT url FROM items WHERE url IN ({','.join('?' * len(links))})", [l['url'] for l in links])}
+            links = [link for link in links if link['url'] not in queued]
+        if not links:
+            return
+        if self._clipboard_offer is not None and self._clipboard_offer.winfo_exists():
+            self._clipboard_offer.destroy()
+        offer = tk.Toplevel(self.root)
+        self._clipboard_offer = offer
+        offer.title('Download links copied')
+        offer.transient(self.root)
+        offer.resizable(False, False)
+        ttk.Label(offer, text=f'Copied {len(links)} download link(s)', font=('TkDefaultFont', 10, 'bold')).pack(
+            anchor='w', padx=12, pady=(10, 4))
+        for link in links[:6]:
+            shown = link['url'] if len(link['url']) <= 70 else link['url'][:67] + '…'
+            ttk.Label(offer, text=f"{KIND_LABELS[link['kind']]}: {shown}").pack(anchor='w', padx=12)
+        if len(links) > 6:
+            ttk.Label(offer, text=f'…and {len(links) - 6} more').pack(anchor='w', padx=12)
+        def queue(start):
+            offer.destroy()
+            self._queue_captured_links(links, start)
+        bar = ttk.Frame(offer)
+        bar.pack(fill='x', padx=12, pady=10)
+        ttk.Button(bar, text='Queue and download', command=lambda: queue(True)).pack(side='left')
+        ttk.Button(bar, text='Queue', command=lambda: queue(False)).pack(side='left', padx=6)
+        ttk.Button(bar, text='Ignore', command=offer.destroy).pack(side='left')
+        offer.after(60_000, lambda: offer.winfo_exists() and offer.destroy())
+
+    def _queue_captured_links(self, links, start=False):
+        from .core import EXTENSIONS
+        from .link_capture import queue_item
+        guess = self.format.get().strip().casefold()
+        guess = guess if guess in EXTENSIONS else '.zip'
+        def action():
+            db = connect(self.data_root)
+            try:
+                return [enqueue(db, queue_item(link, guess))['id'] for link in links]
+            finally:
+                db.close()
+        def queued(ids):
+            self.refresh_queue()
+            self._done(f'Queued {len(ids)} copied link(s)')
+            if start:
+                self.download_queued([int(item_id) for item_id in ids])
+        self._worker('Queueing copied links…', action, queued)
 
     def _open_shortlink_for_item(self, item_id):
         row = self.db.execute('SELECT metadata FROM items WHERE id=?', (item_id,)).fetchone()
@@ -5980,17 +6058,20 @@ class MediaIntakeApp:
         self._kindle_retry_running = False
         self.refresh_queue()
 
-    def download_queued(self):
+    def download_queued(self, item_ids=None):
         if self._download_batch_active:
+            if item_ids:
+                self.root.after(1000, lambda: self.download_queued(item_ids))
             return
-        item_ids = []
-        for row in list_items(self.db, state='queued'):
-            try:
-                metadata = json.loads(row.get('metadata') or '{}')
-            except (TypeError, ValueError):
-                metadata = {}
-            if not metadata.get('watch_search'):
-                item_ids.append(int(row['id']))
+        if item_ids is None:
+            item_ids = []
+            for row in list_items(self.db, state='queued'):
+                try:
+                    metadata = json.loads(row.get('metadata') or '{}')
+                except (TypeError, ValueError):
+                    metadata = {}
+                if not metadata.get('watch_search'):
+                    item_ids.append(int(row['id']))
         if not item_ids:
             messagebox.showinfo('Media Intake', 'There are no queued files to download.')
             return

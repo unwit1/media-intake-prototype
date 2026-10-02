@@ -198,6 +198,17 @@ class QueueIntegrationTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT state FROM items WHERE id=?', (second['id'],)).fetchone()[0], 'cancelled')
             self.assertFalse(list((Path(root) / 'downloads').glob(f".partial-{second['id']}*")))
 
+    def test_server_filename_corrects_a_guessed_format(self):
+        with RangeServer() as server, tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
+            queued = self.queue(db, server.url, format='.epub', format_guessed=True)
+            result = download(db, queued['id'], root)  # file.bin: '.bin' is a supported package format
+            self.assertTrue(result['file_path'].endswith('.bin'))
+            metadata = json.loads(db.execute('SELECT metadata FROM items WHERE id=?', (queued['id'],)).fetchone()[0])
+            self.assertEqual((metadata['format'], metadata['format_guessed']), ('.bin', False))
+            fixed = self.queue(db, server.url + '?fixed', format='.epub')
+            with self.assertRaisesRegex(ValueError, 'Invalid .epub'):
+                download(db, fixed['id'], root)  # without a guess, the declared type is enforced
+
     def test_settings_apply_connections_and_speed_limit(self):
         with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
             self.assertEqual(core.download_settings(db), {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4})

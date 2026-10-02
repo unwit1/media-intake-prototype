@@ -167,7 +167,9 @@ AniList offers a public GraphQL API for manga metadata and does not require auth
 
 ## Queue behavior and development
 
-`download` is explicit; search results never fetch themselves. Repeating `add` for the same URL preserves the queue entry. Repeating `download` reuses an existing completed file. If a named file already exists with different bytes, a short SHA-256 suffix is added. A failed download records its error and can be retried with `download ID`. Invalid EPUB/CBZ archives and PDF headers are rejected without leaving partial files. Files land under `<root>/downloads/`.
+`download` is explicit; search results never fetch themselves. Repeating `add` for the same URL preserves the queue entry. Repeating `download` reuses an existing completed file. If a named file already exists with different bytes, a short SHA-256 suffix is added. A failed download records its error and can be retried with `download ID`; interrupted transfers resume from saved progress. Invalid EPUB/CBZ archives and PDF headers are rejected and their partial data removed. Files land under `<root>/downloads/`.
+
+Downloads use a built-in engine: multiple connections per file, resume after pauses, errors and restarts, pause/cancel, a speed limit, and retries. Shortlinks and file-host pages are resolved automatically. Magnet and `.torrent` links download natively with the optional `requirements-torrent.txt`. Jackett search and clipboard link capture are also built in. See [Downloads](docs/DOWNLOADS.md).
 
 `python -m unittest discover -s tests -v` runs local HTTP, source-parser, Calibre invocation, fake IRC/DCC, Goodreads saved-page, and mocked FanFicFare update tests. These tests do not contact live ebook/IRC/fanfiction servers. Calibre must be installed and `calibredb` on PATH for a real import.
 

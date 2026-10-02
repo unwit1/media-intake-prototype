@@ -493,6 +493,12 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
             opener=lambda request, timeout: open_url(request, timeout=timeout),
             progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message))
         total = result.size
+        real_format = Path(result.filename).suffix.casefold() if result.filename else ''
+        if item.get('format_guessed') and real_format in EXTENSIONS and real_format != item['format']:
+            # The server named the file; trust it over the guess made when queueing.
+            item = dict(item, format=real_format, format_guessed=False)
+            db.execute('UPDATE items SET metadata=? WHERE id=?', (json.dumps(item, ensure_ascii=False), item_id))
+            db.commit()
         update_download_progress(db, item_id, total, total, 'Validating downloaded file')
         if item.get('expected_size') is not None and total != int(item['expected_size']):
             raise ValueError('Downloaded size differs from host metadata')

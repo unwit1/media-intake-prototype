@@ -877,7 +877,7 @@ def _resolve_general_download_site(item, source_key, allowed_formats=None):
         provider = profile.get('provider') or (
             'Meawfy' if source_key == 'meawfy.com' else 'SoftArchive')
         try:
-            hosted = resolve_hosted_file(url, allowed_formats & EXTENSIONS)
+            hosted = resolve_hosted_file(url, allowed_formats & EXTENSIONS, keep_pending=True)
         except (ValueError, OSError) as exc:
             item.setdefault('connector_warnings', []).append(str(exc))
             continue
@@ -892,6 +892,10 @@ def _resolve_general_download_site(item, source_key, allowed_formats=None):
                     'file_host': file.host, 'file_host_share_url': file.share_url,
                     'source_filename': file.filename, 'expected_size': file.size,
                     'expected_sha256': file.sha256,
+                    **({'shortlink_url': file.shortlink} if file.shortlink else {}),
+                    **({'format_guessed': True, 'shortlink_pending': True,
+                        'display_source': f'{provider} · shortlink (opens helper on download)'}
+                       if file.pending else {}),
                 }))
             continue
         if extension not in allowed_formats or extension not in EXTENSIONS:
@@ -904,6 +908,8 @@ def _resolve_general_download_site(item, source_key, allowed_formats=None):
             'provider': provider, 'source_key': source_key,
             'source_role': 'download', 'site': source_key,
         }))
+    # Directly downloadable files first; shortlinks that need a click come last.
+    results.sort(key=lambda row: bool(row.get('shortlink_pending')))
     return results
 
 

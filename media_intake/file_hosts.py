@@ -29,6 +29,7 @@ class HostedFile:
     sha256: str | None = None
     share_url: str = ''
     shortlink: str = ''
+    pending: bool = False  # a shortlink that the user-operated helper must open
 
 
 def public_get(url, max_bytes=2_000_000):
@@ -158,11 +159,24 @@ MANUAL_HOSTS = {
 }
 
 
-def _resolve_shortlink(url, allowed_formats):
+# Order used to guess a pending shortlink's file type until the server names the file.
+_GUESS_ORDER = ('.epub', '.cbz', '.pdf', '.mkv', '.mp4', '.m4b', '.mp3', '.zip', '.7z', '.rar', '.iso', '.exe')
+
+
+def guess_format(allowed_formats):
+    allowed = set(allowed_formats)
+    return next((ext for ext in _GUESS_ORDER if ext in allowed), sorted(allowed)[0] if allowed else '.zip')
+
+
+def _resolve_shortlink(url, allowed_formats, keep_pending=False):
     from .shortlinks import ShortlinkNeedsBrowser, resolve_shortlink
     try:
         target = resolve_shortlink(url)
     except ShortlinkNeedsBrowser as exc:
+        if keep_pending:
+            # Queue it anyway; the download step opens the helper for one click.
+            return [HostedFile(url, guess_format(allowed_formats), 'shortlink', '', share_url=url,
+                               shortlink=url, pending=True)]
         raise ManualDownloadRequired(f'{exc}; use Resolve shortlink under Add a direct file on the Search tab') from exc
     hosted = resolve_hosted_file(target, allowed_formats, follow_shortlinks=False)
     if hosted is None:
@@ -177,12 +191,14 @@ def _resolve_shortlink(url, allowed_formats):
     return hosted
 
 
-def resolve_hosted_file(url, allowed_formats, follow_shortlinks=True):
+def resolve_hosted_file(url, allowed_formats, follow_shortlinks=True, keep_pending=False):
+    """Resolve a file host or shortlink to file URLs. With keep_pending, a shortlink
+    that needs page interaction comes back as a pending HostedFile instead of raising."""
     host = safe_url(url).hostname.casefold()
     if follow_shortlinks and host not in FILE_HOSTS:
         from .shortlinks import is_shortlink
         if is_shortlink(url):
-            return _resolve_shortlink(url, allowed_formats)
+            return _resolve_shortlink(url, allowed_formats, keep_pending)
     adapter = FILE_HOSTS.get(host)
     if adapter:
         return adapter.resolve(url, set(allowed_formats))

@@ -11,6 +11,9 @@ def registry_for(config=None):
     if 'wordpress_api' not in registry.adapters:
         from .wordpress import WordPressAdapter
         registry.register(WordPressAdapter())
+    if 'sitemap' not in registry.adapters:
+        from .sitemap import SitemapAdapter
+        registry.register(SitemapAdapter())
     recipe = (config or {}).get('recipe')
     if recipe:
         adapter = HtmlAdapter(Recipe.from_dict(recipe))
@@ -66,8 +69,19 @@ def resolve(url, client, config=None, registry=None):
                                 'archive_url': canonicalize_url(urllib.parse.urljoin(response.url, archive))}
                     url = response.url
     url = adapter.canonicalize_url(url)
-    snapshot = adapter.resolve_series(url, client, {}, config)
-    if not snapshot.entries:
+    try:
+        snapshot = adapter.resolve_series(url, client, {}, config)
+    except ExtractionError:
+        snapshot = None
+        if adapter.id in ('sitemap', 'feed', 'wordpress_api', 'xkcd') or config.get('recipe'):
+            raise
+    if (snapshot is None or not snapshot.entries) and adapter.id != 'sitemap' and 'sitemap' in registry.adapters:
+        # Last resort for sites without feeds or archive pages: their sitemaps.
+        try:
+            adapter, snapshot = registry.adapters['sitemap'], registry.adapters['sitemap'].resolve_series(url, client, {}, config)
+        except ExtractionError:
+            snapshot = None
+    if snapshot is None or not snapshot.entries:
         raise ExtractionError('No comic entries discovered; a manual recipe is required')
     config['adapter'] = adapter.id
     return adapter, snapshot, config

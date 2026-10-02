@@ -288,5 +288,86 @@ class PersistentBatchTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM book_batches').fetchone()[0], 0)
 
 
+def series_row(title, key, books=2):
+    record = fixture_series(1, books=books, prefix=key)[0]
+    record['title'] = title
+    return {'kind': 'series', 'title': title, 'metadata_sources': ['Open Library'], 'series_bundle': record}
+
+
+CATALOG = {
+    'The Stormlight Archive': [series_row('The Stormlight Archive', 'Storm', 4),
+                               series_row('Stormlight Archive Companion Guides', 'Guide', 2)],
+    'Percy Jackson': [series_row('Percy Jackson and the Olympians', 'Percy', 5),
+                      series_row('Percy Jackson and the Olympians: The Graphic Novels', 'Graphic', 3)],
+    'Unknown Saga': [{'kind': 'book', 'title': 'Unknown Saga, Book 1'}],
+}
+
+
+def fake_search(title):
+    if title == 'Broken Search':
+        raise OSError('catalog offline')
+    return CATALOG.get(title, [])
+
+
+class TitleListTests(unittest.TestCase):
+    def test_parse_title_list(self):
+        self.assertEqual(book_batch.parse_title_list(
+            '1. The Stormlight Archive\n- Percy Jackson\n\n* the stormlight archive\n[x] "Discworld"\n2) Mistborn'),
+            ['The Stormlight Archive', 'Percy Jackson', 'Discworld', 'Mistborn'])
+        with self.assertRaisesRegex(ValueError, 'at most 100'):
+            book_batch.parse_title_list('\n'.join(f'Series {n}' for n in range(101)))
+
+    def test_matches_review_and_misses_then_add_after_restart(self):
+        titles = ['The Stormlight Archive', 'Percy Jackson', 'Unknown Saga', 'Broken Search']
+        with tempfile.TemporaryDirectory() as root:
+            with closing(connect(root)) as db:
+                batch_id = book_batch.create_title_batch(db, titles, fake_search)
+                summary = book_batch_summary(db, batch_id)
+                self.assertEqual(summary['state'], 'draft')
+                self.assertEqual([row['status'] for row in summary['results']],
+                                 ['pending', 'review', 'not_found', 'not_found'])
+                self.assertEqual(summary['results'][0]['title'], 'The Stormlight Archive')
+                self.assertEqual(book_batch.resumable_book_batches(db), [])  # drafts never auto-run
+                review = book_batch.review_items(db, batch_id)
+                self.assertEqual([item['requested_title'] for item in review],
+                                 ['Percy Jackson', 'Unknown Saga', 'Broken Search'])
+                self.assertEqual([c['title'] for c in review[0]['candidates']],
+                                 ['Percy Jackson and the Olympians',
+                                  'Percy Jackson and the Olympians: The Graphic Novels'])
+                self.assertEqual(review[1]['error'], 'No book series matched this title')
+                self.assertEqual(review[2]['error'], 'Search failed: catalog offline')
+                # Start with the review still open: the confident match is added, the batch waits.
+                self.assertEqual(book_batch.start_draft(db, batch_id), 1)
+                summary = run_book_batch(db, batch_id)
+                self.assertEqual((summary['state'], summary['added'], summary['review']), ('needs_review', 1, 1))
+            # Restart: the review choice is still waiting.
+            with closing(connect(root)) as db:
+                review = book_batch.review_items(db, batch_id)
+                percy = next(item for item in review if item['state'] == 'review')
+                book_batch.choose_candidate(db, percy['item_id'], 0)
+                book_batch.skip_item(db, review[1]['item_id'])
+                self.assertEqual(book_batch.resumable_book_batches(db), [batch_id])
+                summary = run_book_batch(db, batch_id)
+                self.assertEqual((summary['state'], summary['added'], summary['review'], summary['skipped']),
+                                 ('completed', 2, 0, 1))
+                titles = [row[0] for row in db.execute(
+                    "SELECT title FROM watched_items WHERE kind='series' ORDER BY id")]
+                self.assertEqual(titles, ['The Stormlight Archive', 'Percy Jackson and the Olympians'])
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE kind='book'").fetchone()[0], 9)
+
+    def test_cancel_and_reopen(self):
+        with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
+            batch_id = book_batch.create_title_batch(db, ['Percy Jackson'], fake_search)
+            item = book_batch.review_items(db, batch_id)[0]
+            book_batch.skip_item(db, item['item_id'])
+            book_batch.reopen_item(db, item['item_id'])
+            self.assertEqual(book_batch.review_items(db, batch_id)[0]['state'], 'review')
+            with self.assertRaisesRegex(ValueError, 'listed matches'):
+                book_batch.choose_candidate(db, item['item_id'], 9)
+            self.assertEqual(book_batch.start_draft(db, batch_id), 0)  # nothing ready yet
+            cancel_book_batch(db, batch_id)
+            self.assertEqual(book_batch_summary(db, batch_id)['results'][0]['status'], 'cancelled')
+
+
 if __name__ == '__main__':
     unittest.main()

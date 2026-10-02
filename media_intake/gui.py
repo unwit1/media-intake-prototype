@@ -2443,10 +2443,10 @@ class MediaIntakeApp:
         dialog.title('Book batches')
         dialog.geometry('900x560')
         dialog.transient(self.root)
-        batch_columns = ('state', 'created', 'series', 'added', 'existing', 'failed', 'remaining',
+        batch_columns = ('state', 'created', 'series', 'added', 'existing', 'failed', 'review', 'remaining',
                          'downloaded', 'upcoming', 'book_failed', 'book_pending')
-        headings = ('State', 'Created (UTC)', 'Series', 'Added', 'Existing', 'Failed', 'Not started',
-                    'Books downloaded', 'Upcoming', 'Book errors', 'Waiting')
+        headings = ('State', 'Created (UTC)', 'Series', 'Added', 'Existing', 'Failed', 'Needs choice',
+                    'Not started', 'Books downloaded', 'Upcoming', 'Book errors', 'Waiting')
         batches = ttk.Treeview(dialog, columns=batch_columns, show='headings', height=7, selectmode='browse')
         for column, heading in zip(batch_columns, headings):
             batches.heading(column, text=heading)
@@ -2489,7 +2489,8 @@ class MediaIntakeApp:
                 books = summary['books']
                 batches.insert('', 'end', iid=str(summary['batch_id']), values=(
                     state, summary['created_at'], summary['total'], summary['added'], summary['existing'],
-                    summary['failed'], summary['remaining'] + summary['cancelled'], books['downloaded'],
+                    summary['failed'], summary['review'], summary['remaining'] + summary['cancelled'],
+                    books['downloaded'],
                     books['upcoming'], books['failed'], books['pending']))
             children = batches.get_children()
             if keep is not None and str(keep) in children:
@@ -2530,7 +2531,165 @@ class MediaIntakeApp:
         ttk.Button(bar, text='Resume', command=lambda: control('resume')).pack(side='left', padx=6)
         ttk.Button(bar, text='Cancel batch', command=lambda: control('cancel')).pack(side='left')
         ttk.Button(bar, text='Retry failed/cancelled', command=lambda: control('retry')).pack(side='left', padx=6)
+        ttk.Button(bar, text='Review matches',
+                   command=lambda: selected_batch() is not None and self.open_batch_review(selected_batch())).pack(side='left')
+        ttk.Button(bar, text='Add series from a list…', command=self.open_series_list_import).pack(side='left', padx=6)
         ttk.Button(bar, text='Close', command=dialog.destroy).pack(side='right')
+        refresh()
+
+    def _books_search_function(self):
+        """A thread-safe title search returning Books category rows, as the Search tab uses."""
+        options = self._watch_sources()
+        priority = get_download_priority(self.db, 'Books', options)
+        credentials = {'comicvine_api_key': self.comicvine_api_key, 'metron_api_token': self.metron_api_token,
+                       'taddy_user_id': self.taddy_user_id, 'taddy_api_key': self.taddy_api_key,
+                       'tmdb_api_key': self.tmdb_api_key, 'igdb_client_id': self.igdb_client_id,
+                       'igdb_client_secret': self.igdb_client_secret}
+        return lambda title: (resolve_media_query(title, 'Books', options, credentials, priority) or {}).get('results') or []
+
+    def open_series_list_import(self):
+        from .book_batch import create_title_batch, parse_title_list
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Add book series from a list')
+        dialog.geometry('560x460')
+        dialog.transient(self.root)
+        ttk.Label(dialog, wraplength=520, justify='left', text=(
+            'Paste up to 100 book series, one per line. Bullets and numbering are ignored. '
+            'Clear matches are added automatically; anything uncertain waits for you to choose.')).pack(
+            anchor='w', padx=12, pady=(12, 6))
+        text = tk.Text(dialog, wrap='word', height=16)
+        text.pack(fill='both', expand=True, padx=12)
+        status = tk.StringVar()
+        ttk.Label(dialog, textvariable=status).pack(anchor='w', padx=12, pady=(6, 0))
+        data_root, sources = self.data_root, self._watch_sources()
+        profile_id = self.active_profile_id.get().strip()
+        search = self._books_search_function()
+        def find():
+            try:
+                titles = parse_title_list(text.get('1.0', 'end'))
+            except ValueError as exc:
+                status.set(str(exc))
+                return
+            if not titles:
+                status.set('Paste at least one series title.')
+                return
+            find_button.configure(state='disabled')
+            def action():
+                db = connect(data_root)
+                try:
+                    return create_title_batch(db, titles, search, sources, profile_id, progress=lambda index, total, title:
+                        self.root.after(0, lambda: status.set(f'Searched {index}/{total}: {title}')))
+                finally:
+                    db.close()
+            def found(batch_id):
+                if dialog.winfo_exists():
+                    dialog.destroy()
+                self.open_batch_review(batch_id)
+            def failed(error):
+                if dialog.winfo_exists():
+                    find_button.configure(state='normal')
+                    status.set(f'Search failed: {error}')
+            self._worker(f'Matching {len(titles)} series title(s)…', action, found, failed)
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=12)
+        find_button = ttk.Button(bar, text='Find matches', command=find)
+        find_button.pack(side='right')
+        ttk.Button(bar, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
+
+    def open_batch_review(self, batch_id):
+        from .book_batch import (book_batch_summary, choose_candidate, reopen_item, review_items,
+                                 skip_item, start_draft)
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f'Review series matches (batch {batch_id})')
+        dialog.geometry('900x520')
+        dialog.transient(self.root)
+        heading = tk.StringVar()
+        ttk.Label(dialog, textvariable=heading, wraplength=860, justify='left').pack(anchor='w', padx=12, pady=(12, 6))
+        panes = ttk.Frame(dialog)
+        panes.pack(fill='both', expand=True, padx=12)
+        titles = ttk.Treeview(panes, columns=('state', 'note'), show='tree headings', selectmode='browse')
+        titles.heading('#0', text='Your title')
+        titles.column('#0', width=230)
+        titles.heading('state', text='Status')
+        titles.column('state', width=90)
+        titles.heading('note', text='Note')
+        titles.column('note', width=160)
+        titles.pack(side='left', fill='both', expand=True)
+        candidates = ttk.Treeview(panes, columns=('books', 'author', 'sources', 'match'),
+                                  show='tree headings', selectmode='browse')
+        candidates.heading('#0', text='Catalog series')
+        candidates.column('#0', width=230)
+        for column, label, width in (('books', 'Books', 50), ('author', 'Author', 120),
+                                     ('sources', 'Sources', 110), ('match', 'Match', 55)):
+            candidates.heading(column, text=label)
+            candidates.column(column, width=width, anchor='w')
+        candidates.pack(side='left', fill='both', expand=True, padx=(8, 0))
+        state = {'items': {}}
+        labels = {'review': 'Choose', 'not_found': 'Not found', 'skipped': 'Skipped'}
+        def refresh(keep=None):
+            summary = book_batch_summary(self.db, batch_id)
+            ready = sum(row['status'] == 'pending' for row in summary['results'])
+            heading.set(f"{summary['total']} title(s): {ready} ready to add, {summary['added'] + summary['existing']} "
+                        f"already added, {summary['review']} need a choice, {summary['not_found']} not found, "
+                        f"{summary['skipped']} skipped.")
+            add_button.configure(text=f'Add {ready} ready series' if ready else 'Nothing ready to add',
+                                 state='normal' if ready else 'disabled')
+            titles.delete(*titles.get_children())
+            state['items'] = {}
+            for item in review_items(self.db, batch_id):
+                iid = str(item['item_id'])
+                state['items'][iid] = item
+                titles.insert('', 'end', iid=iid, text=item['requested_title'],
+                              values=(labels.get(item['state'], item['state']), item['error'] or
+                                      f"{len(item['candidates'])} possible match(es)"))
+            children = titles.get_children()
+            if keep in children:
+                titles.selection_set(keep)
+            elif children:
+                titles.selection_set(children[0])
+            show_candidates()
+        def show_candidates(*_):
+            candidates.delete(*candidates.get_children())
+            selected = titles.selection()
+            item = state['items'].get(selected[0]) if selected else None
+            for index, candidate in enumerate((item or {}).get('candidates') or []):
+                candidates.insert('', 'end', iid=str(index), text=candidate['title'], values=(
+                    candidate['books'], candidate['author'], ', '.join(candidate['providers']),
+                    f"{round(candidate['score'] * 100)}%"))
+            if candidates.get_children():
+                candidates.selection_set('0')
+        titles.bind('<<TreeviewSelect>>', show_candidates)
+        def current_item():
+            selected = titles.selection()
+            return state['items'].get(selected[0]) if selected else None
+        def use_match():
+            item, chosen = current_item(), candidates.selection()
+            if not item or not chosen:
+                return
+            choose_candidate(self.db, item['item_id'], int(chosen[0]))
+            refresh()
+        def skip():
+            item = current_item()
+            if item:
+                skip_item(self.db, item['item_id'])
+                refresh(str(item['item_id']))
+        def reopen():
+            item = current_item()
+            if item:
+                reopen_item(self.db, item['item_id'])
+                refresh(str(item['item_id']))
+        def add_ready():
+            if start_draft(self.db, batch_id):
+                self._start_book_batch(batch_id)
+            dialog.destroy()
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=12)
+        ttk.Button(bar, text='Use selected match', command=use_match).pack(side='left')
+        ttk.Button(bar, text='Skip title', command=skip).pack(side='left', padx=6)
+        ttk.Button(bar, text='Reconsider', command=reopen).pack(side='left')
+        add_button = ttk.Button(bar, text='Add ready series', command=add_ready)
+        add_button.pack(side='right')
+        ttk.Button(bar, text='Close (keeps choices)', command=dialog.destroy).pack(side='right', padx=6)
         refresh()
 
     def _show_import_preview(self, item, category):

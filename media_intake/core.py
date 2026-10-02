@@ -123,6 +123,8 @@ def connect(root):
     migrate_webcomics(db)
     from .book_batch import migrate as migrate_book_batches
     migrate_book_batches(db)
+    from .source_health import migrate as migrate_source_health
+    migrate_source_health(db)
     db.commit()
     return db
 
@@ -416,6 +418,35 @@ def resolve_shortlink_item(db, item_id, final_url):
 
 
 def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
+    """Download one queue item, recording the outcome in its source's health history."""
+    import time
+    from . import source_health, transfer
+    from .rights_evidence import source_key_for_item
+    started = time.monotonic()
+    row = db.execute('SELECT metadata FROM items WHERE id=?', (item_id,)).fetchone()
+    try:
+        source_key = source_key_for_item(json.loads(row['metadata'])) if row else None
+    except (TypeError, ValueError):
+        source_key = None
+    try:
+        result = _download(db, item_id, root, max_bytes, destination)
+    except (transfer.TransferPaused, transfer.TransferCancelled, ShortlinkPending):
+        raise  # user actions and waiting shortlinks say nothing about the source
+    except Exception as exc:
+        if source_key and 'already downloading' not in str(exc) and not str(exc).startswith('Download not approved'):
+            source_health.record(db, source_key, 'download', False, detail=exc)
+        raise
+    if source_key:
+        size = None
+        path = (result or {}).get('file_path') if isinstance(result, dict) else None
+        if path and Path(path).is_file():
+            size = Path(path).stat().st_size
+        source_health.record(db, source_key, 'download', True, bytes=size,
+                             seconds=round(time.monotonic() - started, 3))
+    return result
+
+
+def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
     if row is None: raise ValueError('Unknown queue ID')
     item = json.loads(row['metadata'])

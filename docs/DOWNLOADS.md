@@ -36,6 +36,26 @@ includes downloads interrupted when the app last closed. If one of them is a sho
 that needs a click, the shortlink helper opens for it. The same item never downloads
 twice at once, whether it was started automatically, from *Download queued* or by hand.
 
+## Source health
+
+Every queue download, of every kind (HTTP, IRC, serial, fanfiction, torrent, stream),
+and every watched-item source search records an outcome for its source. Pauses,
+cancels, shortlinks waiting for the helper and approval refusals are not counted.
+**Source health** on the Queue tab shows, for each source:
+
+- its status
+- recent successes
+- downloads and searches that worked or failed
+- typical download speed
+- when it last worked
+- the latest error
+
+A source is *failing* when its last three attempts failed, or its last three downloads
+failed even if its searches still work. It is *degraded* when fewer than half of its
+recent attempts succeeded. Searches that find nothing are not failures. Automatic
+downloads try equally good matches from a failing source last. History is capped at
+200 events per source and can be cleared per source.
+
 ## Shortlinks and file hosts, automatically
 
 When a queued link is a shortlink or a file-host share page (Pixeldrain, MediaFire,

@@ -548,6 +548,7 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Cancel', command=self.cancel_selected_download).pack(side='left', padx=6)
         ttk.Button(buttons, text='Pause all', command=self.pause_all_downloads).pack(side='left')
         ttk.Button(buttons, text='Stop seeding', command=self.stop_selected_seeding).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Source health', command=self.open_source_health).pack(side='left')
         self.download_batch_button = ttk.Button(
             buttons, text='Download queued',
             command=self.download_queued)
@@ -3451,6 +3452,61 @@ class MediaIntakeApp:
             self._done('Pausing… progress is kept')
         else:
             self._done('That download is not running')
+
+    def open_source_health(self):
+        from .discovery import SOURCE_KEY_LABELS
+        from .source_health import clear, summaries
+        from .transfer import format_bytes
+        existing = getattr(self, '_source_health_dialog', None)
+        if existing and existing.winfo_exists():
+            existing.lift()
+            return
+        dialog = tk.Toplevel(self.root)
+        self._source_health_dialog = dialog
+        dialog.title('Download source health')
+        dialog.geometry('980x420')
+        dialog.transient(self.root)
+        ttk.Label(dialog, wraplength=940, justify='left', text=(
+            'Recent downloads and searches for each source. "Failing" means the last three attempts failed; '
+            'automatic downloads then try equally good matches from other sources first.')).pack(
+            anchor='w', padx=12, pady=(12, 6))
+        columns = ('status', 'recent', 'downloads', 'searches', 'speed', 'last_ok', 'last_error')
+        view = ttk.Treeview(dialog, columns=columns, show='tree headings', selectmode='browse')
+        view.heading('#0', text='Source')
+        view.column('#0', width=170)
+        for column, label, width in (('status', 'Status', 75), ('recent', 'Recent OK', 70),
+                                     ('downloads', 'Downloads OK/failed', 120), ('searches', 'Searches OK/failed', 115),
+                                     ('speed', 'Typical speed', 90), ('last_ok', 'Last worked (UTC)', 130),
+                                     ('last_error', 'Latest error', 260)):
+            view.heading(column, text=label)
+            view.column(column, width=width, anchor='w')
+        view.tag_configure('failing', foreground='#b91c1c')
+        view.tag_configure('degraded', foreground='#b45309')
+        view.pack(fill='both', expand=True, padx=12)
+        def refresh():
+            view.delete(*view.get_children())
+            for item in summaries(self.db):
+                key = item['source_key']
+                error = item['last_error'] or ''
+                if item['last_error_at'] and error:
+                    error = f"{item['last_error_at']}: {error}"
+                view.insert('', 'end', iid=key, text=SOURCE_KEY_LABELS.get(key, key), tags=(item['status'],), values=(
+                    item['status'], f"{item['recent_successes']}/{item['recent_attempts']}",
+                    f"{item['downloads_ok']}/{item['downloads_failed']}",
+                    f"{item['searches_ok']}/{item['searches_failed']}",
+                    f"{format_bytes(item['median_speed'])}/s" if item['median_speed'] else '',
+                    item['last_ok_at'] or 'never', error[:200]))
+        def clear_selected():
+            selected = view.selection()
+            if selected and messagebox.askyesno('Source health', f'Clear the history for {selected[0]}?', parent=dialog):
+                clear(self.db, selected[0])
+                refresh()
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=12)
+        ttk.Button(bar, text='Refresh', command=refresh).pack(side='left')
+        ttk.Button(bar, text='Clear history for selected', command=clear_selected).pack(side='left', padx=6)
+        ttk.Button(bar, text='Close', command=dialog.destroy).pack(side='right')
+        refresh()
 
     def stop_selected_seeding(self):
         from .torrents import SEEDER

@@ -2080,13 +2080,21 @@ def _search_candidates(watch, source_overrides=None, db=None, progress_callback=
         report_messages()
     report_messages()
     results, errors, seen = [], [], set()
+    from . import source_health
     for (key, _approval), future in zip(approvals, futures):
         try:
             items, source_errors = future.result()
             errors.extend(source_errors)
         except Exception as exc:
             errors.append(f'{key}: {exc}')
+            if db is not None:
+                source_health.record(db, key, 'search', False, detail=exc)
             continue
+        if db is not None:
+            # A search that found nothing is not a failure; one that only errored is.
+            failed = bool(source_errors) and not items
+            source_health.record(db, key, 'search', not failed,
+                                 detail=source_errors[0] if failed else f'{len(items)} result(s)')
         for item in items:
             url_key = item.get('url') or json.dumps(item.get('irc') or {}, sort_keys=True)
             identity = (url_key, str(item.get('format') or '').casefold())
@@ -2096,13 +2104,19 @@ def _search_candidates(watch, source_overrides=None, db=None, progress_callback=
     from .discovery import _download_sort_key
     priority = options.get('download_priority') or []
     requested_title = _normalized(watch.get('title'))
+    failing = set()
+    if db is not None:
+        from .rights_evidence import source_key_for_item
+        failing = {row['source_key'] for row in source_health.summaries(db) if row['status'] == 'failing'}
     def rank(item):
         candidate_title = _normalized(item.get('title'))
         exact = candidate_title == requested_title
         similarity = difflib.SequenceMatcher(None, requested_title, candidate_title).ratio()
-        # Exact work identity wins over format/source preferences. Failed top
+        # Exact work identity wins over format/source preferences. Between equally
+        # good matches, a source that keeps failing is tried last. Failed top
         # candidates still fall through the established watch download loop.
-        return (0 if exact else 1, -round(similarity, 3),
+        unhealthy = bool(failing) and source_key_for_item(item) in failing
+        return (0 if exact else 1, -round(similarity, 3), unhealthy,
                 _download_sort_key(item, category, priority),
                 str(item.get('url') or ''))
     results.sort(key=rank)

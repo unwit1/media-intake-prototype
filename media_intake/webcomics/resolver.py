@@ -8,6 +8,9 @@ from .models import canonicalize_url
 
 def registry_for(config=None):
     registry = default_registry()
+    if 'wordpress_api' not in registry.adapters:
+        from .wordpress import WordPressAdapter
+        registry.register(WordPressAdapter())
     recipe = (config or {}).get('recipe')
     if recipe:
         adapter = HtmlAdapter(Recipe.from_dict(recipe))
@@ -29,7 +32,16 @@ def resolve(url, client, config=None, registry=None):
         else:
             response = client.get(url)
             feed = registry.adapters.get('feed')
-            if feed and feed.probe(url, response):
+            wordpress = registry.adapters.get('wordpress_api')
+            # A WordPress comic post type beats the site's RSS feed: it has the whole
+            # archive with stable IDs. Only used when a validated comic type exists.
+            site = None
+            if wordpress and not (feed and feed.probe(url, response)) and config.get('use_wordpress_api', True):
+                site = wordpress.detect(response, client)
+            if site:
+                adapter = wordpress
+                url = response.url
+            elif feed and feed.probe(url, response):
                 adapter = feed
                 url = response.url
             else:

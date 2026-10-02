@@ -127,7 +127,8 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
             entry.ordinal = max_ordinal
         signature = entry_signature(entry)
         state = 'known' if baseline else 'pending'
-        if not previous_entry and entry.provenance.get('backfill') and not baseline:
+        if not previous_entry and not baseline and (entry.provenance.get('backfill') or
+                                                    entry.provenance.get('archive_continuation')):
             # Older entries follow the source's "archive existing" choice.
             state = backfill_state
         if previous_entry:

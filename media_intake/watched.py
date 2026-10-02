@@ -10,6 +10,7 @@ import queue
 import os
 import re
 import shutil
+import sqlite3
 import unicodedata
 import urllib.parse
 from html.parser import HTMLParser
@@ -1012,11 +1013,14 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
             next_metadata['video_feed_item_metadata'] = dict(list(merged_items.items())[-5000:])
         payload = json.dumps(next_metadata, ensure_ascii=False)
 
-    existing = None
-    if source_url:
-        existing = db.execute('SELECT id,state FROM watched_items WHERE source_url=?',
-                              (source_url,)).fetchone()
-    if existing:
+    def find_by_source():
+        if not source_url:
+            return None
+        # Prefer the canonical row over any legacy duplicate kept from older data.
+        return db.execute('''SELECT id,state FROM watched_items WHERE source_url=?
+            ORDER BY legacy_duplicate, id LIMIT 1''', (source_url,)).fetchone()
+
+    def refresh_existing(existing):
         if existing['state'] == 'downloaded':
             return int(existing['id'])
         merge_saved_refresh_state(existing['id'])
@@ -1028,6 +1032,10 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
         sync_watch_entity(db, int(existing['id']))
         db.commit()
         return int(existing['id'])
+
+    existing = find_by_source()
+    if existing:
+        return refresh_existing(existing)
 
     catalog_value = metadata_value.get('catalog_metadata') or {}
     external_ids = list(metadata_value.get('external_ids') or [])
@@ -1063,11 +1071,19 @@ def add_watch(db, kind, title, author='Unknown', source_url=None, release_date=N
             sync_watch_entity(db, watch_id)
             db.commit()
             return watch_id
-    cursor = db.execute('''INSERT INTO watched_items
-        (kind,title,author,source_url,release_date,state,next_check_at,parent_id,metadata)
-        VALUES (?,?,?,?,?,?,?,?,?)''',
-        (kind, title, author or 'Unknown', source_url, release_date, state, next_check,
-         parent_id, payload))
+    try:
+        cursor = db.execute('''INSERT INTO watched_items
+            (kind,title,author,source_url,release_date,state,next_check_at,parent_id,metadata)
+            VALUES (?,?,?,?,?,?,?,?,?)''',
+            (kind, title, author or 'Unknown', source_url, release_date, state, next_check,
+             parent_id, payload))
+    except sqlite3.IntegrityError:
+        # Another process added this source between the lookup and the insert.
+        db.rollback()
+        existing = find_by_source()
+        if not existing:
+            raise
+        return refresh_existing(existing)
     db.commit()
     watch_id = int(cursor.lastrowid)
     sync_watch_entity(db, watch_id)

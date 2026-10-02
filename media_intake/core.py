@@ -114,6 +114,7 @@ def connect(root):
         key TEXT PRIMARY KEY, value TEXT NOT NULL)''')
     db.execute('CREATE INDEX IF NOT EXISTS watched_source_url ON watched_items(source_url)')
     db.execute('CREATE INDEX IF NOT EXISTS watched_parent_kind ON watched_items(parent_id,kind)')
+    _enforce_unique_watch_sources(db)
     db.execute('''CREATE INDEX IF NOT EXISTS items_watch_request ON items(
         CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_request_id') END AS TEXT))''')
     db.execute('''CREATE INDEX IF NOT EXISTS items_watch_id ON items(
@@ -127,6 +128,27 @@ def connect(root):
     migrate_source_health(db)
     db.commit()
     return db
+
+
+def _enforce_unique_watch_sources(db):
+    """One watched item per source URL, even across processes.
+
+    Duplicates that already exist are kept (flagged legacy_duplicate) rather than
+    merged; a partial unique index covers everything else, so a second app window
+    adding the same source at the same moment cannot create another row.
+    """
+    columns = {row['name'] for row in db.execute('PRAGMA table_info(watched_items)')}
+    if 'legacy_duplicate' not in columns:
+        db.execute('ALTER TABLE watched_items ADD COLUMN legacy_duplicate INTEGER NOT NULL DEFAULT 0')
+    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='watched_source_url_unique'").fetchone()
+    if exists:
+        return
+    db.execute('''UPDATE watched_items SET legacy_duplicate=1
+        WHERE source_url IS NOT NULL AND source_url != '' AND id NOT IN (
+            SELECT MIN(id) FROM watched_items WHERE source_url IS NOT NULL AND source_url != ''
+            GROUP BY source_url)''')
+    db.execute('''CREATE UNIQUE INDEX IF NOT EXISTS watched_source_url_unique ON watched_items(source_url)
+        WHERE source_url IS NOT NULL AND source_url != '' AND legacy_duplicate=0''')
 
 
 def enqueue(db, item):

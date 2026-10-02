@@ -237,6 +237,8 @@ class MediaIntakeApp:
         self.root.after(2500, self._resume_book_batches)
         self.root.after(2000, self._poll_clipboard)
         self._autostart_ids = set()
+        self._podcast_check_running = False
+        self.root.after(15_000, self._schedule_podcast_checks)
 
     def _configure_logging(self):
         self.log_folder = self.data_root / 'logs'
@@ -328,12 +330,14 @@ class MediaIntakeApp:
         library_tab, library_content = self._scrollable_frame(tabs, padding=8)
         watched_tab, watched_content = self._scrollable_frame(tabs, padding=8)
         webcomics_tab, webcomics_content = self._scrollable_frame(tabs, padding=8)
+        podcasts_tab, podcasts_content = self._scrollable_frame(tabs, padding=8)
         settings_tab, settings_content = self._scrollable_frame(tabs, padding=8)
         tabs.add(search_tab, text='Search and add')
         tabs.add(queue_tab, text='Queue')
         tabs.add(library_tab, text='Library')
         tabs.add(watched_tab, text='Watched')
         tabs.add(webcomics_tab, text='Webcomics')
+        tabs.add(podcasts_tab, text='Podcasts')
         tabs.add(settings_tab, text='Settings')
         self._build_search(search_content)
         self._build_queue(queue_content)
@@ -341,6 +345,8 @@ class MediaIntakeApp:
         self._build_watched(watched_content)
         from .webcomics.ui import WebcomicsPanel
         self.webcomics_panel = WebcomicsPanel(self, webcomics_content)
+        from .podcasts_ui import PodcastsPanel
+        self.podcasts_panel = PodcastsPanel(self, podcasts_content)
         self._build_settings(settings_content)
         tabs.bind('<<NotebookTabChanged>>', self._on_main_tab_changed)
 
@@ -3313,6 +3319,43 @@ class MediaIntakeApp:
                 message += f' ({warning})'
             self._done(message + '; review the fields, then Add to queue or Send to download manager')
         self._worker('Reading resolved link…', action, finished)
+
+    def _schedule_podcast_checks(self):
+        """Check due podcasts in the background every few minutes; record finished episodes."""
+        try:
+            self.root.after(300_000, self._schedule_podcast_checks)
+        except tk.TclError:
+            return
+        if self._podcast_check_running:
+            return
+        self._podcast_check_running = True
+        data_root = self.data_root
+
+        def run():
+            from . import podcasts
+            outcome = {}
+            try:
+                db = connect(data_root)
+                try:
+                    outcome = podcasts.check_due(db)
+                    podcasts.sync_downloads(db)
+                finally:
+                    db.close()
+            except Exception:
+                logging.getLogger('media_intake').exception('Podcast check failed')
+            def done():
+                self._podcast_check_running = False
+                new = sum(value for value in outcome.values() if isinstance(value, int))
+                if hasattr(self, 'podcasts_panel'):
+                    self.podcasts_panel.refresh()
+                if new:
+                    self.refresh_queue()
+                    self._done(f'{new} new podcast episode(s) queued')
+            try:
+                self.root.after(0, done)
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=run, daemon=True).start()
 
     def _autostart_downloads(self):
         """Run queued downloads automatically, up to the parallel limit (Settings → Downloads)."""

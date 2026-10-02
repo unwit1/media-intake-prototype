@@ -126,6 +126,8 @@ def connect(root):
     migrate_book_batches(db)
     from .source_health import migrate as migrate_source_health
     migrate_source_health(db)
+    from .podcasts import migrate as migrate_podcasts
+    migrate_podcasts(db)
     db.commit()
     return db
 
@@ -538,7 +540,7 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     from .streams import is_stream_item
     if is_stream_item(item):
         return _download_stream(db, item_id, item, root, destination)
-    folder = Path(destination) if destination else Path(root) / 'downloads'
+    folder = _item_folder(root, destination, item)
     part = folder / f'.partial-{item_id}.part'
     key = ('item', item_id)
     from . import transfer
@@ -626,6 +628,15 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     return _auto_deliver_to_kindle(db, item_id, root)
 
 
+def _item_folder(root, destination, item):
+    """The library folder for an item, plus its optional relative subfolder (for example Podcasts/Show)."""
+    folder = Path(destination) if destination else Path(root) / 'downloads'
+    sub = Path(str(item.get('library_subfolder') or ''))
+    if sub.parts and not sub.is_absolute() and '..' not in sub.parts:
+        folder = folder.joinpath(*(re.sub(r'[\\/:*?"<>|]+', '_', part).strip(' .') or '_' for part in sub.parts))
+    return folder
+
+
 def _place_download(folder, item, source, digest):
     """Move a finished file to its library name, reusing an identical existing copy."""
     base = Path(folder) / file_name(item)
@@ -640,7 +651,7 @@ def _place_download(folder, item, source, digest):
 
 def _download_stream(db, item_id, item, root, destination):
     from . import streams, transfer
-    folder = Path(destination) if destination else Path(root) / 'downloads'
+    folder = _item_folder(root, destination, item)
     workdir = folder / f'.partial-{item_id}.hls'
     key = ('item', item_id)
     control = transfer.claim_control(key)

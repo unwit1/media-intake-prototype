@@ -148,6 +148,29 @@ Clipboard capture recognises copied `.m3u8` links as video streams.
     picker. A file a bot offers is saved to the library folder after you confirm, and
     added to the Library.
 
+## Podcasts
+
+The **Podcasts** tab follows shows and downloads their episodes automatically.
+
+- **Finding shows:** search Apple's public podcast directory, or paste a feed URL.
+- **Following:** choose how much of the back catalogue to download: none, the
+  latest 3, the latest 10, or every episode. Everything else is recorded as
+  *skipped*, and you can still download any episode by hand.
+- **New episodes:** each show is checked on its own schedule (every 2 hours by
+  default) with conditional requests. New episodes queue for the normal download
+  engine, which handles resume, retries, the speed limit and the automatic queue.
+  Episode identity is the RSS GUID, so a re-published feed never downloads an
+  episode twice.
+- **Where files go:** `Podcasts/<Show>/` in the library folder, named
+  `<date> - <episode title> - <show>`.
+- **Per show:** switch auto-download on or off, change the check interval, and
+  optionally keep only the latest N downloaded files. Keep-latest deletes older
+  episode files, so it is off by default.
+- **Unfollowing** keeps the downloaded files.
+- **Approval:** the `podcast_rss` source starts approved in `rights-evidence.json`,
+  because podcast feeds publish their episodes for download. Set it to false to stop
+  podcast downloads.
+
 ## Email to a chosen Kindle
 
 Right-click a book in the Library → *Email to Kindle* lists every Kindle address from

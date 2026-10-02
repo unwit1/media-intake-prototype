@@ -21,7 +21,7 @@ DOWNLOAD_SOURCES = (
     'chauthanh.info', 'sourceforge.net', 'github_foss',
     'mediafiretrend.com', 'xdcc.eu', 'warezomen.com',
     'myabandonware.com', 'oldgamesdownload.com', 'abandonwaregames.net',
-    'gog-rev.com', 'ankergames.net', 'jackett',
+    'gog-rev.com', 'ankergames.net', 'jackett', 'podcast_rss',
 )
 METADATA_ONLY_SOURCES = frozenset({
     'openlibrary', 'open library', 'goodreads', 'comicvine', 'comic vine',
@@ -62,6 +62,19 @@ def initial_document():
                     }
                 ],
                 'review_note': 'Evidence does not establish a site-wide public-domain license. Recheck if LNORI publishes an explicit rights statement.'
+            },
+            'podcast_rss': {
+                'approved_for_download': True,
+                'evidence': [
+                    {
+                        'url': 'https://www.rssboard.org/rss-specification#ltenclosuregtSubelementOfLtitemgt',
+                        'observed_at': '2026-10-02',
+                        'summary': 'An RSS enclosure is a media file the publisher attaches to an episode so that '
+                                   'subscribers can download it; podcast feeds exist to distribute these files.'
+                    }
+                ],
+                'review_note': 'Approved by default because followed podcast feeds publish their episodes for download. '
+                               'Set approved_for_download to false to stop podcast downloads.'
             },
             'novelarchive.cc': {
                 'approved_for_download': False,

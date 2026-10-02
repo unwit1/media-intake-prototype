@@ -549,6 +549,7 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Pause all', command=self.pause_all_downloads).pack(side='left')
         ttk.Button(buttons, text='Stop seeding', command=self.stop_selected_seeding).pack(side='left', padx=6)
         ttk.Button(buttons, text='Source health', command=self.open_source_health).pack(side='left')
+        self.queue_view.bind('<Button-3>', self._queue_context_menu)
         self.download_batch_button = ttk.Button(
             buttons, text='Download queued',
             command=self.download_queued)
@@ -622,6 +623,7 @@ class MediaIntakeApp:
                    command=self.open_selected_library_folder).pack(side='left')
         ttk.Button(buttons, text='Send selected to Kindle',
                    command=self.send_selected_to_kindle).pack(side='left', padx=6)
+        self.library_view.bind('<Button-3>', self._library_context_menu)
 
     def _build_settings(self, parent):
         pages = ttk.Notebook(parent)
@@ -1270,6 +1272,7 @@ class MediaIntakeApp:
                     'name': Path(config_path).stem or config['server'],
                     'server': config['server'], 'port': int(config.get('port', 6697)),
                     'tls': bool(config.get('tls', True)),
+                    'verify_tls': bool(config.get('verify_tls', True)),
                     'nick': config.get('nick') or 'MediaIntake',
                     'channel': config['channel'],
                     'password_env': config.get('password_env') or '',
@@ -1281,8 +1284,15 @@ class MediaIntakeApp:
                 remaining_paths.append(config_path)
         if migrated:
             self.watch_irc_configs.set(';'.join(remaining_paths))
-            set_setting(self.db, 'watch_irc_sources', json.dumps(sources, ensure_ascii=False))
             set_setting(self.db, 'watch_irc_configs', ';'.join(remaining_paths))
+        from .irc import ensure_ebook_presets
+        try:
+            applied = json.loads(get_setting(self.db, 'irc_presets_applied', '[]'))
+        except (TypeError, ValueError):
+            applied = []
+        sources, applied, _added = ensure_ebook_presets(sources, applied)
+        set_setting(self.db, 'irc_presets_applied', json.dumps(applied))
+        set_setting(self.db, 'watch_irc_sources', json.dumps(sources, ensure_ascii=False))
         return sources
 
     def _build_irc_sources(self, parent):
@@ -3452,6 +3462,297 @@ class MediaIntakeApp:
             self._done('Pausing… progress is kept')
         else:
             self._done('That download is not running')
+
+    @staticmethod
+    def _select_row_under_pointer(tree, event):
+        row = tree.identify_row(event.y)
+        if row:
+            tree.selection_set(row)
+            tree.focus(row)
+        return row
+
+    def _library_context_menu(self, event):
+        from .kindle import get_kindle_email_targets
+        if not self._select_row_under_pointer(self.library_view, event):
+            return
+        menu = tk.Menu(self.root, tearoff=False)
+        kindles = tk.Menu(menu, tearoff=False)
+        targets = get_kindle_email_targets(self.db)
+        for target in targets:
+            label = f"{target['name']} ({target['email']})" if target.get('name') else target['email']
+            kindles.add_command(label=label, command=lambda chosen=target: self.email_library_book([chosen]))
+        if len(targets) > 1:
+            kindles.add_separator()
+            kindles.add_command(label='All Kindles', command=lambda: self.email_library_book(targets))
+        if targets:
+            menu.add_cascade(label='Email to Kindle', menu=kindles)
+        else:
+            menu.add_command(label='Email to Kindle… (add an address in Settings > Kindle)',
+                             command=lambda: messagebox.showinfo(
+                                 'Email to Kindle', 'Add your Kindle email address and SMTP settings in Settings > Kindle.'))
+        menu.add_command(label='Send to connected Kindle / configured Kindles', command=self.send_selected_to_kindle)
+        menu.add_separator()
+        menu.add_command(label='Open file', command=self.open_selected_library_file)
+        menu.add_command(label='Open containing folder', command=self.open_selected_library_folder)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def email_library_book(self, targets):
+        from .kindle import email_to_kindle
+        selected = self.library_view.selection()
+        if not selected:
+            return
+        item_id, data_root = int(selected[0]), self.data_root
+        names = ', '.join(target.get('name') or target['email'] for target in targets)
+        def action():
+            db = connect(data_root)
+            try:
+                return email_to_kindle(db, item_id, data_root, targets)
+            finally:
+                db.close()
+        def completed(row):
+            self.refresh_queue()
+            delivery = self._row_kindle_delivery(row)
+            if delivery.get('status') == 'sent_unconfirmed':
+                self._done(f"Emailed {self._row_title(row)} to {names}; it appears in the Kindle library shortly")
+            else:
+                self._done(f"Kindle email failed: {delivery.get('error') or 'see Library status'}")
+        self._worker(f'Emailing book to {names}…', action, completed)
+
+    def _queue_context_menu(self, event):
+        if not self._select_row_under_pointer(self.queue_view, event):
+            return
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(label='Search all IRC servers for this book', command=self.search_irc_for_queue_item)
+        menu.add_command(label='Open IRC channel to search myself…', command=self.open_irc_console_for_queue_item)
+        menu.add_separator()
+        menu.add_command(label='Download / resume', command=self.download_selected)
+        menu.add_command(label='Pause', command=self.pause_selected_download)
+        menu.add_command(label='Cancel', command=self.cancel_selected_download)
+        menu.add_command(label='Send to download manager', command=self.send_queue_item_to_downloader)
+        menu.add_command(label='Stop seeding', command=self.stop_selected_seeding)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _queue_item_query(self):
+        item_id = self._selected_queue_id()
+        row = next((row for row in self.queue_rows if int(row['id']) == item_id), None) if item_id else None
+        if not row:
+            return None, None, None
+        try:
+            metadata = json.loads(row.get('metadata') or '{}')
+        except (TypeError, ValueError):
+            metadata = {}
+        author = str(metadata.get('author') or '')
+        query = ' '.join(part for part in (str(metadata.get('title') or ''),
+                                           '' if author.casefold() in ('', 'unknown') else author) if part)
+        return item_id, query.strip()[:150], metadata.get('watch_id')
+
+    def _irc_options(self):
+        return {'irc_sources': [source for source in self.irc_sources if source.get('enabled', True)]}
+
+    def search_irc_for_queue_item(self):
+        from .irc import search_all_sources
+        item_id, query, watch_id = self._queue_item_query()
+        if not query:
+            return
+        options = self._irc_options()
+        if not options['irc_sources']:
+            messagebox.showinfo('IRC search', 'Add an IRC server in Settings > IRC sources first.')
+            return
+        self._worker(f'Searching {len(options["irc_sources"])} IRC server(s) for {query}…',
+                     lambda: search_all_sources(query, options),
+                     lambda outcome: self.show_irc_results(outcome[0], f'IRC results for {query}',
+                                                          watch_id=watch_id, errors=outcome[1]))
+
+    def show_irc_results(self, entries, title, watch_id=None, errors=()):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry('980x520')
+        dialog.transient(self.root)
+        note = f'{len(entries)} result(s). Select one or more lines to add to the downloads.'
+        if errors:
+            note += ' Unreachable: ' + '; '.join(str(error)[:120] for error in errors)
+        ttk.Label(dialog, text=note, wraplength=940, justify='left').pack(anchor='w', padx=12, pady=(12, 4))
+        filter_text = tk.StringVar()
+        filter_row = ttk.Frame(dialog)
+        filter_row.pack(fill='x', padx=12)
+        ttk.Label(filter_row, text='Filter').pack(side='left')
+        ttk.Entry(filter_row, textvariable=filter_text, width=40).pack(side='left', padx=6)
+        columns = ('author', 'format', 'size', 'bot', 'source')
+        view = ttk.Treeview(dialog, columns=columns, show='tree headings', selectmode='extended')
+        view.heading('#0', text='Title')
+        view.column('#0', width=330)
+        for column, label, width in (('author', 'Author', 180), ('format', 'Format', 60), ('size', 'Size', 80),
+                                     ('bot', 'Bot', 110), ('source', 'Server', 170)):
+            view.heading(column, text=label)
+            view.column(column, width=width, anchor='w')
+        view.pack(fill='both', expand=True, padx=12, pady=6)
+        def render(*_):
+            needle = filter_text.get().casefold().strip()
+            view.delete(*view.get_children())
+            for index, entry in enumerate(entries):
+                line = entry.get('filename') or entry.get('title') or ''
+                if needle and needle not in line.casefold() and needle not in str(entry.get('bot', '')).casefold():
+                    continue
+                view.insert('', 'end', iid=str(index), text=entry.get('title') or line, values=(
+                    entry.get('author') or '', entry.get('format') or '', entry.get('size_text') or '',
+                    entry.get('bot') or (entry.get('irc') or {}).get('bot') or '',
+                    entry.get('irc_source_name') or (entry.get('irc') or {}).get('server') or ''))
+        filter_text.trace_add('write', render)
+        render()
+        def add(start):
+            chosen = [entries[int(index)] for index in view.selection()]
+            if not chosen:
+                return
+            data_root = self.data_root
+            def action():
+                from .irc import enqueue_irc
+                db = connect(data_root)
+                try:
+                    return [enqueue_irc(db, dict(entry['irc']), watch_id=watch_id)['id'] for entry in chosen]
+                finally:
+                    db.close()
+            def added(ids):
+                self.refresh_queue()
+                self._done(f'Added {len(ids)} IRC file(s) to the downloads')
+                if start:
+                    self.download_queued([int(item_id) for item_id in ids])
+            self._worker('Adding IRC results to the downloads…', action, added)
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=12)
+        ttk.Button(bar, text='Add selected and download', command=lambda: add(True)).pack(side='left')
+        ttk.Button(bar, text='Add selected to the queue', command=lambda: add(False)).pack(side='left', padx=6)
+        ttk.Button(bar, text='Close', command=dialog.destroy).pack(side='right')
+        view.bind('<Double-1>', lambda _event: add(True))
+        return dialog
+
+    def open_irc_console_for_queue_item(self):
+        item_id, query, watch_id = self._queue_item_query()
+        self.open_irc_console(initial_command=f'@search {query}' if query else '', watch_id=watch_id)
+
+    def open_irc_console(self, initial_command='', watch_id=None):
+        from .irc import irc_source_priority_label
+        from .irc_session import IrcSession
+        sources = [source for source in self.irc_sources if source.get('enabled', True)]
+        if not sources:
+            messagebox.showinfo('IRC', 'Add an IRC server in Settings > IRC sources first.')
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title('IRC channel')
+        dialog.geometry('860x560')
+        labels = [irc_source_priority_label(source.get('name'), source) for source in sources]
+        chosen = tk.StringVar(value=labels[0])
+        top = ttk.Frame(dialog)
+        top.pack(fill='x', padx=12, pady=(12, 6))
+        ttk.Label(top, text='Server / channel').pack(side='left')
+        ttk.Combobox(top, textvariable=chosen, values=labels, state='readonly', width=55).pack(side='left', padx=6)
+        status = tk.StringVar(value='Not connected')
+        log = tk.Text(dialog, wrap='word', state='disabled', height=20)
+        log.pack(fill='both', expand=True, padx=12)
+        ttk.Label(dialog, textvariable=status).pack(anchor='w', padx=12, pady=(4, 0))
+        entry_row = ttk.Frame(dialog)
+        entry_row.pack(fill='x', padx=12, pady=8)
+        command = tk.StringVar(value=initial_command)
+        command_entry = ttk.Entry(entry_row, textvariable=command)
+        command_entry.pack(side='left', fill='x', expand=True)
+        state = {'session': None}
+        library = Path(self.library_folder.get().strip() or self.data_root / 'downloads')
+
+        def write(text):
+            log.configure(state='normal')
+            log.insert('end', text + '\n')
+            log.see('end')
+            log.configure(state='disabled')
+
+        def handle(kind, payload):
+            if not dialog.winfo_exists():
+                return
+            if kind == 'line':
+                write(payload)
+            elif kind in ('status', 'error'):
+                status.set(payload)
+                write(('! ' if kind == 'error' else '* ') + payload)
+            elif kind == 'joined':
+                status.set(f"In {payload['channel']} as {payload['nick']}. Type a command (for example @search title author) and press Enter.")
+                write(f"* Joined {payload['channel']} as {payload['nick']}")
+            elif kind == 'results':
+                write(f"* {len(payload['entries'])} result(s) in {payload['filename']} from {payload['sender']}")
+                self.show_irc_results(payload['entries'], f"{payload['filename']} ({chosen.get()})", watch_id=watch_id)
+            elif kind == 'offer':
+                size = payload['size']
+                if messagebox.askyesno('IRC file offer', f"{payload['sender']} is sending {payload['filename']} "
+                                       f"({size / 1048576:.1f} MB). Save it to the library folder?", parent=dialog):
+                    state['session'].accept_offer(payload['offer_id'], library)
+                    write(f"* Receiving {payload['filename']}…")
+                else:
+                    state['session'].decline_offer(payload['offer_id'])
+            elif kind == 'progress':
+                _offer_id, done, total = payload
+                status.set(f'Receiving file: {done / 1048576:.1f} of {total / 1048576:.1f} MB')
+            elif kind == 'saved':
+                write(f"* Saved {payload['path']}")
+                status.set('File saved to the library folder')
+                self._record_console_download(payload)
+            elif kind == 'closed':
+                status.set('Disconnected')
+                connect_button.configure(text='Connect')
+
+        def connect_session():
+            if state['session'] is not None:
+                state['session'].close()
+                state['session'] = None
+                return
+            source = dict(sources[labels.index(chosen.get())])
+            config = {key: value for key, value in source.items() if key not in ('id', 'name', 'categories', 'enabled')}
+            session = IrcSession(config, lambda kind, payload: self.root.after(0, lambda: handle(kind, payload)))
+            state['session'] = session
+            connect_button.configure(text='Disconnect')
+            session.start()
+
+        def send(*_):
+            text = command.get().strip()
+            if text and state['session'] is not None:
+                state['session'].send(text)
+                command.set('')
+
+        connect_button = ttk.Button(top, text='Connect', command=connect_session)
+        connect_button.pack(side='left')
+        ttk.Button(entry_row, text='Send', command=send).pack(side='left', padx=6)
+        command_entry.bind('<Return>', send)
+        def on_close():
+            if state['session'] is not None:
+                state['session'].close()
+            dialog.destroy()
+        dialog.protocol('WM_DELETE_WINDOW', on_close)
+        connect_session()
+        return dialog
+
+    def _record_console_download(self, payload):
+        """Add a file received in the IRC console to the queue/library as downloaded."""
+        from .core import EXTENSIONS
+        path, offer = Path(payload['path']), payload['offer']
+        ext = path.suffix.casefold()
+        if ext not in EXTENSIONS:
+            return
+        name = path.stem
+        author, sep, title = name.partition(' - ')
+        if not sep:
+            author, title = 'Unknown', name
+        url = 'irc+xdcc://console/' + urllib.parse.quote(f"{offer['sender']}/{path.name}")
+        try:
+            row = enqueue(self.db, {'title': title, 'author': author, 'url': url, 'format': ext,
+                                    'source': f"IRC {offer['sender']}", 'source_key': 'irc'})
+            self.db.execute("UPDATE items SET state='downloaded', file_path=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            (str(path.resolve()), row['id']))
+            self.db.commit()
+        except Exception:
+            self.logger.exception('Could not record the IRC console download')
+        self.refresh_queue()
 
     def open_source_health(self):
         from .discovery import SOURCE_KEY_LABELS

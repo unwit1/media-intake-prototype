@@ -19,6 +19,59 @@ from .core import EXTENSIONS, MAX_FILE_BYTES, check_download, file_name, validat
 _SEARCHABLE_EXTENSIONS = '|'.join(
     re.escape(extension[1:]) for extension in sorted(EXTENSIONS, key=len, reverse=True))
 
+# Built-in ebook networks. IRCHighway serves TLS on 6697 with a certificate that
+# does not verify; Undernet offers no TLS at all, so #bookz uses plain 6667.
+EBOOK_NETWORK_PRESETS = (
+    {'preset': 'irchighway-ebooks', 'name': 'IRCHighway #ebooks', 'server': 'irc.irchighway.net',
+     'port': 6697, 'tls': True, 'verify_tls': False, 'channel': '#ebooks'},
+    {'preset': 'undernet-bookz', 'name': 'Undernet #bookz', 'server': 'irc.undernet.org',
+     'port': 6667, 'tls': False, 'verify_tls': True, 'channel': '#bookz'},
+)
+EBOOK_PRESET_CATEGORIES = ('Books', 'Light novels')
+_NO_RESULTS = re.compile(r'no (?:matches|results)|returned (?:0|no)\b|nothing (?:was )?found|not found', re.I)
+_NICK_IN_USE = re.compile(r'\s433\s')
+
+
+class IrcNoResults(LookupError):
+    """The channel's search bot reported that nothing matched."""
+
+
+def preset_nick(seed=None):
+    """A per-install nickname, so the app does not collide with other readers."""
+    digest = hashlib.sha256(str(seed or os.environ.get('COMPUTERNAME') or os.getpid()).encode()).hexdigest()
+    return 'MIReader' + str(int(digest[:6], 16) % 10000).zfill(4)
+
+
+def ensure_ebook_presets(sources, applied, nick=None):
+    """Add missing IRCHighway/Undernet sources once; returns (sources, applied_presets, added).
+
+    A preset the user removed stays removed: `applied` remembers what was offered.
+    """
+    import uuid
+    sources = [dict(source) for source in sources or [] if isinstance(source, dict)]
+    applied = list(applied or [])
+    added = []
+    for preset in EBOOK_NETWORK_PRESETS:
+        if preset['preset'] in applied:
+            continue
+        applied.append(preset['preset'])
+        endpoint = (preset['server'].casefold(), preset['channel'].casefold())
+        existing = next((source for source in sources
+                         if (str(source.get('server', '')).casefold(), str(source.get('channel', '')).casefold()) == endpoint), None)
+        if existing:
+            # Correct settings an older manual entry may have missed (for example TLS verification).
+            for key in ('port', 'tls', 'verify_tls'):
+                existing.setdefault(key, preset[key])
+            if existing['server'].casefold() == 'irc.irchighway.net' and existing.get('tls', True):
+                existing['verify_tls'] = False
+            continue
+        source = {key: value for key, value in preset.items() if key != 'preset'}
+        source.update(id=uuid.uuid4().hex, nick=nick or preset_nick(), timeout=90,
+                      categories=list(EBOOK_PRESET_CATEGORIES), enabled=True, preset=preset['preset'])
+        sources.append(source)
+        added.append(source['name'])
+    return sources, applied, added
+
 
 def _irc_ssl_context(config):
     if config.get('verify_tls', True):
@@ -212,14 +265,23 @@ def receive_offer(config, max_bytes=MAX_FILE_BYTES):
             send_line(sock, 'NICK ' + nick)
             send_line(sock, 'USER ' + nick + ' 0 * :Media Intake')
             sent_join, sent_request = False, False
+            nick_attempts = 0
             with sock.makefile('rb') as reader:
                 while True:
                     raw = reader.readline(4096)
                     if not raw: raise ConnectionError('IRC connection closed before DCC SEND')
                     line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
                     if line.startswith('PING '): send_line(sock, 'PONG ' + line[5:]); continue
+                    if _NICK_IN_USE.search(line) and not sent_join and nick_attempts < 3:
+                        nick_attempts += 1
+                        nick = f"{config.get('nick', 'MediaIntake')[:12]}{int(time.time() * 1000) % 1000:03d}"
+                        send_line(sock, 'NICK ' + nick)
+                        continue
                     if re.search(r'\s(?:403|432|433|464|471|473|474|475|477)\s', line):
                         raise ConnectionError('IRC registration or channel rejected: ' + line[:250])
+                    if (sent_request and config.get('_search') and re.search(r'\s(?:NOTICE|PRIVMSG)\s' + re.escape(nick) + r'\s', line, re.I)
+                            and _NO_RESULTS.search(line.split(' :', 1)[-1])):
+                        raise IrcNoResults(line.split(' :', 1)[-1][:250])
                     if re.search(r'\s001\s', line) and not sent_join:
                         send_line(sock, 'JOIN ' + config['channel']); sent_join = True
                     if (re.search(r'\s366\s', line) or re.search(r'^:' + re.escape(nick) + r'!', line, re.I) and ' JOIN ' in line) and sent_join and not sent_request:
@@ -384,9 +446,24 @@ def search_configured_sources(query, source_options, category, allowed_formats, 
     return results, errors
 
 
+class _ExitOnly:
+    """Close an already-entered context manager at the end of a with block."""
+
+    def __init__(self, context):
+        self.context = context
+
+    def __enter__(self):
+        return self.context
+
+    def __exit__(self, *exc):
+        return self.context.__exit__(*exc)
+
+
 def parse_search_index(data, config, limit=100):
-    """Read a search bot's ZIP listing without extracting untrusted archive paths."""
+    """Read a search bot's ZIP (or plain-text) listing without extracting untrusted archive paths."""
     if len(data) > 5_000_000: raise ValueError('IRC search index exceeds 5 MB')
+    if not data.startswith(b'PK'):
+        return parse_search_text(data.decode('utf-8-sig', 'replace'), config, limit)
     entries = []
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         if len(archive.infolist()) > 20: raise ValueError('Too many files in IRC index')
@@ -395,28 +472,43 @@ def parse_search_index(data, config, limit=100):
             with archive.open(member) as stream:
                 content = stream.read(5_000_001)
             if len(content) > 5_000_000: raise ValueError('IRC index expanded beyond 5 MB')
-            for line in content.decode('utf-8-sig', 'replace').splitlines():
-                match = re.search(
-                    rf'(?<!\S)!([\w\-\[\]{{}}^|`]+)\s+(.+?\.(?:{_SEARCHABLE_EXTENSIONS}))'
-                    r'(?=\s*::\s*INFO\s*::|\s*$)', line, re.I)
-                if not match: continue
-                bot, filename = match.group(1), match.group(2).strip()
-                if '\x00' in filename or len(filename) > 320: continue
-                ext = Path(filename).suffix.lower()
-                name = Path(filename).name.removesuffix(ext).replace('_', ' ').strip()
-                author, sep, title = name.partition(' - ')
-                if not sep: title, author = name, 'Unknown'
-                request = '!' + bot + ' ' + filename
-                item_config = {k: config[k] for k in (
-                    'server', 'port', 'tls', 'verify_tls', 'nick', 'channel',
-                    'password_env', 'timeout') if k in config}
-                item_config.update(bot=bot, request=request, title=title, author=author, format=ext)
-                entries.append({'title': title, 'author': author, 'format': ext,
-                                'source': 'irc://' + config['server'] + '/' + config['channel'],
-                                'irc': item_config, 'filename': filename})
-                if len(entries) >= limit: return entries
+            entries.extend(parse_search_text(content.decode('utf-8-sig', 'replace'), config, limit - len(entries)))
+            if len(entries) >= limit: return entries
     return entries
 
+
+def parse_search_text(text, config, limit=100):
+    """Turn search-result lines ("!Bot Author - Title.ext ::INFO:: size") into queueable entries."""
+    entries = []
+    if limit <= 0:
+        return entries
+    for line in str(text).splitlines():
+        match = re.search(
+            rf'(?<!\S)!([\w\-\[\]{{}}^|`]+)\s+(.+?\.(?:{_SEARCHABLE_EXTENSIONS}))'
+            r'(?=\s*::\s*INFO\s*::|\s*$)', line, re.I)
+        if not match:
+            continue
+        bot, filename = match.group(1), match.group(2).strip()
+        if '\x00' in filename or len(filename) > 320:
+            continue
+        ext = Path(filename).suffix.lower()
+        name = Path(filename).name.removesuffix(ext).replace('_', ' ').strip()
+        author, sep, title = name.partition(' - ')
+        if not sep:
+            title, author = name, 'Unknown'
+        info = re.search(r'::\s*INFO\s*::\s*(.+)$', line, re.I)
+        request = '!' + bot + ' ' + filename
+        item_config = {k: config[k] for k in (
+            'server', 'port', 'tls', 'verify_tls', 'nick', 'channel',
+            'password_env', 'timeout') if k in config}
+        item_config.update(bot=bot, request=request, title=title, author=author, format=ext)
+        entries.append({'title': title, 'author': author, 'format': ext,
+                        'source': 'irc://' + config['server'] + '/' + config['channel'],
+                        'irc': item_config, 'filename': filename, 'bot': bot,
+                        'size_text': info.group(1).strip() if info else ''})
+        if len(entries) >= limit:
+            return entries
+    return entries
 
 def search_irc(query, config, limit=100):
     """Search a channel and receive its DCC ZIP index, then return selectable entries."""
@@ -429,7 +521,13 @@ def search_irc(query, config, limit=100):
     config['commands'] = ['/msg {channel} @search ' + query]
     # Search index senders vary by network. Accept only a ZIP from the joined channel session.
     config['bot'] = None
-    with receive_offer(config, max_bytes=5_000_000) as offer:
+    config['_search'] = True
+    try:
+        offer_context = receive_offer(config, max_bytes=5_000_000)
+        offer = offer_context.__enter__()
+    except IrcNoResults:
+        return []
+    with _ExitOnly(offer_context):
         if Path(offer['filename']).suffix.lower() != '.zip':
             raise ValueError('IRC search response was not a ZIP index')
         buf = io.BytesIO()
@@ -441,3 +539,64 @@ def search_irc(query, config, limit=100):
                 buf.write(chunk)
                 dcc.sendall(struct.pack('!I', buf.tell() & 0xffffffff))
     return parse_search_index(buf.getvalue(), config, limit)
+
+
+def search_all_sources(query, source_options, category=None, allowed_formats=None, limit=200, workers=4):
+    """Search every configured IRC source at once; returns (results, errors) across all of them."""
+    from concurrent.futures import ThreadPoolExecutor
+    sources = [(name, config) for name, config in configured_search_sources(source_options, category)
+               if not isinstance(config, Exception)]
+    results, errors = [], []
+
+    def one(source):
+        name, config = source
+        try:
+            return name, config, search_irc(query, config, limit=limit), None
+        except Exception as exc:
+            return name, config, [], exc
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(sources) or 1))) as pool:
+        for name, config, found, error in pool.map(one, sources):
+            if error is not None:
+                errors.append(f'{name}: {error}')
+                continue
+            for item in found:
+                if allowed_formats and str(item.get('format') or '').casefold() not in allowed_formats:
+                    continue
+                item['irc_source_name'] = name
+                item['download_priority_label'] = irc_source_priority_label(name, config)
+                if isinstance(item.get('irc'), dict):
+                    item['irc']['source_name'] = name
+                results.append(item)
+    return results, errors
+
+
+def receive_dcc_file(offer, folder, max_bytes=MAX_FILE_BYTES, timeout=180, progress=None):
+    """Receive an accepted DCC SEND into `folder` under a sanitized name; returns the path."""
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', '_', Path(offer['filename']).name).strip(' .')[:200] or 'download'
+    if offer['size'] > max_bytes:
+        raise ValueError('Offered file is larger than the download limit')
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.partial-irc-', dir=folder)
+    received = 0
+    try:
+        with os.fdopen(fd, 'wb') as out, socket.create_connection((offer['host'], offer['port']), timeout=30) as dcc:
+            dcc.settimeout(timeout)
+            while received < offer['size']:
+                chunk = dcc.recv(min(65536, offer['size'] - received))
+                if not chunk:
+                    raise ConnectionError('DCC transfer ended early')
+                out.write(chunk)
+                received += len(chunk)
+                dcc.sendall(struct.pack('!I', received & 0xffffffff))
+                if progress:
+                    progress(received, offer['size'])
+        target = folder / name
+        if target.exists():
+            target = target.with_name(f'{target.stem} [{int(time.time())}]{target.suffix}')
+        os.replace(tmp, target)
+        return target
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)

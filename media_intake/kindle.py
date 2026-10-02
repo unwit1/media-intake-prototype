@@ -710,3 +710,11 @@ def retry_pending_kindle_deliveries(db, data_root):
         result = deliver_to_kindle(db, item_id, data_root, force=True)
         completed.append(result)
     return completed
+
+
+def email_to_kindle(db, item_id, data_root, targets):
+    """Email one downloaded book to the chosen Kindle destinations, regardless of auto-send."""
+    targets = [target for target in targets or [] if isinstance(target, dict) and target.get('email')]
+    if not targets:
+        raise ValueError('Choose a Kindle email address (Settings > Kindle).')
+    return _deliver_to_kindle_email(db, item_id, data_root, force=True, targets_override=targets)

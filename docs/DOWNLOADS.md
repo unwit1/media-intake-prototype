@@ -125,6 +125,34 @@ or any link whose server answers with an HLS playlist, is handled automatically:
 
 Clipboard capture recognises copied `.m3u8` links as video streams.
 
+## IRC search and the IRC channel window
+
+- **Configured networks.** IRCHighway `#ebooks` (`irc.irchighway.net`, TLS 6697; its
+  certificate does not verify, so verification is off for it) and Undernet `#bookz`
+  (`irc.undernet.org`, plain 6667, because Undernet has no TLS) are set up once for
+  Books and Light novels.
+  - A source you remove is not added back.
+  - An existing entry for either network gets the settings it needs.
+  - Other servers can be added under Settings → IRC sources.
+- **Connection fixes.** A nickname already in use is retried with a numbered suffix.
+  When the search bot says nothing matched, the search ends straight away instead of
+  waiting for the timeout.
+- **Right-click a queue item** for these options:
+  - *Search all IRC servers for this book* searches every configured server at once
+    and opens a results picker. It shows title, author, format, size, bot and server,
+    with a filter. Add the lines you want to the queue, or add them and start
+    downloading.
+  - *Open IRC channel to search myself…* opens a channel window with the server
+    chosen and `@search <title author>` prefilled. Type any command, including `!Bot
+    file` requests. Search-result lists sent back (`.zip` or `.txt`) open in the same
+    picker. A file a bot offers is saved to the library folder after you confirm, and
+    added to the Library.
+
+## Email to a chosen Kindle
+
+Right-click a book in the Library → *Email to Kindle* lists every Kindle address from
+Settings → Kindle, plus *All Kindles*. Sending this way works even when auto-send is off.
+
 ## Jackett
 
 Search tab → *Jackett (torrents)* searches the indexers configured in your own

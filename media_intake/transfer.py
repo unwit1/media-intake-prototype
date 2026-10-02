@@ -30,6 +30,8 @@ CHUNK = 256 * 1024
 SEGMENT_MIN_BYTES = 4 * 1024 * 1024
 CHECKPOINT_SECONDS = 1.0
 HTML_TYPES = ('text/html', 'application/xhtml+xml')
+HLS_TYPES = frozenset({'application/vnd.apple.mpegurl', 'application/x-mpegurl',
+                       'audio/mpegurl', 'audio/x-mpegurl'})
 
 
 class TransferError(ValueError):
@@ -42,6 +44,14 @@ class TransferPaused(Exception):
 
 class TransferCancelled(Exception):
     pass
+
+
+class StreamDetected(Exception):
+    """The link serves an HLS playlist; save it with streams.download_hls instead."""
+
+    def __init__(self, url):
+        super().__init__(url)
+        self.url = url
 
 
 class _Retryable(Exception):
@@ -340,6 +350,9 @@ def fetch(url, part, *, max_bytes, connections=4, retries=4, timeout=60, progres
     if content_type in HTML_TYPES:
         response.close()
         raise TransferError('URL returned an HTML page, not a media file')
+    if content_type in HLS_TYPES:
+        response.close()
+        raise StreamDetected(final_url)
     status = getattr(response, 'status', 200)
     match = re.fullmatch(r'bytes\s+0-0/(\d+)', headers.get('Content-Range') or '')
     if status != 206 or not match:

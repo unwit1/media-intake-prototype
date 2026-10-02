@@ -482,6 +482,9 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     from .torrents import is_torrent_item
     if is_torrent_item(item):
         return _download_torrent(db, item_id, item, root, destination)
+    from .streams import is_stream_item
+    if is_stream_item(item):
+        return _download_stream(db, item_id, item, root, destination)
     folder = Path(destination) if destination else Path(root) / 'downloads'
     part = folder / f'.partial-{item_id}.part'
     key = ('item', item_id)
@@ -489,6 +492,7 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     control = transfer.claim_control(key)
     if control is None:
         raise ValueError('This item is already downloading')
+    stream_url = None
     try:
         item = _resolve_download_link(db, item_id, item)
         settings = download_settings(db)
@@ -542,6 +546,8 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         db.execute("UPDATE items SET state='cancelled', error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
         db.commit()
         raise
+    except transfer.StreamDetected as exc:
+        stream_url = exc.url
     except ShortlinkPending as exc:
         db.execute("UPDATE items SET state='needs_shortlink', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
         db.commit()
@@ -554,6 +560,75 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         done, total = transfer.partial_progress(part)
         db.execute("UPDATE items SET state='failed', error=?, progress_bytes=?, progress_total=?, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                    (str(exc), done or None, total if done else None, 'Partial download kept; retry resumes' if done else None, item_id))
+        db.commit()
+        raise
+    finally:
+        transfer.release_control(key)
+    if stream_url:
+        # The server answered with an HLS playlist: save the stream instead.
+        item = dict(item, stream='hls', resolved_url=stream_url)
+        db.execute('UPDATE items SET metadata=? WHERE id=?', (json.dumps(item, ensure_ascii=False), item_id))
+        db.commit()
+        return _download_stream(db, item_id, item, root, destination)
+    return _auto_deliver_to_kindle(db, item_id, root)
+
+
+def _place_download(folder, item, source, digest):
+    """Move a finished file to its library name, reusing an identical existing copy."""
+    base = Path(folder) / file_name(item)
+    if base.exists():
+        if hashlib.sha256(base.read_bytes()).hexdigest() == digest:
+            os.unlink(source)
+            return base
+        base = base.with_name(base.stem + f" [{digest[:8]}]" + base.suffix)
+    os.replace(source, base)
+    return base
+
+
+def _download_stream(db, item_id, item, root, destination):
+    from . import streams, transfer
+    folder = Path(destination) if destination else Path(root) / 'downloads'
+    workdir = folder / f'.partial-{item_id}.hls'
+    key = ('item', item_id)
+    control = transfer.claim_control(key)
+    if control is None:
+        raise ValueError('This item is already downloading')
+    try:
+        settings = download_settings(db)
+        transfer.LIMITER.set_rate(settings['speed_limit_kbps'] * 1024)
+        update_download_progress(db, item_id, None, None, 'Reading stream playlist')
+        path, ext = streams.download_hls(
+            item.get('resolved_url') or item['url'], workdir, connections=settings['connections'],
+            retries=settings['retries'], control=control,
+            opener=lambda request, timeout: open_url(request, timeout=timeout),
+            progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message))
+        item = dict(item, stream='hls', format=ext, format_guessed=False)
+        db.execute('UPDATE items SET metadata=? WHERE id=?', (json.dumps(item, ensure_ascii=False), item_id))
+        update_download_progress(db, item_id, None, None, 'Saving stream file')
+        digest = hashlib.sha256()
+        with open(path, 'rb') as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(chunk)
+        dest = _place_download(folder, item, path, digest.hexdigest())
+        streams.discard_stream_partial(workdir)
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (str(dest.resolve()), digest.hexdigest(), item_id))
+        db.commit()
+    except transfer.TransferPaused:
+        db.execute("UPDATE items SET state='paused', error=NULL, progress_message='Paused — resume to continue', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        db.commit()
+        raise
+    except transfer.TransferCancelled:
+        streams.discard_stream_partial(workdir)
+        db.execute("UPDATE items SET state='cancelled', error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        db.commit()
+        raise
+    except Exception as exc:
+        if isinstance(exc, streams.StreamError):
+            streams.discard_stream_partial(workdir)
+        kept = workdir.exists() and any(workdir.rglob('*.seg'))
+        db.execute("UPDATE items SET state='failed', error=?, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (str(exc), 'Saved segments kept; retry resumes' if kept else None, item_id))
         db.commit()
         raise
     finally:

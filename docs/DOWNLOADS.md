@@ -83,6 +83,28 @@ ratio, peers, upload speed and time left. *Stop seeding* on the Queue tab ends i
 and keeps the files. Seeding state (`.seed-<queue id>.fastresume`) survives restarts,
 so unfinished seeding continues when the app opens again.
 
+## Video streams saved to a file (`media_intake/streams.py`)
+
+HLS streams are saved as an ordinary file. Nothing is played. A queued `.m3u8` link,
+or any link whose server answers with an HLS playlist, is handled automatically:
+
+- The best variant of a master playlist is chosen.
+- Segments download in parallel, using the same connection, retry and speed-limit
+  settings as other downloads.
+- Finished segments are kept in `.partial-<queue id>.hls/`, so pause, failures and
+  restarts resume. Cancel removes them.
+- Byte-range segments and fMP4 initialisation sections are supported.
+- Live playlists are recorded until the stream ends. *Pause* stops a live recording
+  and keeps what was recorded.
+- MPEG-TS segments are joined into `.ts`, and fMP4 into `.mp4`. When
+  [ffmpeg](https://ffmpeg.org/) is on PATH, `.ts` is remuxed to `.mp4` without
+  re-encoding, and streams that keep audio in a separate track are merged (those
+  require ffmpeg).
+- **Encrypted streams are refused, not decrypted.** That means any `EXT-X-KEY` /
+  `EXT-X-SESSION-KEY` method other than `NONE`, including DRM key systems.
+
+Clipboard capture recognises copied `.m3u8` links as video streams.
+
 ## Jackett
 
 Search tab → *Jackett (torrents)* searches the indexers configured in your own

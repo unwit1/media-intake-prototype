@@ -12,7 +12,7 @@ MAX_CLIPBOARD_CHARS = 20_000
 MAX_LINKS = 50
 _URL = re.compile(r'''(magnet:\?[^\s"'<>]+|https?://[^\s"'<>]+)''', re.I)
 KIND_LABELS = {'magnet': 'Magnet link', 'torrent': '.torrent link', 'file_host': 'File host link',
-               'shortlink': 'Shortlink', 'direct': 'Direct file'}
+               'shortlink': 'Shortlink', 'direct': 'Direct file', 'stream': 'Video stream'}
 
 
 def _suffix(path):
@@ -38,6 +38,8 @@ def classify_link(url):
     suffix = _suffix(parts.path)
     if suffix == '.torrent':
         return 'torrent', '.torrent'
+    if suffix in ('.m3u8', '.m3u'):
+        return 'stream', '.mp4'
     if host in FILE_HOSTS or host.removeprefix('www.') in MANUAL_HOSTS:
         return 'file_host', suffix if suffix in EXTENSIONS else None
     if is_shortlink(url):
@@ -71,6 +73,9 @@ def queue_item(link, category_format=None):
         title = name or 'Torrent'
     else:
         title = PurePosixPath(urllib.parse.unquote(urllib.parse.urlsplit(url).path)).stem or 'Download'
-    return {'title': title[:300], 'author': 'Unknown', 'url': url, 'source': url,
+    item = {'title': title[:300], 'author': 'Unknown', 'url': url, 'source': url,
             'format': link.get('format') or category_format or '.zip', 'captured_from': 'clipboard',
             'format_guessed': not link.get('format')}
+    if link['kind'] == 'stream':
+        item['stream'] = 'hls'
+    return item

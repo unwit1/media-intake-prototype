@@ -165,12 +165,14 @@ class QueueIntegrationTests(unittest.TestCase):
 
     def test_download_pause_resume_and_cancel_states(self):
         with RangeServer() as server, tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
-            server.delay = 0.01
+            server.delay = 0.05  # several seconds, past the first checkpoint
             queued = self.queue(db, server.url)
+            part = Path(root) / 'downloads' / f".partial-{queued['id']}.part"
             def pause_later():
-                while not transfer.is_active(('item', queued['id'])):
+                # Pause once some bytes are checkpointed, however long start-up takes.
+                deadline = time.monotonic() + 30
+                while transfer.partial_progress(part)[0] < 1_000_000 and time.monotonic() < deadline:
                     time.sleep(0.01)
-                time.sleep(0.3)
                 transfer.request_pause(('item', queued['id']))
             threading.Thread(target=pause_later, daemon=True).start()
             with patch('media_intake.core.check_download'), self.assertRaises(transfer.TransferPaused):
@@ -185,12 +187,13 @@ class QueueIntegrationTests(unittest.TestCase):
             self.assertEqual(result['sha256'], hashlib.sha256(PAYLOAD).hexdigest())
             self.assertFalse(list((Path(root) / 'downloads').glob('.partial-*')))
 
-            server.delay = 0.01
+            server.delay = 0.05
             second = self.queue(db, server.url + '?2')
+            second_part = Path(root) / 'downloads' / f".partial-{second['id']}.part"
             def cancel_later():
-                while not transfer.is_active(('item', second['id'])):
+                deadline = time.monotonic() + 30
+                while transfer.partial_progress(second_part)[0] < 1_000_000 and time.monotonic() < deadline:
                     time.sleep(0.01)
-                time.sleep(0.2)
                 transfer.request_cancel(('item', second['id']))
             threading.Thread(target=cancel_later, daemon=True).start()
             with self.assertRaises(transfer.TransferCancelled):

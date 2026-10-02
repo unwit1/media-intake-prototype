@@ -3321,10 +3321,12 @@ class MediaIntakeApp:
         row = self.db.execute('SELECT state FROM items WHERE id=?', (item_id,)).fetchone()
         if row and row['state'] in ('paused', 'failed', 'queued', 'needs_shortlink'):
             folder = Path(self.library_folder.get().strip() or self.data_root / 'downloads')
+            from .streams import discard_stream_partial
             from .torrents import discard_torrent_partial
             for candidate in {folder, self.data_root / 'downloads'}:
                 transfer.discard_partial(candidate / f'.partial-{item_id}.part')
                 discard_torrent_partial(candidate, item_id)
+                discard_stream_partial(candidate / f'.partial-{item_id}.hls')
             self.db.execute("""UPDATE items SET state='cancelled', error=NULL, progress_bytes=NULL,
                 progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?""", (item_id,))
             self.db.commit()

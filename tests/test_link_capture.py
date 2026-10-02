@@ -15,6 +15,8 @@ class LinkCaptureTests(unittest.TestCase):
         self.assertEqual(classify_link('https://ouo.io/abc'), ('shortlink', None))
         self.assertEqual(classify_link('https://files.example/a/Book%20One.epub'), ('direct', '.epub'))
         self.assertEqual(classify_link('https://files.example/a/tool.tar.gz'), ('direct', '.tar.gz'))
+        self.assertEqual(classify_link('https://cdn.example/v/master.m3u8?token=1'), ('stream', '.mp4'))
+        self.assertEqual(queue_item({'url': 'https://cdn.example/v/Talk.m3u8', 'kind': 'stream', 'format': '.mp4'})['stream'], 'hls')
         for page in ('https://example.com/article', 'https://github.com/a/b', 'ftp://x.example/a.epub',
                      'https://user:pw@files.example/a.epub', 'not a link'):
             self.assertIsNone(classify_link(page), page)

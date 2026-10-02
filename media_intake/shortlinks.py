@@ -77,7 +77,9 @@ def is_shortlink(url):
     if parts.scheme not in ('http', 'https') or not host or _host_in(host, NOT_SHORTLINKS):
         return False
     from .file_hosts import FILE_HOSTS, MANUAL_HOSTS
-    if host in FILE_HOSTS or host.removeprefix('www.') in MANUAL_HOSTS:
+    # The userscript also matches file hosts (and their CDN subdomains) for its
+    # auto-download extras; those are files, not ad gates.
+    if _host_in(host, set(FILE_HOSTS) | set(MANUAL_HOSTS)):
         return False
     includes, hosts = _rules()
     if _host_in(host, hosts):

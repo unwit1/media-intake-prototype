@@ -30,7 +30,8 @@ class DetectionTests(unittest.TestCase):
         for url in ('https://ouo.io/abc', 'https://linkvertise.com/1/x', 'https://shrinkme.io/x',
                     'https://clk.sh/abc', 'https://maloma3arbi.blogspot.com/p'):
             self.assertTrue(shortlinks.is_shortlink(url), url)
-        for url in ('https://pixeldrain.com/u/x', 'https://www.mediafire.com/file/x', 'https://youtube.com/watch',
+        for url in ('https://pixeldrain.com/u/x', 'https://www.mediafire.com/file/x',
+                    'https://download42.mediafire.com/t/a.cbz', 'https://cdn.gofile.io/x', 'https://youtube.com/watch',
                     'https://www.google.com/search?q=x', 'https://github.com/a/b', 'https://getcomics.org/x',
                     'https://example.com/a.epub', 'ftp://ouo.io/x'):
             self.assertFalse(shortlinks.is_shortlink(url), url)

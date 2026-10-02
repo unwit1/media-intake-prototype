@@ -100,14 +100,15 @@ class BatchStressTests(unittest.TestCase):
                     with patch('media_intake.watched.search_openlibrary_metadata', side_effect=lambda title, **_: [by_title[title]]), \
                          patch('media_intake.watched._search_candidates', side_effect=candidates):
                         process_due_watches(db, root + '/library', force=True)
-                    self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE state='downloaded'").fetchone()[0], 48)
+                    # The transfer engine retries the transient HTTP 500 itself.
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE state='downloaded'").fetchone()[0], 49)
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM watched_items WHERE state='upcoming'").fetchone()[0], 8)
                     self.assertLessEqual(peak, 4)
                     # SQLite setup can serialize tiny local transfers. The
                     # dedicated watcher concurrency test verifies overlap.
-                    self.assertTrue(db.execute("SELECT last_error FROM watched_items WHERE source_url LIKE '%OL1000W'").fetchone()[0])
-                # Restart the application connection; failures retry, successful
-                # downloads and duplicate series are not downloaded again.
+                    self.assertFalse(db.execute("SELECT last_error FROM watched_items WHERE source_url LIKE '%OL1000W'").fetchone()[0])
+                # Restart the application connection; successful downloads and
+                # duplicate series are not downloaded again.
                 with closing(connect(root)) as db:
                     with patch('media_intake.watched.search_openlibrary_metadata', side_effect=lambda title, **_: [by_title[title]]), \
                          patch('media_intake.watched._search_candidates', side_effect=candidates):

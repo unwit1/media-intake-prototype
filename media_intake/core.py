@@ -35,7 +35,8 @@ EXTENSIONS = (BOOK_FORMATS | AUDIO_FORMATS | COMIC_FORMATS | VIDEO_FORMATS |
               GAME_FORMATS | GAME_PACKAGE_FORMATS | SOFTWARE_FORMATS)
 ATOM = '{http://www.w3.org/2005/Atom}'
 DC = '{http://purl.org/dc/terms/}'
-MAX_FILE_BYTES = 1024 * 1024 * 1024
+# Generous ceiling; the transfer engine also checks free disk space first.
+MAX_FILE_BYTES = 256 * 1024 * 1024 * 1024
 
 
 def clean(value):
@@ -329,6 +330,77 @@ def _auto_deliver_to_kindle(db, item_id, fallback_root):
     return maybe_auto_send_to_kindle(db, item_id, data_root)
 
 
+class ShortlinkPending(ValueError):
+    """The queued link is a shortlink that needs the user-operated helper."""
+
+
+DOWNLOAD_DEFAULTS = {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4}
+
+
+def download_settings(db):
+    settings = dict(DOWNLOAD_DEFAULTS)
+    for key, default in DOWNLOAD_DEFAULTS.items():
+        row = db.execute('SELECT value FROM gui_settings WHERE key=?', (f'download_{key}',)).fetchone()
+        try:
+            settings[key] = max(0, int(row['value'])) if row else default
+        except (TypeError, ValueError):
+            settings[key] = default
+    settings['connections'] = min(16, max(1, settings['connections']))
+    settings['retries'] = min(10, settings['retries'])
+    return settings
+
+
+def _resolve_download_link(db, item_id, item):
+    """Follow shortlinks and file-host share pages to the actual file, automatically."""
+    from .file_hosts import FILE_HOSTS, ManualDownloadRequired, resolve_hosted_file
+    from .shortlinks import is_shortlink
+    url = item.get('resolved_url') or item['url']
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or '').casefold()
+    shortlink = is_shortlink(url)
+    if parts.scheme != 'https' or not (shortlink or host in FILE_HOSTS):
+        return item
+    if not shortlink and (item.get('file_host') or item.get('resolved_url')):
+        return item  # A connector or earlier run already resolved the host's file URL.
+    update_download_progress(db, item_id, None, None,
+                             'Resolving shortlink' if shortlink else 'Resolving file host link')
+    try:
+        hosted = resolve_hosted_file(url, EXTENSIONS)
+    except ManualDownloadRequired as exc:
+        if shortlink:
+            raise ShortlinkPending(f'{exc}') from exc
+        raise
+    if not hosted:
+        raise ValueError('The link did not lead to a supported file')
+    chosen = next((file for file in hosted if file.format == item.get('format')), hosted[0])
+    item = dict(item, resolved_url=chosen.url, format=chosen.format)
+    if chosen.shortlink:
+        item['shortlink_url'] = chosen.shortlink
+    if chosen.share_url and chosen.share_url != chosen.url:
+        item['file_host_share_url'] = chosen.share_url
+    if chosen.filename:
+        item.setdefault('source_filename', chosen.filename)
+    for key, value in (('expected_size', chosen.size), ('expected_sha256', chosen.sha256)):
+        if value and item.get(key) is None:
+            item[key] = value
+    db.execute('UPDATE items SET metadata=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (json.dumps(item, ensure_ascii=False), item_id))
+    db.commit()
+    return item
+
+
+def resolve_shortlink_item(db, item_id, final_url):
+    """Attach a destination captured by the shortlink helper to a queued item."""
+    row = db.execute('SELECT metadata FROM items WHERE id=?', (item_id,)).fetchone()
+    if row is None:
+        raise ValueError('Unknown queue ID')
+    item = json.loads(row['metadata'])
+    item['resolved_url'] = final_url
+    db.execute("UPDATE items SET metadata=?, state='queued', error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+               (json.dumps(item, ensure_ascii=False), item_id))
+    db.commit()
+
+
 def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
     if row is None: raise ValueError('Unknown queue ID')
@@ -391,60 +463,73 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
             db.commit()
             raise
     folder = Path(destination) if destination else Path(root) / 'downloads'
-    digest, total = hashlib.sha256(), 0
-    tmp = None
+    part = folder / f'.partial-{item_id}.part'
+    key = ('item', item_id)
+    from . import transfer
+    control = transfer.control_for(key)
     try:
-        folder.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix='.partial-', dir=folder)
-        with os.fdopen(fd, 'wb') as out:
-            req = urllib.request.Request(item['url'], headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
-            with open_url(req, timeout=60) as response:
-                content_type = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
-                if content_type in ('text/html', 'application/xhtml+xml'):
-                    raise ValueError('URL returned an HTML page, not a media file')
-                try:
-                    expected = int(response.headers.get('Content-Length') or '')
-                    if expected <= 0:
-                        expected = None
-                except ValueError:
-                    expected = None
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk: break
-                    total += len(chunk)
-                    if total > max_bytes: raise ValueError('File exceeds size limit')
-                    digest.update(chunk)
-                    out.write(chunk)
-                    update_download_progress(db, item_id, total, expected, 'Downloading file')
-        if total:
-            update_download_progress(db, item_id, total, expected, 'Validating downloaded file')
-        if not total: raise ValueError('Empty download')
-        if expected is not None and total != expected:
-            raise ValueError('Download truncated: byte count differs from Content-Length')
+        item = _resolve_download_link(db, item_id, item)
+        settings = download_settings(db)
+        transfer.LIMITER.set_rate(settings['speed_limit_kbps'] * 1024)
+        done, _total = transfer.partial_progress(part)
+        update_download_progress(db, item_id, done or 0, _total,
+                                 'Resuming download' if done else 'Connecting')
+        result = transfer.fetch(
+            item.get('resolved_url') or item['url'], part, max_bytes=max_bytes,
+            connections=settings['connections'], retries=settings['retries'], control=control,
+            opener=lambda request, timeout: open_url(request, timeout=timeout),
+            progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message))
+        total = result.size
+        update_download_progress(db, item_id, total, total, 'Validating downloaded file')
         if item.get('expected_size') is not None and total != int(item['expected_size']):
             raise ValueError('Downloaded size differs from host metadata')
+        digest = hashlib.sha256()
+        with open(part, 'rb') as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(chunk)
         if item.get('expected_sha256') and digest.hexdigest().casefold() != str(item['expected_sha256']).casefold():
             raise ValueError('Downloaded checksum differs from host metadata')
-        check_download(tmp, item['format'])
+        check_download(part, item['format'])
         base = folder / file_name(item)
         dest = base
         if dest.exists():
             existing = hashlib.sha256(dest.read_bytes()).hexdigest()
             if existing == digest.hexdigest():
-                os.unlink(tmp)
-                dest = base
+                os.unlink(part)
             else:
                 dest = base.with_name(base.stem + f" [{digest.hexdigest()[:8]}]" + base.suffix)
-                os.replace(tmp, dest)
+                os.replace(part, dest)
         else:
-            os.replace(tmp, dest)
+            os.replace(part, dest)
         db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(dest.resolve()), digest.hexdigest(), item_id))
         db.commit()
-    except Exception as exc:
-        if tmp and os.path.exists(tmp): os.unlink(tmp)
-        db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+    except transfer.TransferPaused:
+        done, total = transfer.partial_progress(part)
+        db.execute("UPDATE items SET state='paused', error=NULL, progress_bytes=?, progress_total=?, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (done or None, total, 'Paused — resume to continue' if done else 'Paused', item_id))
         db.commit()
         raise
+    except transfer.TransferCancelled:
+        transfer.discard_partial(part)
+        db.execute("UPDATE items SET state='cancelled', error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        db.commit()
+        raise
+    except ShortlinkPending as exc:
+        db.execute("UPDATE items SET state='needs_shortlink', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+        db.commit()
+        raise
+    except Exception as exc:
+        # Keep a resumable part file (and its checkpoint) for transient failures;
+        # anything already validated as wrong is discarded.
+        if isinstance(exc, ValueError) and not isinstance(exc, transfer.TransferError):
+            transfer.discard_partial(part)
+        done, total = transfer.partial_progress(part)
+        db.execute("UPDATE items SET state='failed', error=?, progress_bytes=?, progress_total=?, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (str(exc), done or None, total if done else None, 'Partial download kept; retry resumes' if done else None, item_id))
+        db.commit()
+        raise
+    finally:
+        transfer.release_control(key)
     return _auto_deliver_to_kindle(db, item_id, root)
 
 

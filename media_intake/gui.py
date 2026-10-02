@@ -220,6 +220,8 @@ class MediaIntakeApp:
         self._scroll_regions = []
         self._watch_add_dialog = None
         self.external_dl_settings = self._load_external_download_settings()
+        self._recover_interrupted_downloads()
+        self._shortlink_target_item = None
         self._build()
         self.root.bind_all('<MouseWheel>', self._scroll_mousewheel, add='+')
         self.root.bind_all('<Button-4>', lambda event: self._scroll_mousewheel(event, units=-3), add='+')
@@ -536,7 +538,10 @@ class MediaIntakeApp:
         buttons = ttk.Frame(parent)
         buttons.pack(fill='x', pady=(8, 0))
         ttk.Button(buttons, text='Refresh', command=self.refresh_queue).pack(side='left')
-        ttk.Button(buttons, text='Download selected', command=self.download_selected).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Download / resume selected', command=self.download_selected).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Pause', command=self.pause_selected_download).pack(side='left')
+        ttk.Button(buttons, text='Cancel', command=self.cancel_selected_download).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Pause all', command=self.pause_all_downloads).pack(side='left')
         self.download_batch_button = ttk.Button(
             buttons, text='Download queued (up to 4 at once)',
             command=self.download_queued)
@@ -625,7 +630,7 @@ class MediaIntakeApp:
         pages.add(kindle_page, text='Kindle')
         pages.add(profiles_page, text='Profiles')
         external_page, external_content = self._scrollable_frame(pages, padding=8)
-        pages.add(external_page, text='Jackett & download managers')
+        pages.add(external_page, text='Downloads')
         self._build_external_download_settings(external_content)
         self._build_irc_sources(irc_content)
         self._build_metadata_api_settings(metadata_content)
@@ -2863,13 +2868,44 @@ class MediaIntakeApp:
 
     def _build_external_download_settings(self, parent):
         from .external_downloaders import DOWNLOADER_LABELS
-        ttk.Label(parent, text='Jackett and external download managers',
+        from .core import download_settings
+        from . import transfer
+        engine = ttk.LabelFrame(parent, text='Download engine', padding=8)
+        engine.pack(fill='x', pady=(0, 10))
+        current = download_settings(self.db)
+        engine_vars = {key: tk.StringVar(value=str(current[key])) for key in current}
+        for row, (label, key, low, high) in enumerate((
+                ('Connections per file (1–16)', 'connections', 1, 16),
+                ('Speed limit, KB/s (0 = unlimited)', 'speed_limit_kbps', 0, 10_000_000),
+                ('Retries per connection', 'retries', 0, 10))):
+            ttk.Label(engine, text=label).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
+            ttk.Spinbox(engine, from_=low, to=high, textvariable=engine_vars[key], width=12).grid(
+                row=row, column=1, sticky='w', pady=4)
+        engine_status = tk.StringVar(value='Large files download over several connections, resume after '
+                                     'pauses, errors and restarts, and stay within the speed limit.')
+        def save_engine():
+            for key, variable in engine_vars.items():
+                try:
+                    value = max(0, int(variable.get()))
+                except ValueError:
+                    engine_status.set(f'{key.replace("_", " ")} must be a whole number')
+                    return
+                set_setting(self.db, f'download_{key}', value)
+            saved = download_settings(self.db)
+            transfer.LIMITER.set_rate(saved['speed_limit_kbps'] * 1024)
+            engine_status.set('Saved; the speed limit applies to running downloads now')
+        ttk.Button(engine, text='Save download engine settings', command=save_engine).grid(
+            row=3, column=0, sticky='w', pady=(6, 0))
+        ttk.Label(engine, textvariable=engine_status, wraplength=700, justify='left').grid(
+            row=4, column=0, columnspan=2, sticky='w', pady=(4, 0))
+        ttk.Label(parent, text='Jackett and optional external download managers',
                   font=('TkDefaultFont', 11, 'bold')).pack(anchor='w')
         ttk.Label(parent, wraplength=900, justify='left', text=(
-            'Jackett searches the indexers you configured in your own Jackett instance (choose "Jackett (torrents)" '
-            'on the Search tab). Torrent and magnet results go to Gopeed; direct files can go to Gopeed, Xtreme '
-            'Download Manager or a custom command (for example FileCxx). Hand-offs use the same rights-evidence '
-            'approval as built-in downloads: Jackett results need jackett.approved_for_download = true.'
+            'Direct files use the built-in engine above. Jackett searches the indexers you configured in your own '
+            'Jackett instance (choose "Jackett (torrents)" on the Search tab). An external manager is optional: '
+            'torrent and magnet results can go to Gopeed, and any file can go to Xtreme Download Manager or a '
+            'custom command. Hand-offs use the same rights-evidence approval as built-in downloads; Jackett results '
+            'need jackett.approved_for_download = true.'
         )).pack(anchor='w', pady=(4, 10))
         settings = self.external_dl_settings
         variables = {key: tk.StringVar(value=str(settings.get(key) or ''))
@@ -3078,6 +3114,77 @@ class MediaIntakeApp:
             self._done(message + '; review the fields, then Add to queue or Send to download manager')
         self._worker('Reading resolved link…', action, finished)
 
+    def _open_shortlink_for_item(self, item_id):
+        row = self.db.execute('SELECT metadata FROM items WHERE id=?', (item_id,)).fetchone()
+        if not row:
+            return
+        url = json.loads(row['metadata']).get('url')
+        self._shortlink_target_item = item_id
+        self._open_shortlink_browser(url)
+
+    def _select_queue_item(self, item_id):
+        if self.queue_view.exists(str(item_id)):
+            self.queue_view.selection_set(str(item_id))
+            return
+        for row in self.queue_view.get_children():
+            if str(self.queue_view.set(row, 'id')) == str(item_id):
+                self.queue_view.selection_set(row)
+                return
+
+    def _selected_queue_id(self):
+        selected = self.queue_view.selection()
+        if not selected:
+            return None
+        value = self.queue_view.set(selected[0], 'id') or selected[0]
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def pause_selected_download(self):
+        from . import transfer
+        item_id = self._selected_queue_id()
+        if item_id is None:
+            return
+        if transfer.request_pause(('item', item_id)):
+            self._done('Pausing… progress is kept')
+        else:
+            self._done('That download is not running')
+
+    def pause_all_downloads(self):
+        from . import transfer
+        paused = sum(transfer.request_pause(('item', int(row['id'])))
+                     for row in self.queue_rows if row.get('state') == 'downloading')
+        self._done(f'Pausing {paused} download(s)' if paused else 'No downloads are running')
+
+    def cancel_selected_download(self):
+        from . import transfer
+        item_id = self._selected_queue_id()
+        if item_id is None:
+            return
+        if transfer.request_cancel(('item', item_id)):
+            self._done('Cancelling…')
+            return
+        row = self.db.execute('SELECT state FROM items WHERE id=?', (item_id,)).fetchone()
+        if row and row['state'] in ('paused', 'failed', 'queued', 'needs_shortlink'):
+            folder = Path(self.library_folder.get().strip() or self.data_root / 'downloads')
+            for candidate in {folder, self.data_root / 'downloads'}:
+                transfer.discard_partial(candidate / f'.partial-{item_id}.part')
+            self.db.execute("""UPDATE items SET state='cancelled', error=NULL, progress_bytes=NULL,
+                progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?""", (item_id,))
+            self.db.commit()
+            self.refresh_queue()
+            self._done('Cancelled; partial data removed')
+
+    def _recover_interrupted_downloads(self):
+        """Transfers cut off by closing the app resume from their saved checkpoints."""
+        self.db.execute("""UPDATE items SET state='queued', progress_message='Interrupted; resumes from saved progress',
+            updated_at=CURRENT_TIMESTAMP WHERE state='downloading'""")
+        self.db.commit()
+        from . import transfer
+        from .core import download_settings
+        transfer.LIMITER.set_rate(download_settings(self.db)['speed_limit_kbps'] * 1024)
+
     def _open_shortlink_browser(self, url):
         from .shortlink_browser import read_captures
         if self._shortlink_browser_process and self._shortlink_browser_process.poll() is None:
@@ -3108,7 +3215,14 @@ class MediaIntakeApp:
     def _poll_shortlink_captures(self):
         from .shortlink_browser import read_captures
         records = read_captures(self.data_root / 'browser-captures', self._shortlink_captures_seen)
-        if records:
+        if records and self._shortlink_target_item is not None:
+            from .core import resolve_shortlink_item
+            item_id, self._shortlink_target_item = self._shortlink_target_item, None
+            resolve_shortlink_item(self.db, item_id, records[-1]['final_url'])
+            self.refresh_queue()
+            self._select_queue_item(item_id)
+            self.download_selected()
+        elif records:
             self._apply_resolved_link(records[-1]['final_url'])
         process = self._shortlink_browser_process
         if process and process.poll() is None:
@@ -5890,7 +6004,12 @@ class MediaIntakeApp:
                           for row in succeeded_rows)
             emailed = sum(self._row_kindle_delivery(row).get('status') == 'sent_unconfirmed'
                           for row in succeeded_rows)
+            waiting = [row for row in list_items(self.db, state='needs_shortlink')
+                       if int(row['id']) in {item_id for item_id, _result in outcomes}]
+            if waiting:
+                self._open_shortlink_for_item(int(waiting[0]['id']))
             self._done(f'Downloaded {succeeded} queued file(s)' +
+                       (f'; {len(waiting)} shortlink(s) need the helper' if waiting else '') +
                        (f'; copied {arrived} to Kindle' if arrived else '') +
                        (f'; emailed {emailed} to Kindle (arrival unconfirmed)' if emailed else '') +
                        (f'; {failed} failed' if failed else ''))
@@ -5944,13 +6063,28 @@ class MediaIntakeApp:
                 return
         destination = self.library_folder.get().strip() or None
         data_root = self.data_root
+        from . import transfer
+        from .core import ShortlinkPending
+        if transfer.is_active(('item', item_id)):
+            self._done('That download is already running')
+            return
         def action():
             db = connect(data_root)
             try: return download(db, item_id, data_root, destination=destination)
+            except (transfer.TransferPaused, transfer.TransferCancelled) as exc:
+                return {'_stopped': str(exc)}
+            except ShortlinkPending as exc:
+                return {'_shortlink': str(exc)}
             finally: db.close()
 
         def completed(result):
             self.refresh_queue()
+            if result.get('_stopped'):
+                self._done(result['_stopped'])
+                return
+            if result.get('_shortlink'):
+                self._open_shortlink_for_item(item_id)
+                return
             delivery = self._row_kindle_delivery(result)
             if delivery.get('status') == 'arrived':
                 self._done(f"Copied to Kindle: {self._row_title(result)}")

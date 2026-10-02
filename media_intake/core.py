@@ -344,7 +344,8 @@ class ShortlinkPending(ValueError):
     """The queued link is a shortlink that needs the user-operated helper."""
 
 
-DOWNLOAD_DEFAULTS = {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4, 'parallel': 6, 'autostart': 0}
+DOWNLOAD_DEFAULTS = {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4, 'parallel': 6, 'autostart': 0,
+                     'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0}
 
 
 def download_settings(db):
@@ -359,6 +360,7 @@ def download_settings(db):
     settings['retries'] = min(10, settings['retries'])
     settings['parallel'] = min(8, max(1, settings['parallel']))
     settings['autostart'] = 1 if settings['autostart'] else 0
+    settings['seed_ratio_pct'] = min(10_000, settings['seed_ratio_pct'])
     return settings
 
 
@@ -567,11 +569,15 @@ def _download_torrent(db, item_id, item, root, destination):
     if control is None:
         raise ValueError('This item is already downloading')
     try:
+        settings = download_settings(db)
+        torrents.set_upload_limit(settings['upload_limit_kbps'] * 1024)
+        torrents.SEEDER.configure(lambda: connect(root))
         update_download_progress(db, item_id, None, None, 'Starting torrent')
         path, _total = torrents.download_torrent(
             item, folder, item_id, control=control,
             progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message),
-            fetch=lambda url: http_get(url, max_bytes=torrents.MAX_TORRENT_FILE_BYTES)[0])
+            fetch=lambda url: http_get(url, max_bytes=torrents.MAX_TORRENT_FILE_BYTES)[0],
+            seed={'ratio': settings['seed_ratio_pct'] / 100, 'minutes': settings['seed_minutes']})
         checksum = None
         if path.is_file():
             digest = hashlib.sha256()
@@ -579,8 +585,10 @@ def _download_torrent(db, item_id, item, root, destination):
                 for chunk in iter(lambda: source.read(1024 * 1024), b''):
                     digest.update(chunk)
             checksum = digest.hexdigest()
-        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                    (str(path.resolve()), checksum, item_id))
+        if not torrents.SEEDER.is_seeding(item_id):
+            db.execute('UPDATE items SET progress_message=NULL WHERE id=?', (item_id,))
         db.commit()
     except transfer.TransferPaused:
         db.execute("UPDATE items SET state='paused', error=NULL, progress_message='Paused — resume to continue', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))

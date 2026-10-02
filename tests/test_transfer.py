@@ -212,12 +212,14 @@ class QueueIntegrationTests(unittest.TestCase):
     def test_settings_apply_connections_and_speed_limit(self):
         with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
             self.assertEqual(core.download_settings(db), {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4,
-                                                          'parallel': 6, 'autostart': 0})
+                                                          'parallel': 6, 'autostart': 0,
+                                                          'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0})
             db.executemany('INSERT INTO gui_settings(key,value) VALUES(?,?)',
                            [('download_connections', '40'), ('download_speed_limit_kbps', '512'),
                             ('download_retries', 'x'), ('download_parallel', '0'), ('download_autostart', '5')])
             self.assertEqual(core.download_settings(db), {'connections': 16, 'speed_limit_kbps': 512, 'retries': 4,
-                                                          'parallel': 1, 'autostart': 1})
+                                                          'parallel': 1, 'autostart': 1,
+                                                          'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0})
 
     def test_the_same_item_cannot_download_twice_at_once(self):
         with RangeServer() as server, tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:

@@ -1,5 +1,6 @@
 """Native torrent downloads through a fake libtorrent, plus queue integration."""
 from contextlib import closing
+import json
 from pathlib import Path
 import tempfile
 import types
@@ -23,6 +24,8 @@ class FakeStatus:
         self.name = 'Fixture Pack'
         self.is_finished = handle.state == 'finished'
         self.errc = None
+        self.all_time_upload = handle.uploaded
+        self.upload_rate = 500_000 if handle.state == 'finished' else 0
 
 
 class FakeHandle:
@@ -32,8 +35,11 @@ class FakeHandle:
         self.state = 'downloading_metadata'
         self.steps = steps
         self.paused = False
+        self.uploaded = 0
 
     def status(self):
+        if self.state == 'finished':
+            self.uploaded += 1_000_000  # peers download from us while seeding
         if not self.paused:
             if self.state == 'downloading_metadata':
                 self.state = 'downloading'
@@ -168,10 +174,35 @@ class TorrentEngineTests(unittest.TestCase):
                 torrents.download_torrent({'url': MAGNET}, tempfile.gettempdir(), 1, control=transfer.Control(),
                                           progress=None, fetch=None)
 
+    def test_simultaneous_completions_share_one_seeding_thread(self):
+        import threading
+        seeder = torrents.Seeder(interval=0.01)
+        lt = fake_lt()
+        session = lt.session({})
+        errors = []
+        def add(item_id):
+            try:
+                handle = FakeHandle(session, FakeParams('x'), 1)
+                handle.state = 'finished'
+                seeder.add(item_id, lt, session, handle, tempfile.gettempdir(), 1000.0, 0)
+            except Exception as exc:  # pragma: no cover - the regression being guarded
+                errors.append(exc)
+        threads = [threading.Thread(target=add, args=(n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(seeder.seeding_ids(), list(range(8)))
+        for n in range(8):
+            seeder.stop(n)
+
 
 class TorrentQueueTests(unittest.TestCase):
     def setUp(self):
         torrents.reset_session()
+        torrents.SEEDER.run_thread = False
+        self.addCleanup(setattr, torrents.SEEDER, 'run_thread', True)
         self.addCleanup(torrents.reset_session)
 
     def test_magnets_validate_and_download_through_the_queue(self):
@@ -183,11 +214,80 @@ class TorrentQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db, \
                 patch('media_intake.torrents.load_libtorrent', return_value=lt), \
                 patch('media_intake.torrents.time.sleep'):
+            db.executemany('INSERT INTO gui_settings(key,value) VALUES(?,?)',
+                           [('download_seed_ratio_pct', '0'), ('download_seed_minutes', '0')])
+            db.commit()
             queued = enqueue(db, {'title': 'Fixture', 'url': MAGNET, 'format': 'torrent', 'source': 'Jackett'})
             result = download(db, queued['id'], root)
             self.assertEqual(result['state'], 'downloaded')
             self.assertEqual(Path(result['file_path']).name, 'Fixture Pack')
             self.assertIsNone(result['sha256'])
+            self.assertFalse(torrents.SEEDER.is_seeding(queued['id']))  # seeding switched off
+            self.assertEqual(lt.removed, [0])
+
+    def test_completed_torrents_seed_to_their_ratio_then_stop(self):
+        lt = fake_lt()
+        with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db, \
+                patch('media_intake.torrents.load_libtorrent', return_value=lt), \
+                patch('media_intake.torrents.time.sleep'):
+            db.executemany('INSERT INTO gui_settings(key,value) VALUES(?,?)',
+                           [('download_seed_ratio_pct', '150'), ('download_upload_limit_kbps', '64')])
+            db.commit()
+            queued = enqueue(db, {'title': 'Fixture', 'url': MAGNET, 'format': 'torrent', 'source': 'Jackett'})
+            result = download(db, queued['id'], root)
+            item_id = queued['id']
+            self.assertEqual(result['state'], 'downloaded')
+            self.assertTrue(torrents.SEEDER.is_seeding(item_id))
+            self.assertEqual(lt.removed, [])  # still in the session
+            self.assertIn({'download_rate_limit': 0, 'upload_rate_limit': 65536}, lt.sessions[0].applied)
+            metadata = json.loads(db.execute('SELECT metadata FROM items WHERE id=?', (item_id,)).fetchone()[0])
+            self.assertEqual((metadata['seeding']['ratio'], metadata['seeding']['minutes']), (1.5, 1440))
+            self.assertTrue((Path(root) / 'downloads' / f'.seed-{item_id}.fastresume').exists())
+            torrents.SEEDER.tick()
+            message = db.execute('SELECT progress_message FROM items WHERE id=?', (item_id,)).fetchone()[0]
+            self.assertRegex(message, r'^Seeding · ratio 0\.\d\d/1\.50 · 7 peers · 488\.3 KB/s up · 23h 5\dm left$')
+            for _ in range(5):
+                torrents.SEEDER.tick()
+            self.assertFalse(torrents.SEEDER.is_seeding(item_id))
+            self.assertEqual(lt.removed, [0])  # removed, files kept
+            row = db.execute('SELECT state, progress_message, metadata FROM items WHERE id=?', (item_id,)).fetchone()
+            self.assertEqual(row['state'], 'downloaded')
+            self.assertRegex(row['progress_message'], r'^Seeding complete · ratio 1\.[5-9]')
+            self.assertNotIn('seeding', json.loads(row['metadata']))
+            self.assertFalse((Path(root) / 'downloads' / f'.seed-{item_id}.fastresume').exists())
+
+    def test_time_limit_stop_and_resume_after_restart(self):
+        lt = fake_lt()
+        with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db, \
+                patch('media_intake.torrents.load_libtorrent', return_value=lt), \
+                patch('media_intake.torrents.time.sleep'):
+            queued = enqueue(db, {'title': 'Fixture', 'url': MAGNET, 'format': 'torrent', 'source': 'Jackett'})
+            download(db, queued['id'], root)
+            item_id = queued['id']
+            # Simulate an app restart: the session is gone, the saved seeding state is not.
+            torrents.reset_session()
+            self.assertFalse(torrents.SEEDER.is_seeding(item_id))
+            self.assertEqual(torrents.resume_seeding(db, lambda: connect(root), lt=lt), 1)
+            self.assertTrue(torrents.SEEDER.is_seeding(item_id))
+            self.assertEqual(lt.sessions[-1].handle.params.source, 'resume')
+            self.assertEqual(torrents.resume_seeding(db, lambda: connect(root), lt=lt), 0)  # no duplicates
+            # Past the time limit: seeding stops even below the ratio.
+            torrents.SEEDER.entries[item_id]['started'] -= 1441 * 60
+            torrents.SEEDER.entries[item_id]['ratio'] = 100.0
+            torrents.SEEDER.tick()
+            self.assertFalse(torrents.SEEDER.is_seeding(item_id))
+            self.assertTrue(torrents.SEEDER.stop(item_id) is False)
+
+    def test_stop_seeding_on_request(self):
+        lt = fake_lt()
+        with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db, \
+                patch('media_intake.torrents.load_libtorrent', return_value=lt), \
+                patch('media_intake.torrents.time.sleep'):
+            queued = enqueue(db, {'title': 'Fixture', 'url': MAGNET, 'format': 'torrent', 'source': 'Jackett'})
+            download(db, queued['id'], root)
+            self.assertTrue(torrents.SEEDER.stop(queued['id']))
+            self.assertEqual(db.execute('SELECT progress_message FROM items WHERE id=?', (queued['id'],)).fetchone()[0],
+                             'Seeding stopped')
 
 
 if __name__ == '__main__':

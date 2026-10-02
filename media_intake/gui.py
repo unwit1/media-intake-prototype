@@ -547,6 +547,7 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Pause', command=self.pause_selected_download).pack(side='left')
         ttk.Button(buttons, text='Cancel', command=self.cancel_selected_download).pack(side='left', padx=6)
         ttk.Button(buttons, text='Pause all', command=self.pause_all_downloads).pack(side='left')
+        ttk.Button(buttons, text='Stop seeding', command=self.stop_selected_seeding).pack(side='left', padx=6)
         self.download_batch_button = ttk.Button(
             buttons, text='Download queued',
             command=self.download_queued)
@@ -2886,6 +2887,13 @@ class MediaIntakeApp:
             ttk.Label(engine, text=label).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
             ttk.Spinbox(engine, from_=low, to=high, textvariable=engine_vars[key], width=12).grid(
                 row=row, column=1, sticky='w', pady=4)
+        for row, (label, key, low, high) in enumerate((
+                ('Seed torrents until ratio, % (0 = no ratio target)', 'seed_ratio_pct', 0, 10_000),
+                ('…or for at most, minutes (0 = no time limit)', 'seed_minutes', 0, 525_600),
+                ('Upload limit, KB/s (0 = unlimited)', 'upload_limit_kbps', 0, 10_000_000)), start=8):
+            ttk.Label(engine, text=label).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
+            ttk.Spinbox(engine, from_=low, to=high, textvariable=engine_vars[key], width=12).grid(
+                row=row, column=1, sticky='w', pady=4)
         engine_status = tk.StringVar(value='Large files download over several connections, resume after '
                                      'pauses, errors and restarts, and stay within the speed limit.')
         def save_engine():
@@ -2900,9 +2908,11 @@ class MediaIntakeApp:
                 set_setting(self.db, f'download_{key}', value)
             saved = download_settings(self.db)
             transfer.LIMITER.set_rate(saved['speed_limit_kbps'] * 1024)
+            from .torrents import set_upload_limit
+            set_upload_limit(saved['upload_limit_kbps'] * 1024)
             engine_status.set('Saved; the speed limit applies to running downloads now')
         ttk.Button(engine, text='Save download engine settings', command=save_engine).grid(
-            row=3, column=0, sticky='w', pady=(6, 0))
+            row=11, column=0, sticky='w', pady=(6, 0))
         autostart = tk.BooleanVar(value=bool(current['autostart']))
         def save_autostart():
             set_setting(self.db, 'download_autostart', 1 if autostart.get() else 0)
@@ -2917,7 +2927,7 @@ class MediaIntakeApp:
                                                     '1' if self.clipboard_capture.get() else '0')).grid(
             row=5, column=0, columnspan=2, sticky='w', pady=(8, 0))
         ttk.Label(engine, textvariable=engine_status, wraplength=700, justify='left').grid(
-            row=4, column=0, columnspan=2, sticky='w', pady=(4, 0))
+            row=12, column=0, columnspan=2, sticky='w', pady=(4, 0))
         ttk.Label(parent, text='Jackett and optional external download managers',
                   font=('TkDefaultFont', 11, 'bold')).pack(anchor='w')
         ttk.Label(parent, wraplength=900, justify='left', text=(
@@ -3283,6 +3293,17 @@ class MediaIntakeApp:
         else:
             self._done('That download is not running')
 
+    def stop_selected_seeding(self):
+        from .torrents import SEEDER
+        item_id = self._selected_queue_id()
+        if item_id is None:
+            return
+        if SEEDER.stop(item_id):
+            self.refresh_queue()
+            self._done('Seeding stopped; the downloaded files are kept')
+        else:
+            self._done('That item is not seeding')
+
     def pause_all_downloads(self):
         from . import transfer
         paused = sum(transfer.request_pause(('item', int(row['id'])))
@@ -3317,7 +3338,16 @@ class MediaIntakeApp:
         self.db.commit()
         from . import transfer
         from .core import download_settings
-        transfer.LIMITER.set_rate(download_settings(self.db)['speed_limit_kbps'] * 1024)
+        settings = download_settings(self.db)
+        transfer.LIMITER.set_rate(settings['speed_limit_kbps'] * 1024)
+        from . import torrents
+        torrents.set_upload_limit(settings['upload_limit_kbps'] * 1024)
+        if torrents.available():
+            data_root = self.data_root
+            try:
+                torrents.resume_seeding(self.db, lambda: connect(data_root))
+            except Exception:
+                self.logger.exception('Could not resume torrent seeding')
 
     def _open_shortlink_browser(self, url):
         from .shortlink_browser import read_captures

@@ -70,9 +70,18 @@ pip install -r requirements-torrent.txt
 The torrent engine uses DHT, local peer discovery and UPnP/NAT-PMP. Progress shows
 peers, speed and time left. Pause keeps fast-resume data
 (`.partial-<queue id>.fastresume`), cancel deletes partial files, and the speed limit
-applies. Transfers stop when complete, with no seeding. If there is no progress for
-15 minutes, the item fails with its progress kept, and retrying resumes it. Without
-libtorrent, torrent results go to an external manager (Gopeed) instead.
+applies. If there is no progress for 15 minutes, the item fails with its progress
+kept, and retrying resumes it. Without libtorrent, torrent results go to an external
+manager (Gopeed) instead.
+
+**Seeding.** A finished torrent is marked *downloaded* straight away and then seeds in
+the background. It stops at whichever comes first: a share ratio (default 100%,
+meaning you upload as much as you downloaded) or a time limit (default 24 hours).
+Both, plus an upload speed limit, are under Settings → Downloads. Setting the ratio
+and the time limit both to 0 turns seeding off. The queue's progress column shows the
+ratio, peers, upload speed and time left. *Stop seeding* on the Queue tab ends it early
+and keeps the files. Seeding state (`.seed-<queue id>.fastresume`) survives restarts,
+so unfinished seeding continues when the app opens again.
 
 ## Jackett
 

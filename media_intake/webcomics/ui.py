@@ -37,6 +37,7 @@ class WebcomicsPanel:
         ttk.Button(actions, text='Check watches now', command=lambda: app._run_watch_scan(force=True)).pack(side='left', padx=6)
         ttk.Button(actions, text='Series detail', command=self.detail).pack(side='left')
         ttk.Button(actions, text='Watch settings', command=self.settings).pack(side='left', padx=6)
+        ttk.Button(actions, text='Catalog matches', command=self.catalog_matches).pack(side='left')
         columns = ('title', 'creator', 'source', 'entries', 'archived', 'latest', 'checked', 'health')
         self.view = ttk.Treeview(parent, columns=columns, show='headings', height=13)
         widths = (190, 130, 85, 55, 65, 150, 140, 160)
@@ -100,6 +101,86 @@ class WebcomicsPanel:
     def selected(self):
         values = self.view.selection()
         return self.rows.get(values[0]) if values else None
+
+    def catalog_matches(self):
+        from . import metadata_bridge as bridge
+        source = self.selected()
+        if not source:
+            return
+        app, series_id = self.app, source['series_id']
+        credentials = {'comicvine_api_key': getattr(app, 'comicvine_api_key', ''),
+                       'taddy_user_id': getattr(app, 'taddy_user_id', ''), 'taddy_api_key': getattr(app, 'taddy_api_key', '')}
+        dialog = tk.Toplevel(app.root)
+        dialog.title(f"Catalog matches: {source['title']}")
+        dialog.geometry('900x480')
+        catalogs = bridge.available_catalogs(credentials)
+        note = tk.StringVar(value='Catalogs: ' + ', '.join(bridge.CATALOGS[key]['label'] for key in catalogs) +
+                            '. Accepted matches enrich the series on every check; the source\'s own title wins '
+                            'unless you lock one.')
+        ttk.Label(dialog, textvariable=note, wraplength=860, justify='left').pack(anchor='w', padx=12, pady=(12, 6))
+        view = ttk.Treeview(dialog, columns=('catalog', 'creators', 'score', 'status'), show='tree headings',
+                            selectmode='browse')
+        view.heading('#0', text='Catalog title')
+        view.column('#0', width=320)
+        for column, label, width in (('catalog', 'Catalog', 110), ('creators', 'Creators', 220),
+                                     ('score', 'Match', 60), ('status', 'Status', 90)):
+            view.heading(column, text=label)
+            view.column(column, width=width, anchor='w')
+        view.pack(fill='both', expand=True, padx=12)
+        def render():
+            view.delete(*view.get_children())
+            for match in bridge.matches(app.db, series_id):
+                candidate = match['candidate']
+                view.insert('', 'end', iid=str(match['id']), text=candidate.get('title'), values=(
+                    bridge.CATALOGS.get(match['provider'], {}).get('label', match['provider']),
+                    ', '.join(item['name'] for item in candidate.get('creators') or []),
+                    f"{round(match['score'] * 100)}%", match['status']))
+        def search():
+            data_root = app.data_root
+            def action():
+                from ..core import connect
+                db = connect(data_root)
+                try:
+                    return bridge.find_matches(db, series_id, catalogs, credentials)
+                finally:
+                    db.close()
+            def done(outcome):
+                render()
+                if outcome[1]:
+                    note.set('Some catalogs failed: ' + '; '.join(outcome[1]))
+            app._worker('Searching catalogs…', action, done)
+        def set_status(status):
+            selected = view.selection()
+            if selected:
+                bridge.set_match_status(app.db, int(selected[0]), status)
+                bridge.refresh_series(app.db, series_id)
+                render()
+                self.refresh()
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=8)
+        ttk.Button(bar, text='Search catalogs', command=search).pack(side='left')
+        ttk.Button(bar, text='Accept match', command=lambda: set_status('accepted')).pack(side='left', padx=6)
+        ttk.Button(bar, text='Reject match', command=lambda: set_status('rejected')).pack(side='left')
+        lock_row = ttk.Frame(dialog)
+        lock_row.pack(fill='x', padx=12, pady=(0, 12))
+        field = tk.StringVar(value='title')
+        value = tk.StringVar()
+        ttk.Label(lock_row, text='Lock field').pack(side='left')
+        ttk.Combobox(lock_row, textvariable=field, values=('title', 'description', 'cover_url', 'status'),
+                     state='readonly', width=12).pack(side='left', padx=6)
+        ttk.Entry(lock_row, textvariable=value, width=50).pack(side='left')
+        def lock():
+            if value.get().strip():
+                bridge.lock_field(app.db, series_id, field.get(), value.get().strip())
+                bridge.refresh_series(app.db, series_id)
+                self.refresh()
+        def unlock():
+            bridge.unlock_field(app.db, series_id, field.get())
+            bridge.refresh_series(app.db, series_id)
+            self.refresh()
+        ttk.Button(lock_row, text='Lock', command=lock).pack(side='left', padx=6)
+        ttk.Button(lock_row, text='Unlock', command=unlock).pack(side='left')
+        render()
 
     def settings(self):
         source = self.selected()

@@ -45,6 +45,8 @@ def migrate(db):
     for sql in SCHEMA:
         db.execute(sql)
     db.execute('INSERT OR IGNORE INTO webcomic_schema(version) VALUES(1)')
+    from .metadata_bridge import migrate as migrate_metadata_bridge
+    migrate_metadata_bridge(db)
 
 
 def event(db, source_id, kind, key=None, detail=None):

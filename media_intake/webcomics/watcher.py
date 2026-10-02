@@ -80,6 +80,9 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
     config = json.loads(source['config'])
     if config.get('series_title'):
         snapshot.series.title = config['series_title']
+    # Accepted catalog matches and user locks survive every refresh.
+    from .metadata_bridge import apply_enrichment
+    apply_enrichment(db, source['series_id'], snapshot.series)
     series_data = record(snapshot.series)
     if old_series:
         old_data = json.loads(old_series['metadata'])

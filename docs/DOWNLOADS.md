@@ -30,6 +30,12 @@ external manager is optional. Downloads only: nothing is streamed or played.
 Settings → Downloads → *Download engine*: connections per file, speed limit (KB/s,
 0 = unlimited) and retries.
 
+**Automatic queue.** With *Start queued downloads automatically* on (off by default),
+queued items start by themselves, up to *Downloads at once* (1–8, default 6). That
+includes downloads interrupted when the app last closed. If one of them is a shortlink
+that needs a click, the shortlink helper opens for it. The same item never downloads
+twice at once, whether it was started automatically, from *Download queued* or by hand.
+
 ## Shortlinks and file hosts, automatically
 
 When a queued link is a shortlink or a file-host share page (Pixeldrain, MediaFire,

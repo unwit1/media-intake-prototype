@@ -211,11 +211,26 @@ class QueueIntegrationTests(unittest.TestCase):
 
     def test_settings_apply_connections_and_speed_limit(self):
         with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
-            self.assertEqual(core.download_settings(db), {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4})
+            self.assertEqual(core.download_settings(db), {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4,
+                                                          'parallel': 6, 'autostart': 0})
             db.executemany('INSERT INTO gui_settings(key,value) VALUES(?,?)',
                            [('download_connections', '40'), ('download_speed_limit_kbps', '512'),
-                            ('download_retries', 'x')])
-            self.assertEqual(core.download_settings(db), {'connections': 16, 'speed_limit_kbps': 512, 'retries': 4})
+                            ('download_retries', 'x'), ('download_parallel', '0'), ('download_autostart', '5')])
+            self.assertEqual(core.download_settings(db), {'connections': 16, 'speed_limit_kbps': 512, 'retries': 4,
+                                                          'parallel': 1, 'autostart': 1})
+
+    def test_the_same_item_cannot_download_twice_at_once(self):
+        with RangeServer() as server, tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
+            queued = self.queue(db, server.url)
+            control = transfer.claim_control(('item', queued['id']))
+            self.assertIsNotNone(control)
+            self.assertIsNone(transfer.claim_control(('item', queued['id'])))
+            try:
+                with self.assertRaisesRegex(ValueError, 'already downloading'):
+                    download(db, queued['id'], root)
+                self.assertEqual(db.execute('SELECT state FROM items WHERE id=?', (queued['id'],)).fetchone()[0], 'queued')
+            finally:
+                transfer.release_control(('item', queued['id']))
 
     def test_shortlinks_resolve_automatically_or_wait_for_helper(self):
         from media_intake.file_hosts import HostedFile, ManualDownloadRequired

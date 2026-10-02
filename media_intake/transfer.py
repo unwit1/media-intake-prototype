@@ -105,6 +105,15 @@ def control_for(key):
         return _CONTROLS.setdefault(key, Control())
 
 
+def claim_control(key):
+    """Atomically claim a transfer slot; None when that item is already transferring."""
+    with _CONTROLS_LOCK:
+        if key in _CONTROLS:
+            return None
+        control = _CONTROLS[key] = Control()
+        return control
+
+
 def release_control(key):
     with _CONTROLS_LOCK:
         _CONTROLS.pop(key, None)

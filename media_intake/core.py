@@ -344,7 +344,7 @@ class ShortlinkPending(ValueError):
     """The queued link is a shortlink that needs the user-operated helper."""
 
 
-DOWNLOAD_DEFAULTS = {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4}
+DOWNLOAD_DEFAULTS = {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4, 'parallel': 6, 'autostart': 0}
 
 
 def download_settings(db):
@@ -357,6 +357,8 @@ def download_settings(db):
             settings[key] = default
     settings['connections'] = min(16, max(1, settings['connections']))
     settings['retries'] = min(10, settings['retries'])
+    settings['parallel'] = min(8, max(1, settings['parallel']))
+    settings['autostart'] = 1 if settings['autostart'] else 0
     return settings
 
 
@@ -434,6 +436,9 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         if not approved:
             source = source_key_for_item(item)
             raise ValueError(f'Download not approved: set {source}.approved_for_download to true in {rights_path}')
+    from .transfer import is_active
+    if is_active(('item', item_id)):
+        raise ValueError('This item is already downloading')
     if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists() \
             and urllib.parse.urlsplit(item['url']).scheme not in ('fanfic+http', 'fanfic+https'):
         return _auto_deliver_to_kindle(db, item_id, root)
@@ -479,7 +484,9 @@ def download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     part = folder / f'.partial-{item_id}.part'
     key = ('item', item_id)
     from . import transfer
-    control = transfer.control_for(key)
+    control = transfer.claim_control(key)
+    if control is None:
+        raise ValueError('This item is already downloading')
     try:
         item = _resolve_download_link(db, item_id, item)
         settings = download_settings(db)
@@ -556,7 +563,9 @@ def _download_torrent(db, item_id, item, root, destination):
     from . import torrents, transfer
     folder = Path(destination) if destination else Path(root) / 'downloads'
     key = ('item', item_id)
-    control = transfer.control_for(key)
+    control = transfer.claim_control(key)
+    if control is None:
+        raise ValueError('This item is already downloading')
     try:
         update_download_progress(db, item_id, None, None, 'Starting torrent')
         path, _total = torrents.download_torrent(

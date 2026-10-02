@@ -236,6 +236,7 @@ class MediaIntakeApp:
         self._running_book_batches = set()
         self.root.after(2500, self._resume_book_batches)
         self.root.after(2000, self._poll_clipboard)
+        self._autostart_ids = set()
 
     def _configure_logging(self):
         self.log_folder = self.data_root / 'logs'
@@ -547,7 +548,7 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Cancel', command=self.cancel_selected_download).pack(side='left', padx=6)
         ttk.Button(buttons, text='Pause all', command=self.pause_all_downloads).pack(side='left')
         self.download_batch_button = ttk.Button(
-            buttons, text='Download queued (up to 4 at once)',
+            buttons, text='Download queued',
             command=self.download_queued)
         self.download_batch_button.pack(side='left')
         ttk.Button(buttons, text='Send to download manager',
@@ -2889,6 +2890,8 @@ class MediaIntakeApp:
                                      'pauses, errors and restarts, and stay within the speed limit.')
         def save_engine():
             for key, variable in engine_vars.items():
+                if key == 'autostart':
+                    continue
                 try:
                     value = max(0, int(variable.get()))
                 except ValueError:
@@ -2900,6 +2903,14 @@ class MediaIntakeApp:
             engine_status.set('Saved; the speed limit applies to running downloads now')
         ttk.Button(engine, text='Save download engine settings', command=save_engine).grid(
             row=3, column=0, sticky='w', pady=(6, 0))
+        autostart = tk.BooleanVar(value=bool(current['autostart']))
+        def save_autostart():
+            set_setting(self.db, 'download_autostart', 1 if autostart.get() else 0)
+        ttk.Checkbutton(engine, text='Start queued downloads automatically', variable=autostart,
+                        command=save_autostart).grid(row=6, column=0, sticky='w', pady=(4, 0))
+        ttk.Label(engine, text='Downloads at once').grid(row=7, column=0, sticky='w', pady=4)
+        ttk.Spinbox(engine, from_=1, to=8, textvariable=engine_vars['parallel'], width=12).grid(
+            row=7, column=1, sticky='w', pady=4)
         ttk.Checkbutton(engine, text='Watch the clipboard for download links (magnets, .torrent, file hosts, '
                         'shortlinks, direct files)', variable=self.clipboard_capture,
                         command=lambda: set_setting(self.db, 'clipboard_capture',
@@ -3122,6 +3133,49 @@ class MediaIntakeApp:
                 message += f' ({warning})'
             self._done(message + '; review the fields, then Add to queue or Send to download manager')
         self._worker('Reading resolved link…', action, finished)
+
+    def _autostart_downloads(self):
+        """Run queued downloads automatically, up to the parallel limit (Settings → Downloads)."""
+        from . import transfer
+        from .core import download_settings
+        settings = download_settings(self.db)
+        if not settings['autostart'] or self._download_batch_active:
+            return
+        running = {int(row['id']) for row in self.queue_rows
+                   if transfer.is_active(('item', int(row['id'])))} | self._autostart_ids
+        slots = settings['parallel'] - len(running)
+        if slots <= 0:
+            return
+        destination = self.library_folder.get().strip() or None
+        for row in list_items(self.db, state='queued'):
+            if slots <= 0:
+                break
+            item_id = int(row['id'])
+            try:
+                metadata = json.loads(row.get('metadata') or '{}')
+            except (TypeError, ValueError):
+                metadata = {}
+            if item_id in running or metadata.get('watch_search'):
+                continue
+            slots -= 1
+            self._autostart_ids.add(item_id)
+            def run(item_id=item_id):
+                try:
+                    self._download_one(self.data_root, destination, item_id)
+                finally:
+                    try:
+                        self.root.after(0, lambda: self._autostart_finished(item_id))
+                    except (RuntimeError, tk.TclError):
+                        pass
+            threading.Thread(target=run, daemon=True).start()
+
+    def _autostart_finished(self, item_id):
+        self._autostart_ids.discard(item_id)
+        self.refresh_queue()
+        row = self.db.execute('SELECT state FROM items WHERE id=?', (item_id,)).fetchone()
+        helper = self._shortlink_browser_process
+        if row and row['state'] == 'needs_shortlink' and not (helper and helper.poll() is None):
+            self._open_shortlink_for_item(item_id)
 
     def _poll_clipboard(self):
         try:
@@ -6075,6 +6129,8 @@ class MediaIntakeApp:
         if not item_ids:
             messagebox.showinfo('Media Intake', 'There are no queued files to download.')
             return
+        from .core import download_settings
+        parallel = download_settings(self.db)['parallel']
         self._download_batch_active = True
         self.download_batch_button.configure(state='disabled')
         data_root = self.data_root
@@ -6082,7 +6138,7 @@ class MediaIntakeApp:
 
         def action():
             outcomes = []
-            with ThreadPoolExecutor(max_workers=min(4, len(item_ids))) as pool:
+            with ThreadPoolExecutor(max_workers=min(parallel, len(item_ids))) as pool:
                 futures = {pool.submit(self._download_one, data_root, destination, item_id): item_id
                            for item_id in item_ids}
                 for future in as_completed(futures):
@@ -6116,7 +6172,7 @@ class MediaIntakeApp:
             self.download_batch_button.configure(state='normal')
             messagebox.showerror('Media Intake', f'{error}\n\nDetails saved to {self.log_file}')
 
-        self._worker(f'Downloading {len(item_ids)} queued file(s), up to 4 at once…',
+        self._worker(f'Downloading {len(item_ids)} queued file(s), up to {parallel} at once…',
                      action, finished, on_error=failed)
 
     @staticmethod
@@ -6137,6 +6193,7 @@ class MediaIntakeApp:
             self._retry_waiting_kindle_sends()
             active = any(row.get('state') in {'downloading', 'searching'}
                          for row in self.queue_rows)
+            self._autostart_downloads()
             delay = 500 if active else 2500
             self.root.after(delay, self._poll_queue)
         except tk.TclError:

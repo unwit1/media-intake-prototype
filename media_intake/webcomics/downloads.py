@@ -1,13 +1,17 @@
 """Shared queue archival worker: original bytes, ComicInfo and provenance manifest."""
 import datetime as dt
+import errno
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import zipfile
 from ..core import check_download, file_name, update_download_progress
-from ..serial import _comic_info, _image_extension, validate_manifest
+from ..serial import validate_manifest
+from .images import CorruptImage, inspect_image
 from .http import ExtractionError, HttpClient
 from .models import WebcomicAsset, WebcomicEntry, record
 from .resolver import registry_for
@@ -30,6 +34,7 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
         raise ExtractionError('Entry must have 1 to 1000 image assets')
     folder = Path(destination) if destination else Path(root) / 'downloads'
     folder.mkdir(parents=True, exist_ok=True)
+    check_disk_budget(db, folder)
     fd, temp = tempfile.mkstemp(prefix='.webcomic-', dir=folder)
     manifest = {'schema': 'media-intake/webcomic-archive/v1',
                 'series': json.loads(db.execute('SELECT metadata FROM webcomic_series WHERE id=?',
@@ -44,10 +49,15 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
                     raise ValueError('Entry exceeds archive byte budget')
                 response = client.get(asset.source_url, max_bytes=min(25_000_000, max_bytes - spent),
                                       conditional=False, headers={'Referer': entry.source_url})
-                ext = _image_extension(response.body)
                 media_type = response.headers.get('content-type', '').split(';', 1)[0].lower()
-                if not ext or media_type and not media_type.startswith('image/'):
-                    raise ExtractionError('Source returned an unsupported image')
+                try:
+                    ext, width, height = inspect_image(response.body, media_type)
+                except CorruptImage as exc:
+                    # Usually a truncated transfer: fail this attempt (retryable), keep the source healthy.
+                    event(db, source['id'], 'ASSET_REJECTED', entry.source_id,
+                          {'url': asset.source_url, 'reason': str(exc), 'bytes': len(response.body)})
+                    db.commit()
+                    raise ValueError(f'Image {ordinal} rejected: {exc}') from exc
                 spent += len(response.body)
                 path = f'{ordinal:04d}{ext}'
                 archive.writestr(path, response.body)
@@ -57,19 +67,15 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
                 asset.media_type = media_type or {'.jpg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}[ext]
                 asset.provenance.update({'requested_url': asset.source_url, 'final_url': response.url,
                                          'provider': adapter.id, 'adapter_version': adapter.version})
-                if ext == '.png' and len(response.body) >= 24:
-                    asset.width = int.from_bytes(response.body[16:20], 'big')
-                    asset.height = int.from_bytes(response.body[20:24], 'big')
+                asset.width, asset.height = width, height
                 manifest['assets'].append(record(asset))
                 update_download_progress(db, row['id'], spent, None, f'Archiving image {ordinal} of {len(entry.assets)}')
             manifest['entry'] = record(entry)
             chapter = db.execute('SELECT metadata FROM webcomic_chapters WHERE source_id=? AND chapter_key=?',
                                  (source['id'], entry.chapter_id)).fetchone()
             manifest['chapter'] = json.loads(chapter[0]) if chapter else None
-            comic_item = {**item, 'title': entry.title, 'source': entry.source_url}
-            info = _comic_info(comic_item)
-            if info:
-                archive.writestr('ComicInfo.xml', info.encode('utf-8'))
+            info = comic_info(manifest['series'], entry, manifest['chapter'], entry.assets)
+            archive.writestr('ComicInfo.xml', info.encode('utf-8'))
             archive.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8'))
         if Path(temp).stat().st_size > max_bytes:
             raise ValueError('Entry exceeds archive byte budget')
@@ -83,6 +89,7 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
         # numbered title duplicates, and interrupted retries.
         dest = folder / file_name({**item, 'title': item['title'] + f" [{job['entry_id']}-{job['revision'][:8]}]"})
         os.replace(temp, dest)
+        record_disk_usage(db, dest.stat().st_size)
         db.execute("UPDATE items SET state='downloaded',file_path=?,sha256=?,error=NULL WHERE id=?",
                    (str(dest.resolve()), digest, row['id']))
         for asset in entry.assets:
@@ -96,6 +103,10 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
               {'queue_id': row['id'], 'revision': job['revision'], 'sha256': digest})
         db.commit()
         return dict(db.execute('SELECT * FROM items WHERE id=?', (row['id'],)).fetchone())
+    except OSError as exc:
+        if exc.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', -1)):
+            raise ValueError('The disk is full; free some space and retry (the partial archive was removed)') from exc
+        raise
     except ExtractionError as exc:
         event(db, source['id'], 'PARSER_SUSPECTED_BROKEN', entry.source_id, {'error': str(exc)})
         db.execute("UPDATE webcomic_sources SET health='PARSER_SUSPECTED_BROKEN',last_failure=?,failures=failures+1 WHERE id=?",
@@ -105,3 +116,70 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+
+
+# ComicInfo.xml (Anansi Project v2) elements must follow the schema's sequence order.
+COMIC_INFO_ORDER = ('Title', 'Series', 'Number', 'Summary', 'Notes', 'Year', 'Month', 'Day', 'Writer', 'Penciller',
+                    'Inker', 'Colorist', 'Letterer', 'CoverArtist', 'Publisher', 'Genre', 'Web', 'PageCount',
+                    'LanguageISO', 'ScanInformation', 'StoryArc')
+ROLE_ELEMENTS = {'author': 'Writer', 'writer': 'Writer', 'creator': 'Writer', 'story': 'Writer',
+                 'artist': 'Penciller', 'illustrator': 'Penciller', 'penciller': 'Penciller', 'art': 'Penciller',
+                 'inker': 'Inker', 'colorist': 'Colorist', 'letterer': 'Letterer', 'cover': 'CoverArtist'}
+
+
+def comic_info(series, entry, chapter, assets):
+    """A schema-ordered ComicInfo.xml for one webcomic entry, with credits and page sizes."""
+    series = series or {}
+    credits = {}
+    for creator in series.get('creators') or []:
+        element = ROLE_ELEMENTS.get(str(creator.get('role') or '').casefold(), 'Writer')
+        names = credits.setdefault(element, [])
+        if creator.get('name') and creator['name'] not in names:
+            names.append(creator['name'])
+    published = str(entry.published_at or '')
+    number = entry.number or (f'{entry.ordinal:g}' if isinstance(entry.ordinal, float) else entry.ordinal)
+    values = {
+        'Title': entry.title, 'Series': series.get('title'), 'Number': str(number) if number is not None else None,
+        'Summary': entry.notes, 'Notes': f'Archived by Media Intake from {entry.source_url}',
+        'Year': published[:4] if published[:4].isdigit() else None,
+        'Month': str(int(published[5:7])) if published[5:7].isdigit() else None,
+        'Day': str(int(published[8:10])) if published[8:10].isdigit() else None,
+        **{element: ', '.join(names) for element, names in credits.items()},
+        'Genre': ', '.join(series.get('tags') or []) or None, 'Web': entry.source_url,
+        'PageCount': str(len(assets)), 'LanguageISO': series.get('language'),
+        'StoryArc': (chapter or {}).get('title'),
+    }
+    body = ''.join(f'<{key}>{html.escape(str(values[key]))}</{key}>' for key in COMIC_INFO_ORDER if values.get(key))
+    pages = ''.join(
+        f'<Page Image="{index}"' + (' Type="FrontCover"' if index == 0 else '') +
+        (f' ImageWidth="{asset.width}" ImageHeight="{asset.height}"' if asset.width and asset.height else '') +
+        (f' ImageSize="{asset.size}"' if getattr(asset, 'size', None) else '') + '/>'
+        for index, asset in enumerate(assets))
+    return ('<?xml version="1.0" encoding="utf-8"?>'
+            '<ComicInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' + body + f'<Pages>{pages}</Pages></ComicInfo>')
+
+
+def _setting(db, key, default=0):
+    row = db.execute('SELECT value FROM gui_settings WHERE key=?', (key,)).fetchone()
+    try:
+        return int(row['value']) if row else default
+    except (TypeError, ValueError):
+        return default
+
+
+def check_disk_budget(db, folder, reserve=50 * 1024 * 1024):
+    """Refuse new archives past the webcomic disk budget (MB; 0 = none) or when the disk is nearly full."""
+    budget = _setting(db, 'webcomics_disk_budget_mb') * 1024 * 1024
+    used = _setting(db, 'webcomics_bytes_archived')
+    if budget and used >= budget:
+        raise ValueError(f'Webcomic disk budget reached ({used // 1048576} of {budget // 1048576} MB); '
+                         'raise it in Webcomics settings or free space')
+    if shutil.disk_usage(folder).free < reserve:
+        raise ValueError('The disk is nearly full; webcomic archiving is paused')
+
+
+def record_disk_usage(db, size):
+    used = _setting(db, 'webcomics_bytes_archived') + int(size)
+    db.execute('INSERT INTO gui_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+               ('webcomics_bytes_archived', str(used)))

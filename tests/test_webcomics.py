@@ -26,7 +26,19 @@ from media_intake.webcomics.watcher import add_series, apply_snapshot, poll_sour
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'webcomics'
 BASE = 'https://comic.example'
-PNG = bytes.fromhex('89504e470d0a1a0a0000000d494844520000000200000003') + b'fixture'
+
+
+def _png(width=2, height=3):
+    """A complete, valid RGB PNG (archived images are now validated end to end)."""
+    import struct, zlib
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    rows = b''.join(b'\x00' + b'\xff\x00\x00' * width for _ in range(height))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) +
+            chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+
+
+PNG = _png()
 
 
 class FakeClient:

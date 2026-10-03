@@ -173,7 +173,7 @@ Downloads use a built-in engine: multiple connections per file, resume after pau
 
 **Back up database…** (toolbar) saves a consistent copy of `intake.sqlite3`, which holds the queue, watch list, settings and follows, while the app runs. To restore, close the app and put the copy in the data folder as `intake.sqlite3`. **Export watch list (CSV)…** on the Watched tab writes every watched item with its series, release date and status.
 
-`python tools/metadata_check.py` runs a live search for 50 well-known series across every category and reports missing titles, duplicate rows and edition clutter.
+`python tools/metadata_check.py` runs a live search for 50 well-known series across every category and reports missing titles, duplicate rows and edition clutter; `--more`, `--third` and `--fourth` run three further sets of 100. [Search quality](docs/SEARCH_QUALITY.md) catalogues every fix those checks led to.
 
 `python -m unittest discover -s tests -v` runs local HTTP, source-parser, Calibre invocation, fake IRC/DCC, Goodreads saved-page, and mocked FanFicFare update tests. These tests do not contact live ebook/IRC/fanfiction servers. Calibre must be installed and `calibredb` on PATH for a real import.
 

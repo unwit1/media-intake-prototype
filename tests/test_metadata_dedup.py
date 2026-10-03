@@ -408,5 +408,59 @@ class ThirdSetTests(unittest.TestCase):
         self.assertFalse(_BOX_SET.search('The Complete Collection'))
 
 
+class FourthSetTests(unittest.TestCase):
+    """General problems found by the fourth 100-series check."""
+
+    def test_organisations_in_other_languages_and_collections_are_recognised(self):
+        from media_intake.sources import _CORPORATE_AUTHOR
+        from media_intake.discovery import _BOX_SET
+        for name in ('Robert Bosch Stiftung', 'Friends of the Earth Middle East', '\u00c9ditions Gallimard',
+                     'Universit\u00e4t Wien'):
+            self.assertTrue(_CORPORATE_AUTHOR.search(name), name)
+        for name in ('Hieronymus Bosch', 'Edith Wharton', 'Brandon Sanderson'):
+            self.assertFalse(_CORPORATE_AUTHOR.search(name), name)
+        for title in ('The second Inspector Morse omnibus', 'The City Watch Trilogy', 'Legends II [11 works]',
+                      '3 Novels in 1'):
+            self.assertTrue(_BOX_SET.search(title), title)
+        for title in ('The Trilogy of Despair Book One', 'Mockingjay', 'Guards! Guards!'):
+            self.assertFalse(_BOX_SET.search(title), title)
+
+    def test_steam_upgrades_and_collaboration_sets_are_add_ons(self):
+        from media_intake.media_providers import _STEAM_EXTRA
+        self.assertTrue(_STEAM_EXTRA.search('God of War Ragnar\u00f6k - Digital Deluxe Edition Upgrade'))
+        self.assertTrue(_STEAM_EXTRA.search('PAC-MAN WORLD 2 Re-PAC - Sonic the Hedgehog Collaboration Set'))
+        self.assertFalse(_STEAM_EXTRA.search('Street Fighter II: Champion Edition'))
+
+    def test_nickname_search_ranks_the_official_top_hit_above_fan_works(self):
+        rows = [{'title': 'Danmachi: RNG System', 'provider': 'NovelArchive', 'catalog_rank': 0},
+                {'title': 'Sarazanmai', 'provider': 'LNORI', 'catalog_rank': 0},
+                {'title': 'Is It Wrong to Try to Pick Up Girls in a Dungeon?', 'provider': 'RanobeDB',
+                 'catalog_rank': 0}]
+        self.assertEqual([r['title'] for r in _sort_by_title_relevance(rows, 'DanMachi')],
+                         ['Is It Wrong to Try to Pick Up Girls in a Dungeon?', 'Danmachi: RNG System', 'Sarazanmai'])
+
+    def test_free_comic_book_day_samplers_are_left_out(self):
+        from media_intake import discovery
+        rows = [{'title': 'Scott Pilgrim', 'provider': 'GCD', 'source_url': 'a', 'kind': 'comic'},
+                {'title': 'Free Scott Pilgrim Free Comic Book Day Edition', 'provider': 'GCD', 'source_url': 'b',
+                 'kind': 'comic'}]
+        with patch.object(discovery, '_tasks', return_value=[('GCD', lambda: rows)]), \
+                patch.object(discovery, 'connected_download_sources', return_value=[]):
+            found = discovery.search_media_category('Scott Pilgrim', 'Comics', {}, {}, [])
+        self.assertEqual([r['title'] for r in found['results']], ['Scott Pilgrim'])
+
+    def test_authors_follow_works_unless_the_search_is_their_name(self):
+        from media_intake import discovery
+        rows = [{'title': 'Hieronymus Bosch', 'kind': 'author', 'provider': 'Open Library', 'source_url': 'a'},
+                {'title': 'The Black Echo', 'kind': 'book', 'author': 'Michael Connelly', 'provider': 'Open Library',
+                 'source_url': 'b'}]
+        with patch.object(discovery, '_tasks', return_value=[('Open Library', lambda: rows)]), \
+                patch.object(discovery, 'connected_download_sources', return_value=[]):
+            found = discovery.search_media_category('Bosch', 'Books', {}, {}, [])
+            self.assertEqual(found['results'][0]['title'], 'The Black Echo')
+            found = discovery.search_media_category('Hieronymus Bosch', 'Books', {}, {}, [])
+            self.assertEqual(found['results'][0]['title'], 'Hieronymus Bosch')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -273,7 +273,12 @@ _CORPORATE_AUTHOR = re.compile(
     r'\b(?:foundation|conference|symposium|congress|society|institute|institution|university|college|'
     r'association|council|committee|commission|department|ministry|agency|bureau|project|library|museum|'
     r'company|corporation|inc|ltd|llc|gmbh|press|publishing|publishers|club|league|office|'
-    r'workshop|seminar|meeting|colloquium)\b|\((?:U\.S\.|Great Britain|Firm)\)', re.I)
+    r'workshop|seminar|meeting|colloquium|'
+    # The same in the languages Open Library catalogues most ("Robert Bosch Stiftung").
+    r'stiftung|verlag|gesellschaft|verein|universit[aä]t|fundaci[oó]n|fundac[aã]o|fondation|'
+    r'fondazione|universit[eé]|universidad|universidade|universit[aà]|soci[eé]t[eé]|'
+    r'sociedad|societ[aà]|[eé]ditions?|editorial|ediciones|instituto|institut)\b|'
+    r'^friends\s+of\b|\((?:U\.S\.|Great Britain|Firm)\)', re.I)
 
 
 MIN_AUTHOR_WORKS = 3

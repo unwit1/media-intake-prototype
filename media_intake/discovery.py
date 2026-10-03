@@ -36,7 +36,7 @@ from .series_continuity import enrich_series_members, series_member_review_reaso
 from .watched import (_approved_source_record, _search_candidates,
                       _search_wikidata_series, get_setting,
                       search_goodreads, set_setting)
-from .wikidata import search_wikidata, video_subtype_from_description
+from .wikidata import search_wikidata, video_subtype_from_description, wikidata_external_ids
 
 
 logger = logging.getLogger(__name__)
@@ -336,6 +336,17 @@ def _download_sort_key(item, category, priority):
     return (rank, format_rank, item.get('title', '').casefold(), item.get('url', '').casefold())
 
 
+_CROSS_CATALOG_IDS = {'imdb', 'tvmaze', 'tmdb_movie', 'tmdb_tv', 'thetvdb'}
+
+
+def _cross_catalog_ids(item):
+    ids = list(item.get('external_ids') or []) + list(
+        (item.get('catalog_metadata') or item.get('metadata') or {}).get('external_ids') or [])
+    return {(str(i.get('provider')).casefold(), str(i.get('external_id')).casefold()) for i in ids
+            if isinstance(i, dict) and str(i.get('provider') or '').casefold() in _CROSS_CATALOG_IDS
+            and i.get('external_id')}
+
+
 def _merge_same_title(results, category, download_priority):
     groups = {}
     if category == 'Comics':
@@ -379,8 +390,19 @@ def _merge_same_title(results, category, download_priority):
                                     'isbns': isbns, 'items': [item]})
         groups = [group['items'] for group in book_groups]
     else:
+        # Videos: rows sharing an IMDb/TVMaze/TMDB ID are one work whatever their
+        # titles ("Arcane" on Wikidata is "Arcane: League of Legends" on TVMaze).
+        group_by_id = {}
         for item in results:
             title = _title_key(item) or str(item.get('url') or item.get('source_url') or item.get('provider') or '')
+            shared = None
+            if category in {'Videos', 'Anime'}:
+                item_ids = _cross_catalog_ids(item)
+                shared = next((group_by_id[i] for i in item_ids if group_by_id.get(i) in groups), None)
+            if shared is not None:
+                groups[shared].append(item)
+                group_by_id.update({i: shared for i in item_ids})
+                continue
             if category in {'Videos', 'Anime'}:
                 metadata = item.get('catalog_metadata') or item.get('metadata') or {}
                 subtype = str(item.get('video_subtype') or metadata.get('video_subtype') or
@@ -402,6 +424,7 @@ def _merge_same_title(results, category, download_priority):
                     undated = (title, subtype, '')
                     if undated in groups:
                         groups[key] = groups.pop(undated) + [item]
+                        group_by_id.update({i: key for i, k in group_by_id.items() if k == undated})
                 else:
                     matches = [candidate for candidate in groups
                                if isinstance(candidate, tuple) and len(candidate) == 3 and
@@ -415,7 +438,10 @@ def _merge_same_title(results, category, download_priority):
                 key = (_title_key(steam_base_title(item.get('title'))[0]) or title, subtype)
             else:
                 key = title
-            groups.setdefault(key, []).append(item)
+            if not any(existing is item for existing in groups.get(key, ())):
+                groups.setdefault(key, []).append(item)
+            if category in {'Videos', 'Anime'}:
+                group_by_id.update({i: key for i in item_ids})
 
     merged = []
     grouped_items = groups if isinstance(groups, list) else groups.values()
@@ -903,6 +929,14 @@ def _query_wikidata(query, category=None):
         item['url'] = item.get('source_url') or ''
         item['discovery_only'] = True
         normalized.append(item)
+    if category in {'Videos', 'Anime'} and normalized:
+        try:
+            ids = wikidata_external_ids([item.get('qid') for item in normalized])
+        except Exception as exc:  # the rows are still useful without cross-catalog IDs
+            logger.info('Wikidata ID lookup failed for %r: %s', query, exc)
+            ids = {}
+        for item in normalized:
+            item['external_ids'].extend(ids.get(item.get('qid'), []))
     return normalized
 
 

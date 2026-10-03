@@ -462,3 +462,32 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
             'source_url': root_record['source_url'], 'relationships': relationships,
             'related_entities': len(entity_ids) - 1,
             'unresolved_entities': sum(target_payloads.get(value) is None for value in related_ids)}
+
+
+_ID_PROPERTIES = {'P345': 'imdb', 'P8600': 'tvmaze', 'P4947': 'tmdb_movie', 'P4983': 'tmdb_tv', 'P4835': 'thetvdb'}
+
+
+def wikidata_external_ids(qids):
+    """Return ``{qid: [{'provider', 'external_id'}]}`` for IMDb, TVMaze, TMDB and TheTVDB IDs.
+
+    One small SPARQL query for a whole result page, so catalogs that describe the
+    same film or show under different titles can be matched exactly.
+    """
+    qids = [qid for qid in dict.fromkeys(qids or []) if _QID.fullmatch(str(qid or ''))][:50]
+    if not qids:
+        return {}
+    query = ('SELECT ?item ?property ?value WHERE { VALUES ?item { '
+             + ' '.join(f'wd:{qid}' for qid in qids) + ' } VALUES ?property { '
+             + ' '.join(f'wdt:{prop}' for prop in _ID_PROPERTIES) + ' } ?item ?property ?value. }')
+    raw, final_url = http_get('https://query.wikidata.org/sparql?' + urllib.parse.urlencode(
+        {'query': query, 'format': 'json'}), max_bytes=2_000_000)
+    if (urllib.parse.urlsplit(final_url).hostname or '').casefold() != 'query.wikidata.org':
+        raise ValueError('Wikidata ID lookup redirected away from Wikidata')
+    found = {}
+    for row in json.loads(raw.decode('utf-8')).get('results', {}).get('bindings', []):
+        qid = str((row.get('item') or {}).get('value') or '').rsplit('/', 1)[-1]
+        prop = str((row.get('property') or {}).get('value') or '').rsplit('/', 1)[-1]
+        value = str((row.get('value') or {}).get('value') or '').strip()
+        if qid in qids and prop in _ID_PROPERTIES and value:
+            found.setdefault(qid, []).append({'provider': _ID_PROPERTIES[prop], 'external_id': value})
+    return found

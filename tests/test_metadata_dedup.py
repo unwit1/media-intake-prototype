@@ -96,6 +96,29 @@ class VideoTests(unittest.TestCase):
                          [('Q1', 'Film · 2014'), ('Q5', 'Franchise')])
         self.assertEqual(MediaIntakeApp._result_creator_label({'author': 'Ann Author'}), 'Ann Author')
 
+    def test_rows_sharing_an_imdb_id_merge_whatever_their_titles(self):
+        rows = [{'title': 'Arcane', 'video_subtype': 'tv_series', 'provider': 'Wikidata', 'source_url': 'w',
+                 'external_ids': [{'provider': 'imdb', 'external_id': 'tt11126994'}]},
+                {'title': 'Arcane: League of Legends', 'video_subtype': 'web_series', 'release_date': '2021-11-06',
+                 'provider': 'TVMaze', 'source_url': 't',
+                 'external_ids': [{'provider': 'tvmaze', 'external_id': '41981'},
+                                  {'provider': 'imdb', 'external_id': 'TT11126994'}]},
+                {'title': 'Arcane', 'video_subtype': 'movie', 'provider': 'Wikidata', 'source_url': 'w2',
+                 'external_ids': [{'provider': 'imdb', 'external_id': 'tt0000001'}]}]
+        merged = _merge_same_title(rows, 'Videos', [])
+        self.assertEqual(sorted(len(r['metadata_variants']) for r in merged), [1, 2])
+
+    def test_wikidata_video_rows_get_cross_catalog_ids(self):
+        from media_intake.discovery import _query_wikidata
+        with patch('media_intake.discovery.search_wikidata', return_value=[
+                {'qid': 'Q1', 'title': 'Arcane', 'description': 'animated television series'}]),                 patch('media_intake.discovery.wikidata_external_ids',
+                      return_value={'Q1': [{'provider': 'imdb', 'external_id': 'tt11126994'}]}):
+            row = _query_wikidata('Arcane', 'Videos')[0]
+        self.assertIn({'provider': 'imdb', 'external_id': 'tt11126994'}, row['external_ids'])
+        with patch('media_intake.discovery.search_wikidata', return_value=[
+                {'qid': 'Q1', 'title': 'Arcane', 'description': 'animated television series'}]),                 patch('media_intake.discovery.wikidata_external_ids', side_effect=ValueError('busy')):
+            self.assertEqual(len(_query_wikidata('Arcane', 'Videos')), 1)  # the lookup is best effort
+
 
 class GcdTests(unittest.TestCase):
     def test_article_dropped_longest_english_run_first_and_translations_hidden(self):
@@ -136,6 +159,25 @@ class GcdTests(unittest.TestCase):
         titles = sorted(r['title'] for r in merged if r.get('comic_entity') != 'series')
         self.assertEqual(titles, ['Invincible', 'Invincible (2003) #1', 'Invincible (2003) #2',
                                   'Invincible Vol. 1', 'Invincible Vol. 2'])  # 'Invincible': the trade run itself
+
+    def test_exact_run_is_found_pages_into_a_long_name_ordered_list(self):
+        # GCD lists runs by sort name (article dropped): the two "Saga" runs sit pages in.
+        names = ([f'All In Saga {i:03}' for i in range(98)] + ['Saga', 'The Saga'] +
+                 [f'The Saga of Rex {i:03}' for i in range(160)])
+        self.assertEqual(names, sorted(names, key=cm._gcd_sort_key))
+        rows = [{'api_url': f'https://www.comics.org/api/series/{i}/', 'name': name, 'year_began': 2012,
+                 'language': 'en', 'active_issues': [], 'publishing_format': ''} for i, name in enumerate(names, 1)]
+        requested = []
+
+        def fake_json(provider, url, headers=None, interval=1):
+            requested.append(url)
+            page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get('page', ['1'])[0])
+            chunk = rows[(page - 1) * 50:page * 50]
+            return {'count': len(rows), 'next': 'more' if page * 50 < len(rows) else None, 'results': chunk}
+        with patch.object(cm, '_json', side_effect=fake_json):
+            found = cm._gcd_exact_series('https://www.comics.org/api/series/name/Saga/', 'saga')
+        self.assertEqual([row['name'] for row in found], ['Saga', 'The Saga'])
+        self.assertLessEqual(len(requested), 5)
 
 
 class RetryTests(unittest.TestCase):

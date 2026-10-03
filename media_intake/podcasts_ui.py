@@ -175,8 +175,7 @@ class PodcastsPanel:
             if summary['failed']:
                 lines += ['', 'Could not follow:'] + summary['failed'][:15]
             lines += ['', 'No back catalogue was queued; new episodes download as they are released.']
-            messagebox.showinfo('Import OPML', '
-'.join(lines))
+            messagebox.showinfo('Import OPML', '\n'.join(lines))
         self._run(f'Importing {len(feeds)} podcast feed(s)…', lambda db: podcasts.import_opml(db, body), done)
 
     def export_opml(self):

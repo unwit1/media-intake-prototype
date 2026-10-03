@@ -45,8 +45,8 @@ class NoThread:
         return False
 
 
-def actions():
-    for name, function in inspect.getmembers(gui.MediaIntakeApp, inspect.isfunction):
+def actions(cls=gui.MediaIntakeApp):
+    for name, function in inspect.getmembers(cls, inspect.isfunction):
         params = list(inspect.signature(function).parameters.values())[1:]
         if not name.startswith('_') and not any(
                 p.default is inspect.Parameter.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
@@ -85,19 +85,22 @@ class GuiSmokeTest(unittest.TestCase):
         self.temp.cleanup()
 
     def run_all(self, select=False):
-        names = list(actions())
-        self.assertGreater(len(names), 50)
-        for name in names:
+        targets = [(self.app, name) for name in actions()]
+        self.assertGreater(len(targets), 50)
+        # The Webcomics and Podcasts tabs are panels with their own actions.
+        for panel in (self.app.webcomics_panel, self.app.podcasts_panel):
+            targets += [(panel, name) for name in actions(type(panel))]
+        for owner, name in targets:
             if select:
                 for view in VIEWS:
                     tree = getattr(self.app, view)
                     if tree.get_children() and not tree.selection():
                         tree.selection_set(tree.get_children()[0])
             try:
-                getattr(self.app, name)()
+                getattr(owner, name)()
                 self.root.update()
             except Exception:
-                self.errors.append((name, traceback.format_exc(limit=5)))
+                self.errors.append((f'{type(owner).__name__}.{name}', traceback.format_exc(limit=5)))
             for window in self.root.winfo_children():
                 if isinstance(window, tk.Toplevel):
                     window.destroy()

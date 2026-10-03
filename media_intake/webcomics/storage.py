@@ -47,6 +47,14 @@ def migrate(db):
     db.execute('INSERT OR IGNORE INTO webcomic_schema(version) VALUES(1)')
     from .metadata_bridge import migrate as migrate_metadata_bridge
     migrate_metadata_bridge(db)
+    # Failure and concurrency hardening (additive).
+    for table, column, declaration in (('webcomic_sources', 'lease_until', 'REAL'),
+                                       ('webcomic_entries', 'attempts', 'INTEGER NOT NULL DEFAULT 0'),
+                                       ('webcomic_entries', 'retry_after', 'REAL')):
+        if column not in {row[1] for row in db.execute(f'PRAGMA table_info({table})')}:
+            db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
+    db.execute('''CREATE TABLE IF NOT EXISTS webcomic_source_aliases(
+        alias_url TEXT PRIMARY KEY, source_id INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
 
 
 def event(db, source_id, kind, key=None, detail=None):

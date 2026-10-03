@@ -1,10 +1,11 @@
 """Incremental engine run by the existing watched_items scheduler, never a new timer."""
 import datetime as dt
 import json
+import time
 import threading
 from .chapters import resolve_chapter
 from .http import ExtractionError, HttpClient, SourceUnavailable
-from .models import fingerprint, identity, record
+from .models import canonicalize_url, fingerprint, identity, record
 from .resolver import registry_for, resolve
 from .storage import event
 
@@ -33,6 +34,10 @@ def add_series(db, url, title=None, config=None, archive_existing=False, client=
     adapter, snapshot, config = resolve(url, client, config)
     source_url = snapshot.series.canonical_source_url
     existing = db.execute('SELECT * FROM webcomic_sources WHERE url=?', (source_url,)).fetchone()
+    if existing is None:
+        alias = db.execute('''SELECT s.* FROM webcomic_source_aliases a JOIN webcomic_sources s ON s.id=a.source_id
+            WHERE a.alias_url IN (?, ?)''', (source_url, canonicalize_url(url))).fetchone()
+        existing = alias
     if existing:
         saved_watch = db.execute('SELECT id FROM watched_items WHERE id=?', (existing['watch_id'],)).fetchone()
         if saved_watch:
@@ -80,6 +85,11 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
     config = json.loads(source['config'])
     if config.get('series_title'):
         snapshot.series.title = config['series_title']
+    moved_to = snapshot.series.canonical_source_url
+    if moved_to and moved_to != source['url']:
+        if db.execute('INSERT OR IGNORE INTO webcomic_source_aliases(alias_url, source_id) VALUES(?,?)',
+                      (moved_to, source_id)).rowcount:
+            event(db, source_id, 'SOURCE_MOVED', detail={'from': source['url'], 'to': moved_to})
     # Accepted catalog matches and user locks survive every refresh.
     from .metadata_bridge import apply_enrichment
     apply_enrichment(db, source['series_id'], snapshot.series)
@@ -262,21 +272,29 @@ def process_watch(db, watch, library_folder, source_options=None):
         lock = _LOCKS.setdefault((database_file, source['id']), threading.Lock())
     if not lock.acquire(blocking=False):
         return
+    if not claim_source(db, source['id']):
+        lock.release()
+        return  # another app window is checking this source right now
     hours = max(1, min(168, float(config.get('poll_hours', 24))))
     error = None
     try:
+        from .downloads import reconcile_archives
+        reconcile_archives(db, source['id'])
         poll_source(db, source['id'])
         if config.get('auto_archive', True):
-            pending = db.execute('''SELECT e.queue_id FROM webcomic_entries e JOIN items i ON i.id=e.queue_id
+            pending = db.execute('''SELECT e.id, e.queue_id, e.attempts FROM webcomic_entries e JOIN items i ON i.id=e.queue_id
                 WHERE e.source_id=? AND e.state='queued' AND i.state IN ('queued','failed','downloaded')
-                ORDER BY e.ordinal,e.id LIMIT ?''', (source['id'], int(config.get('batch_size', 10)))).fetchall()
+                AND (e.retry_after IS NULL OR e.retry_after <= ?)
+                ORDER BY e.ordinal,e.id LIMIT ?''', (source['id'], time.time(), int(config.get('batch_size', 10)))).fetchall()
             download_errors = []
             for row in pending:
                 try:
                     download(db, row['queue_id'], database_file and __import__('pathlib').Path(database_file).parent or library_folder,
                              destination=library_folder)
+                    db.execute('UPDATE webcomic_entries SET attempts=0, retry_after=NULL WHERE id=?', (row['id'],))
                 except Exception as exc:
                     download_errors.append(f"Queue {row['queue_id']}: {exc}")
+                    record_entry_failure(db, source['id'], row['id'], exc)
             if download_errors:
                 error = '; '.join(download_errors[:3])
     except Exception as exc:
@@ -289,5 +307,41 @@ def process_watch(db, watch, library_folder, source_options=None):
         timestamp = dt.datetime.now()
         db.execute("UPDATE watched_items SET state='watching',last_checked_at=?,next_check_at=?,last_error=? WHERE id=?",
                    (timestamp.isoformat(), (timestamp + dt.timedelta(hours=hours)).isoformat(), error, watch['id']))
+        db.execute('UPDATE webcomic_sources SET lease_until=NULL WHERE id=?', (source['id'],))
         db.commit()
         lock.release()
+
+
+SOURCE_LEASE_SECONDS = 1800
+MAX_ENTRY_ATTEMPTS = 6
+
+
+def claim_source(db, source_id):
+    """Atomically take the source for this process; False while another holds a live lease."""
+    now = time.time()
+    claimed = db.execute('UPDATE webcomic_sources SET lease_until=? WHERE id=? AND (lease_until IS NULL OR lease_until < ?)',
+                         (now + SOURCE_LEASE_SECONDS, source_id, now)).rowcount
+    db.commit()
+    return bool(claimed)
+
+
+def record_entry_failure(db, source_id, entry_id, exc):
+    """Back off a failing entry (10 min doubling, capped at a day); give up after MAX_ENTRY_ATTEMPTS."""
+    row = db.execute('SELECT entry_key, attempts FROM webcomic_entries WHERE id=?', (entry_id,)).fetchone()
+    attempts = int(row['attempts'] or 0) + 1
+    if attempts >= MAX_ENTRY_ATTEMPTS:
+        db.execute("UPDATE webcomic_entries SET attempts=?, retry_after=NULL, state='failed' WHERE id=?", (attempts, entry_id))
+        event(db, source_id, 'ENTRY_GAVE_UP', row['entry_key'], {'attempts': attempts, 'error': str(exc)[:300],
+                                                                  'review_required': True})
+    else:
+        delay = min(86400, 600 * 2 ** (attempts - 1))
+        db.execute('UPDATE webcomic_entries SET attempts=?, retry_after=? WHERE id=?', (attempts, time.time() + delay, entry_id))
+    db.commit()
+
+
+def retry_failed_entries(db, source_id):
+    """Put entries that gave up back in line (the user asked to try again)."""
+    changed = db.execute("""UPDATE webcomic_entries SET state='queued', attempts=0, retry_after=NULL
+        WHERE source_id=? AND state='failed' AND queue_id IS NOT NULL""", (source_id,)).rowcount
+    db.commit()
+    return changed

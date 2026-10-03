@@ -88,6 +88,9 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
         # Stable per-entry/revision path avoids collision across mirrors, renames,
         # numbered title duplicates, and interrupted retries.
         dest = folder / file_name({**item, 'title': item['title'] + f" [{job['entry_id']}-{job['revision'][:8]}]"})
+        # Record the destination first: a crash after the move can then be reconciled.
+        db.execute('UPDATE items SET file_path=? WHERE id=?', (str(dest.resolve()), row['id']))
+        db.commit()
         os.replace(temp, dest)
         record_disk_usage(db, dest.stat().st_size)
         db.execute("UPDATE items SET state='downloaded',file_path=?,sha256=?,error=NULL WHERE id=?",
@@ -183,3 +186,79 @@ def record_disk_usage(db, size):
     used = _setting(db, 'webcomics_bytes_archived') + int(size)
     db.execute('INSERT INTO gui_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                ('webcomics_bytes_archived', str(used)))
+
+
+
+def _archive_matches(path, revision):
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read('manifest.json'))
+            return manifest.get('revision') == revision and archive.testzip() is None
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return False
+
+
+def reconcile_archives(db, source_id=None):
+    """Finish bookkeeping for archives written just before a crash; returns how many were reconciled."""
+    reconciled = 0
+    rows = db.execute("""SELECT i.id, i.file_path, i.metadata FROM items i
+        WHERE i.state IN ('queued','downloading','failed') AND i.file_path IS NOT NULL
+        AND json_extract(i.metadata, '$.webcomic_job') IS NOT NULL""").fetchall()
+    for row in rows:
+        job = json.loads(row['metadata'])['webcomic_job']
+        if source_id is not None and job['source_id'] != source_id:
+            continue
+        path = Path(row['file_path'])
+        if not path.is_file() or not _archive_matches(path, job['revision']):
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        db.execute("UPDATE items SET state='downloaded', sha256=?, error=NULL, lease_until=NULL WHERE id=?",
+                   (digest, row['id']))
+        db.execute("UPDATE webcomic_entries SET state='archived', attempts=0, retry_after=NULL WHERE id=? AND fingerprint=?",
+                   (job['entry_id'], job['revision']))
+        event(db, job['source_id'], 'ARCHIVE_RECONCILED', job['entry']['source_id'], {'queue_id': row['id']})
+        reconciled += 1
+    db.commit()
+    return reconciled
+
+
+def repair_manifest(db, entry_id):
+    """Rebuild a missing or damaged manifest.json inside an archive, keeping the original image bytes."""
+    assets = [json.loads(row['metadata']) for row in db.execute(
+        'SELECT metadata FROM webcomic_assets WHERE entry_id=? ORDER BY ordinal', (entry_id,))]
+    if not assets:
+        raise ValueError('No archived assets are recorded for this entry')
+    path = Path(assets[0]['local_path'])
+    entry = db.execute('SELECT * FROM webcomic_entries WHERE id=?', (entry_id,)).fetchone()
+    source = db.execute('SELECT * FROM webcomic_sources WHERE id=?', (entry['source_id'],)).fetchone()
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        try:
+            json.loads(archive.read('manifest.json'))
+            return False  # already intact
+        except (KeyError, ValueError):
+            pass
+        members = {name: archive.read(name) for name in names if name != 'manifest.json'}
+    for asset in assets:
+        data = members.get(asset.get('archive_path') or '')
+        if data is None or hashlib.sha256(data).hexdigest() != asset.get('checksum'):
+            raise ValueError(f"Image {asset.get('archive_path')} is missing or changed; the archive needs a fresh download")
+    series = db.execute('SELECT metadata FROM webcomic_series WHERE id=?', (source['series_id'],)).fetchone()
+    manifest = {'schema': 'media-intake/webcomic-archive/v1', 'repaired': True,
+                'series': json.loads(series[0]) if series else {},
+                'source': {'url': source['url'], 'adapter': source['adapter'], 'version': source['adapter_version']},
+                'entry': json.loads(entry['metadata']), 'revision': entry['fingerprint'],
+                'assets': [{key: value for key, value in asset.items() if key != 'local_path'} for asset in assets]}
+    fd, temp = tempfile.mkstemp(prefix='.webcomic-repair-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream, zipfile.ZipFile(stream, 'w', zipfile.ZIP_STORED) as archive:
+            for name, data in members.items():
+                archive.writestr(name, data)
+            archive.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8'))
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    event(db, source['id'], 'MANIFEST_REPAIRED', entry['entry_key'])
+    db.commit()
+    return True

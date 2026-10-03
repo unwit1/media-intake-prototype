@@ -47,6 +47,8 @@ class WebcomicsPanel:
         ttk.Button(more, text='Open site', command=self.open_site).pack(side='left', padx=6)
         ttk.Button(more, text='Audit images', command=self.audit_images).pack(side='left')
         ttk.Button(more, text='Health', command=self.health).pack(side='left', padx=6)
+        ttk.Button(more, text='Mirrors', command=self.mirrors).pack(side='left')
+        ttk.Button(more, text='Wayback report', command=self.wayback_report).pack(side='left', padx=6)
         ttk.Label(more, text='Filter').pack(side='left', padx=(18, 4))
         self.filter_text = tk.StringVar()
         ttk.Entry(more, textvariable=self.filter_text, width=24).pack(side='left')
@@ -175,6 +177,93 @@ class WebcomicsPanel:
             count = retry_failed_entries(self.app.db, source['id'])
             self.refresh()
             self.app._done(f'{count} failed entries will be retried')
+
+    def wayback_report(self):
+        from . import wayback
+        from .http import HttpClient
+        source = self.selected()
+        if not source:
+            return
+        data_root = self.app.data_root
+        def action():
+            db = connect(data_root)
+            try:
+                return wayback.completeness_report(db, source['id'], HttpClient(db, interval=2))
+            finally:
+                db.close()
+        def show(report):
+            dialog = tk.Toplevel(self.app.root)
+            dialog.title(f"Wayback captures: {source['title']}")
+            dialog.geometry('860x480')
+            lines = [f"Looked up {report['checked']} more page(s). {len(report['captured'])} captured, "
+                     f"{len(report['gaps'])} without any capture (checked pages only).", '', 'Gaps:']
+            lines += [f"  {gap['entry']}  {gap['original_url']}" for gap in report['gaps'][:200]] or ['  none']
+            lines += ['', 'Captured (newest capture date, separate from publication date):']
+            lines += [f"  {item['entry']}  published {item['published_at'] or '?'}  captured {item['captured_at'][:10]}  "
+                      f"{item['capture_url']}" for item in report['captured'][:200]]
+            text = tk.Text(dialog, wrap='none')
+            text.insert('1.0', '\n'.join(lines))
+            text.configure(state='disabled')
+            text.pack(fill='both', expand=True, padx=12, pady=12)
+        self.app._worker('Looking up Wayback captures…', action, show)
+
+    def mirrors(self):
+        from . import mirrors
+        db = self.app.db
+        found = mirrors.find_candidates(db)
+        dialog = tk.Toplevel(self.app.root)
+        dialog.title('Mirrors: the same comic from several sources')
+        dialog.geometry('860x420')
+        ttk.Label(dialog, wraplength=820, justify='left', text=(
+            'Pairs that share a canonical address or catalog ID link automatically; a matching title and creator '
+            'waits for you. A confirmed pair shares one series while each source keeps its own entries and '
+            f'numbering. {len(found)} new pair(s) found.')).pack(anchor='w', padx=12, pady=(12, 6))
+        titles = {row[0]: json.loads(row[1]).get('title') for row in db.execute('SELECT id, metadata FROM webcomic_series')}
+        view = ttk.Treeview(dialog, columns=('b', 'confidence', 'evidence', 'status', 'edition'), show='tree headings',
+                            selectmode='browse')
+        view.heading('#0', text='Series')
+        view.column('#0', width=200)
+        for column, label, width in (('b', 'Mirror', 200), ('confidence', 'Match', 60), ('evidence', 'Evidence', 160),
+                                     ('status', 'Status', 80), ('edition', 'Edition / language', 140)):
+            view.heading(column, text=label)
+            view.column(column, width=width, anchor='w')
+        view.pack(fill='both', expand=True, padx=12)
+        def render():
+            view.delete(*view.get_children())
+            for item in mirrors.links(db):
+                view.insert('', 'end', iid=str(item['id']), text=titles.get(item['series_a']) or item['series_a'], values=(
+                    titles.get(item['series_b']) or item['series_b'], f"{round(item['confidence'] * 100)}%",
+                    ', '.join(item['evidence']), item['status'],
+                    ' · '.join(value for value in (item.get('edition'), item.get('language')) if value)))
+        def selected():
+            chosen = view.selection()
+            return int(chosen[0]) if chosen else None
+        def confirm():
+            link_id = selected()
+            if link_id is None:
+                return
+            edition = simpledialog.askstring('Confirm mirror', 'Edition or language note (optional):', parent=dialog)
+            mirrors.confirm(db, link_id, edition=edition or None)
+            render()
+            self.refresh()
+        def reject():
+            link_id = selected()
+            if link_id is not None:
+                mirrors.reject(db, link_id)
+                render()
+        def split():
+            source = self.selected()
+            if source and mirrors.split(db, source['id']):
+                render()
+                self.refresh()
+                self.app._done(f"{source['title']} has its own series again")
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=12)
+        ttk.Button(bar, text='Confirm', command=confirm).pack(side='left')
+        ttk.Button(bar, text='Reject', command=reject).pack(side='left', padx=6)
+        ttk.Button(bar, text='Split selected comic from its mirror', command=split).pack(side='left')
+        ttk.Button(bar, text='Close', command=dialog.destroy).pack(side='right')
+        render()
 
     def health(self):
         from . import health

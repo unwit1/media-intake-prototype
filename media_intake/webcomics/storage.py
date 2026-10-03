@@ -49,6 +49,10 @@ def migrate(db):
     migrate_metadata_bridge(db)
     from .health import migrate as migrate_health
     migrate_health(db)
+    from .mirrors import migrate as migrate_mirrors
+    migrate_mirrors(db)
+    from .wayback import migrate as migrate_wayback
+    migrate_wayback(db)
     # Failure and concurrency hardening (additive).
     for table, column, declaration in (('webcomic_sources', 'lease_until', 'REAL'),
                                        ('webcomic_entries', 'attempts', 'INTEGER NOT NULL DEFAULT 0'),

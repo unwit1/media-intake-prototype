@@ -236,13 +236,28 @@ class QueueIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
             self.assertEqual(core.download_settings(db), {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4,
                                                           'parallel': 6, 'autostart': 0,
-                                                          'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0})
+                                                          'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0,
+                                                          'window_start_hour': 0, 'window_end_hour': 0})
             db.executemany('INSERT INTO gui_settings(key,value) VALUES(?,?)',
                            [('download_connections', '40'), ('download_speed_limit_kbps', '512'),
                             ('download_retries', 'x'), ('download_parallel', '0'), ('download_autostart', '5')])
             self.assertEqual(core.download_settings(db), {'connections': 16, 'speed_limit_kbps': 512, 'retries': 4,
                                                           'parallel': 1, 'autostart': 1,
-                                                          'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0})
+                                                          'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0,
+                                                          'window_start_hour': 0, 'window_end_hour': 0})
+
+    def test_download_window_hours_including_overnight(self):
+        import datetime
+        at = lambda hour: datetime.datetime(2026, 1, 1, hour)
+        self.assertTrue(all(core.in_download_window({'window_start_hour': 5, 'window_end_hour': 5}, at(h))
+                            for h in range(24)))
+        self.assertEqual([h for h in range(24) if core.in_download_window(
+            {'window_start_hour': 9, 'window_end_hour': 17}, at(h))], list(range(9, 17)))
+        self.assertEqual([h for h in range(24) if core.in_download_window(
+            {'window_start_hour': 23, 'window_end_hour': 7}, at(h))], [0, 1, 2, 3, 4, 5, 6, 23])
+        with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
+            db.execute("INSERT INTO gui_settings(key,value) VALUES('download_window_end_hour','99')")
+            self.assertEqual(core.download_settings(db)['window_end_hour'], 23)
 
     def test_the_same_item_cannot_download_twice_at_once(self):
         with RangeServer() as server, tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:

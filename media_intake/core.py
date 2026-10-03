@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 import json
 import os
@@ -408,7 +409,8 @@ class ShortlinkPending(ValueError):
 
 
 DOWNLOAD_DEFAULTS = {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4, 'parallel': 6, 'autostart': 0,
-                     'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0}
+                     'seed_ratio_pct': 100, 'seed_minutes': 1440, 'upload_limit_kbps': 0,
+                     'window_start_hour': 0, 'window_end_hour': 0}
 
 
 def download_settings(db):
@@ -424,7 +426,23 @@ def download_settings(db):
     settings['parallel'] = min(8, max(1, settings['parallel']))
     settings['autostart'] = 1 if settings['autostart'] else 0
     settings['seed_ratio_pct'] = min(10_000, settings['seed_ratio_pct'])
+    settings['window_start_hour'] = min(23, settings['window_start_hour'])
+    settings['window_end_hour'] = min(23, settings['window_end_hour'])
     return settings
+
+
+def in_download_window(settings, now=None):
+    """Whether automatic downloads may start now (Settings -> Downloads schedule).
+
+    The window runs from the start hour up to (not including) the end hour, local
+    time, and may wrap past midnight (1 -> 7 is the small hours). Equal hours mean
+    any time. Downloads started by hand ignore the window.
+    """
+    start, end = int(settings.get('window_start_hour', 0)), int(settings.get('window_end_hour', 0))
+    if start == end:
+        return True
+    hour = (now or datetime.datetime.now()).hour
+    return start <= hour < end if start < end else hour >= start or hour < end
 
 
 def _resolve_download_link(db, item_id, item):

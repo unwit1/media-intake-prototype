@@ -3064,6 +3064,12 @@ class MediaIntakeApp:
             ttk.Spinbox(engine, from_=low, to=high, textvariable=engine_vars[key], width=12).grid(
                 row=row, column=1, sticky='w', pady=4)
         for row, (label, key, low, high) in enumerate((
+                ('Start automatic downloads only from hour (0–23)', 'window_start_hour', 0, 23),
+                ('…until hour (same as start = any time)', 'window_end_hour', 0, 23)), start=3):
+            ttk.Label(engine, text=label).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
+            ttk.Spinbox(engine, from_=low, to=high, textvariable=engine_vars[key], width=12).grid(
+                row=row, column=1, sticky='w', pady=4)
+        for row, (label, key, low, high) in enumerate((
                 ('Seed torrents until ratio, % (0 = no ratio target)', 'seed_ratio_pct', 0, 10_000),
                 ('…or for at most, minutes (0 = no time limit)', 'seed_minutes', 0, 525_600),
                 ('Upload limit, KB/s (0 = unlimited)', 'upload_limit_kbps', 0, 10_000_000)), start=8):
@@ -3360,9 +3366,9 @@ class MediaIntakeApp:
     def _autostart_downloads(self):
         """Run queued downloads automatically, up to the parallel limit (Settings → Downloads)."""
         from . import transfer
-        from .core import download_settings
+        from .core import download_settings, in_download_window
         settings = download_settings(self.db)
-        if not settings['autostart'] or self._download_batch_active:
+        if not settings['autostart'] or self._download_batch_active or not in_download_window(settings):
             return
         running = {int(row['id']) for row in self.queue_rows
                    if transfer.is_active(('item', int(row['id'])))} | self._autostart_ids

@@ -36,6 +36,12 @@ includes downloads interrupted when the app last closed. If one of them is a sho
 that needs a click, the shortlink helper opens for it. The same item never downloads
 twice at once, whether it was started automatically, from *Download queued* or by hand.
 
+**Schedule.** *Start automatic downloads only from hour … until hour …* limits the
+automatic queue to a daily window in local time, for example 1 until 7 for the small
+hours. A window can wrap past midnight (23 until 7). Equal hours, the default, mean any
+time. Running downloads finish normally, and downloads you start by hand ignore the
+window.
+
 ## Source health
 
 Every queue download, of every kind (HTTP, IRC, serial, fanfiction, torrent, stream),
@@ -167,6 +173,10 @@ The **Podcasts** tab follows shows and downloads their episodes automatically.
   optionally keep only the latest N downloaded files. Keep-latest deletes older
   episode files, so it is off by default.
 - **Unfollowing** keeps the downloaded files.
+- **OPML:** *Import OPML…* follows every feed in a subscription file exported from
+  another podcast app, folders included. Already-followed shows are skipped, and no
+  back catalogue is queued, so only new episodes download. *Export OPML…* writes your
+  followed shows for any other app.
 - **Approval:** the `podcast_rss` source starts approved in `rights-evidence.json`,
   because podcast feeds publish their episodes for download. Set it to false to stop
   podcast downloads.

@@ -99,7 +99,8 @@ def connect(root):
     item_columns = {row['name'] for row in db.execute('PRAGMA table_info(items)')}
     for name, declaration in (('progress_bytes', 'INTEGER'),
                               ('progress_total', 'INTEGER'),
-                              ('progress_message', 'TEXT')):
+                              ('progress_message', 'TEXT'),
+                              ('lease_until', 'REAL')):
         if name not in item_columns:
             db.execute(f'ALTER TABLE items ADD COLUMN {name} {declaration}')
     db.execute('''CREATE TABLE IF NOT EXISTS watched_items (
@@ -249,15 +250,31 @@ def list_items(db, state=None):
     return [dict(x) for x in db.execute(sql, (state,) if state else ())]
 
 
+DOWNLOAD_LEASE_SECONDS = 300
+
+
 def update_download_progress(db, item_id, done=None, total=None, message=None):
-    """Persist a queue item's current transfer phase and byte counts."""
+    """Persist a queue item's current transfer phase and byte counts (and renew its lease)."""
+    import time
     if done is not None:
         done = max(0, int(done))
     if total is not None:
         total = max(0, int(total))
     db.execute('''UPDATE items SET progress_bytes=?, progress_total=?, progress_message=?,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?''', (done, total, str(message or '')[:200], item_id))
+        lease_until=CASE WHEN state='downloading' THEN ? ELSE lease_until END,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+               (done, total, str(message or '')[:200], time.time() + DOWNLOAD_LEASE_SECONDS, item_id))
     db.commit()
+
+
+def recover_interrupted_downloads(db):
+    """Return downloads whose app closed (lease expired) to the queue; live ones in other windows stay."""
+    import time
+    changed = db.execute('''UPDATE items SET state='queued', lease_until=NULL,
+        progress_message='Interrupted; resumes from saved progress', updated_at=CURRENT_TIMESTAMP
+        WHERE state='downloading' AND (lease_until IS NULL OR lease_until < ?)''', (time.time(),)).rowcount
+    db.commit()
+    return changed
 
 
 def open_url(request, timeout=30):
@@ -499,8 +516,15 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
     if row['state'] in ('downloaded', 'imported') and row['file_path'] and Path(row['file_path']).exists() \
             and urllib.parse.urlsplit(item['url']).scheme not in ('fanfic+http', 'fanfic+https'):
         return _auto_deliver_to_kindle(db, item_id, root)
-    db.execute("UPDATE items SET state='downloading', error=NULL, progress_bytes=0, progress_total=NULL, progress_message='Preparing download', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+    import time
+    # Atomic cross-process claim: another app window holding a live lease keeps the item.
+    claimed = db.execute('''UPDATE items SET state='downloading', error=NULL, progress_bytes=0, progress_total=NULL,
+        progress_message='Preparing download', lease_until=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND NOT (state='downloading' AND lease_until IS NOT NULL AND lease_until > ?)''',
+                         (time.time() + DOWNLOAD_LEASE_SECONDS, item_id, time.time())).rowcount
     db.commit()
+    if not claimed:
+        raise ValueError('This item is already downloading in another app window')
     if urllib.parse.urlsplit(item['url']).scheme in ('fanfic+http', 'fanfic+https'):
         try:
             from .fanfiction import download_fanfiction

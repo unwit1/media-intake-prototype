@@ -3894,9 +3894,8 @@ class MediaIntakeApp:
 
     def _recover_interrupted_downloads(self):
         """Transfers cut off by closing the app resume from their saved checkpoints."""
-        self.db.execute("""UPDATE items SET state='queued', progress_message='Interrupted; resumes from saved progress',
-            updated_at=CURRENT_TIMESTAMP WHERE state='downloading'""")
-        self.db.commit()
+        from .core import recover_interrupted_downloads
+        recover_interrupted_downloads(self.db)
         from . import transfer
         from .core import download_settings
         settings = download_settings(self.db)

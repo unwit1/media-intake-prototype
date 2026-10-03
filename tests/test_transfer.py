@@ -212,6 +212,26 @@ class QueueIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Invalid .epub'):
                 download(db, fixed['id'], root)  # without a guess, the declared type is enforced
 
+    def test_download_leases_across_app_windows(self):
+        with RangeServer() as server, tempfile.TemporaryDirectory() as root,                 closing(connect(root)) as window_a, closing(connect(root)) as window_b:
+            queued = self.queue(window_a, server.url)
+            # Window A is downloading: it holds a live lease.
+            window_a.execute("UPDATE items SET state='downloading', lease_until=? WHERE id=?",
+                             (time.time() + 300, queued['id']))
+            window_a.commit()
+            with self.assertRaisesRegex(ValueError, 'another app window'):
+                download(window_b, queued['id'], root)
+            self.assertEqual(core.recover_interrupted_downloads(window_b), 0)  # live lease left alone
+            self.assertEqual(window_b.execute('SELECT state FROM items WHERE id=?', (queued['id'],)).fetchone()[0],
+                             'downloading')
+            # Window A closed without finishing: the lease runs out and the item is recovered.
+            window_a.execute('UPDATE items SET lease_until=? WHERE id=?', (time.time() - 1, queued['id']))
+            window_a.commit()
+            self.assertEqual(core.recover_interrupted_downloads(window_b), 1)
+            with patch('media_intake.core.check_download'):
+                result = download(window_b, queued['id'], root)
+            self.assertEqual(result['state'], 'downloaded')
+
     def test_settings_apply_connections_and_speed_limit(self):
         with tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
             self.assertEqual(core.download_settings(db), {'connections': 4, 'speed_limit_kbps': 0, 'retries': 4,

@@ -195,6 +195,28 @@ class RetryTests(unittest.TestCase):
             self.assertEqual(core.http_get('https://example.org/'), (b'{}', 'https://example.org/'))
         sleep.assert_called_once()
 
+    def test_rate_limited_catalogs_are_paced_and_briefly_cached(self):
+        from media_intake import core
+
+        class Ok:
+            def __init__(self, url): self.url = url
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            headers = {}
+            def read(self, n): return b'{}'
+            def geturl(self): return self.url
+        opened = []
+        def fake_open(request, timeout=30):
+            opened.append(request.full_url)
+            return Ok(request.full_url)
+        url = 'https://www.wikidata.org/w/api.php?action=wbsearchentities&search=pacing-test'
+        with patch.object(core, 'open_url', side_effect=fake_open), patch.dict(core._PACED_CACHE, clear=True):
+            core.http_get(url)
+            core.http_get(url)
+            core.http_get('https://example.org/feed')
+            core.http_get('https://example.org/feed')
+        self.assertEqual(opened, [url, 'https://example.org/feed', 'https://example.org/feed'])
+
 
 if __name__ == '__main__':
     unittest.main()

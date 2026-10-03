@@ -6,6 +6,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -293,7 +294,44 @@ def open_url(request, timeout=30):
 HTTP_GET_RETRY_STATUSES = {429, 503}
 
 
+# Public catalogs that rate-limit bursts: one request at a time per host, a short
+# gap between them, and identical requests answered from memory for a few minutes
+# (a category search asks Wikidata several things at once, and people re-run
+# searches). Other hosts are untouched, so watchers always see fresh pages.
+PACED_HOSTS = {'www.wikidata.org': 0.2, 'query.wikidata.org': 0.5, 'www.googleapis.com': 0.5}
+PACED_CACHE_SECONDS = 300
+_PACE_LOCKS = {host: threading.Lock() for host in PACED_HOSTS}
+_PACE_LAST = {}
+_PACED_CACHE = {}
+_PACED_CACHE_LOCK = threading.Lock()
+
+
 def http_get(url, max_bytes=10_000_000, retries=2):
+    host = (urllib.parse.urlsplit(url).hostname or '').casefold()
+    if host not in PACED_HOSTS:
+        return _http_get_retrying(url, max_bytes, retries)
+    with _PACED_CACHE_LOCK:
+        cached = _PACED_CACHE.get(url)
+        if cached and cached[0] > time.monotonic() and len(cached[1][0]) <= max_bytes:
+            return cached[1]
+    with _PACE_LOCKS[host]:
+        wait = _PACE_LAST.get(host, 0) + PACED_HOSTS[host] - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            result = _http_get_retrying(url, max_bytes, retries)
+        finally:
+            _PACE_LAST[host] = time.monotonic()
+    with _PACED_CACHE_LOCK:
+        _PACED_CACHE[url] = (time.monotonic() + PACED_CACHE_SECONDS, result)
+        for key in [key for key, value in _PACED_CACHE.items() if value[0] <= time.monotonic()]:
+            del _PACED_CACHE[key]
+        while len(_PACED_CACHE) > 256:
+            del _PACED_CACHE[next(iter(_PACED_CACHE))]
+    return result
+
+
+def _http_get_retrying(url, max_bytes, retries):
     request = urllib.request.Request(url, headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
     for attempt in range(retries + 1):
         try:

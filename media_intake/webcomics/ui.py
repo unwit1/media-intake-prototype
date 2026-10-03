@@ -34,13 +34,27 @@ class WebcomicsPanel:
         actions = ttk.Frame(parent)
         actions.pack(fill='x')
         ttk.Button(actions, text='Refresh library', command=self.refresh).pack(side='left')
-        ttk.Button(actions, text='Check watches now', command=lambda: app._run_watch_scan(force=True)).pack(side='left', padx=6)
+        ttk.Button(actions, text='Check selected now', command=self.check_selected).pack(side='left', padx=6)
         ttk.Button(actions, text='Series detail', command=self.detail).pack(side='left')
         ttk.Button(actions, text='Watch settings', command=self.settings).pack(side='left', padx=6)
         ttk.Button(actions, text='Catalog matches', command=self.catalog_matches).pack(side='left')
-        columns = ('title', 'creator', 'source', 'entries', 'archived', 'latest', 'checked', 'health')
+        more = ttk.Frame(parent)
+        more.pack(fill='x', pady=(4, 0))
+        ttk.Button(more, text='Pause / resume', command=self.toggle_pause).pack(side='left')
+        ttk.Button(more, text='Archive backlog now', command=self.archive_backlog).pack(side='left', padx=6)
+        ttk.Button(more, text='Retry failed entries', command=self.retry_failed).pack(side='left')
+        ttk.Button(more, text='Open site', command=self.open_site).pack(side='left', padx=6)
+        ttk.Label(more, text='Filter').pack(side='left', padx=(18, 4))
+        self.filter_text = tk.StringVar()
+        ttk.Entry(more, textvariable=self.filter_text, width=24).pack(side='left')
+        self.filter_status = tk.StringVar(value='All')
+        ttk.Combobox(more, textvariable=self.filter_status, state='readonly', width=16,
+                     values=('All', 'Needs attention', 'Has waiting entries', 'Paused')).pack(side='left', padx=6)
+        self.filter_text.trace_add('write', lambda *_: self.render())
+        self.filter_status.trace_add('write', lambda *_: self.render())
+        columns = ('title', 'creator', 'source', 'entries', 'archived', 'waiting', 'failed', 'latest', 'checked', 'health')
         self.view = ttk.Treeview(parent, columns=columns, show='headings', height=13)
-        widths = (190, 130, 85, 55, 65, 150, 140, 160)
+        widths = (190, 120, 80, 55, 65, 60, 50, 150, 135, 170)
         for name, width in zip(columns, widths):
             self.view.heading(name, text=name.title())
             self.view.column(name, width=width, minwidth=45)
@@ -88,15 +102,82 @@ class WebcomicsPanel:
         self.app._worker('Resolving Webcomic…', action, added)
 
     def refresh(self):
-        selected = self.view.selection()
         self.rows = {str(row['id']): row for row in library(self.app.db)}
+        counts = {row[0]: (row[1] or 0, row[2] or 0) for row in self.app.db.execute(
+            '''SELECT source_id, SUM(state IN ('pending','queued')), SUM(state='failed')
+               FROM webcomic_entries WHERE removed=0 GROUP BY source_id''')}
+        for row in self.rows.values():
+            row['waiting'], row['failed'] = counts.get(row['id'], (0, 0))
+            row['paused'] = bool(json.loads(row['config'] or '{}').get('paused'))
+        self.render()
+
+    def render(self):
+        selected = self.view.selection()
+        needle = self.filter_text.get().casefold().strip() if hasattr(self, 'filter_text') else ''
+        status = self.filter_status.get() if hasattr(self, 'filter_status') else 'All'
         self.view.delete(*self.view.get_children())
         for key, row in self.rows.items():
-            health = row['health'] + (': ' + row['last_error'][:70] if row.get('last_error') else '')
+            if needle and needle not in f"{row['title']} {row['author']} {row['url']}".casefold():
+                continue
+            problem = row['health'] != 'OK' or row['failed'] or row.get('last_error')
+            if (status == 'Paused' and not row['paused'] or status == 'Needs attention' and not problem
+                    or status == 'Has waiting entries' and not row['waiting']):
+                continue
+            health = ('Paused' if row['paused'] else row['health']) + (
+                ': ' + row['last_error'][:70] if row.get('last_error') else '')
             self.view.insert('', 'end', iid=key, values=(row['title'], row['author'], row['adapter'],
-                row['entries'], row['archived'], row['latest_release'] or '', row['last_checked_at'] or '', health))
-        if selected and selected[0] in self.rows:
+                row['entries'], row['archived'], row['waiting'], row['failed'], row['latest_release'] or '',
+                row['last_checked_at'] or '', health))
+        if selected and self.view.exists(selected[0]):
             self.view.selection_set(selected[0])
+
+    def check_selected(self):
+        from .controls import check_source
+        source = self.selected()
+        if not source:
+            return
+        data_root, folder = self.app.data_root, self.app.library_folder.get().strip() or None
+        def action():
+            db = connect(data_root)
+            try:
+                return check_source(db, source['watch_id'], folder)
+            finally:
+                db.close()
+        def done(watch):
+            self.refresh()
+            self.app._done(f"Checked {watch['title']}" + (f": {watch['last_error']}" if watch.get('last_error') else ''))
+        self.app._worker(f"Checking {source['title']}…", action, done)
+
+    def toggle_pause(self):
+        from .controls import set_paused
+        source = self.selected()
+        if source:
+            set_paused(self.app.db, source['id'], not source.get('paused'))
+            self.refresh()
+            self.app._done(('Paused ' if not source.get('paused') else 'Resumed ') + source['title'])
+
+    def archive_backlog(self):
+        from .controls import archive_backlog
+        source = self.selected()
+        if source:
+            count = archive_backlog(self.app.db, source['id'])
+            self.refresh()
+            self.app._done(f"{count} existing entries will archive once; new releases follow the automatic setting")
+            self.check_selected()
+
+    def retry_failed(self):
+        from .watcher import retry_failed_entries
+        source = self.selected()
+        if source:
+            count = retry_failed_entries(self.app.db, source['id'])
+            self.refresh()
+            self.app._done(f'{count} failed entries will be retried')
+
+    def open_site(self):
+        import webbrowser
+        source = self.selected()
+        if source:
+            webbrowser.open(source['url'])
 
     def selected(self):
         values = self.view.selection()

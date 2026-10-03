@@ -203,14 +203,18 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
                (json.dumps(cursor), json.dumps(snapshot.metrics), 'OK', now(), source_id))
 
 
-def queue_pending(db, source, limit=10):
+def queue_pending(db, source, limit=10, entry_ids=None):
     from ..core import enqueue
     from ..serial import validate_manifest
     watch = dict(db.execute('SELECT * FROM watched_items WHERE id=?', (source['watch_id'],)).fetchone())
     config = json.loads(source['config'])
     queued = []
-    for row in db.execute("SELECT * FROM webcomic_entries WHERE source_id=? AND state='pending' AND removed=0 ORDER BY ordinal,id LIMIT ?",
-                          (source['id'], max(1, min(limit, 100)))).fetchall():
+    rows = db.execute("SELECT * FROM webcomic_entries WHERE source_id=? AND state='pending' AND removed=0 ORDER BY ordinal,id LIMIT ?",
+                      (source['id'], max(1, min(limit, 100)) if entry_ids is None else 100000)).fetchall()
+    if entry_ids is not None:
+        wanted = set(entry_ids)
+        rows = [row for row in rows if row['id'] in wanted][:max(1, min(limit, 100))]
+    for row in rows:
         entry = json.loads(row['metadata'])
         chapter = {'title': entry['title'], 'url': entry['source_url']}
         if entry['assets']:
@@ -248,7 +252,12 @@ def poll_source(db, source_id, client=None):
         apply_snapshot(db, source_id, snapshot)
         db.commit()
         client.prune() if hasattr(client, 'prune') else None
-        return queue_pending(db, source, int(config.get('batch_size', 10))) if config.get('auto_archive', True) else []
+        if config.get('auto_archive', True):
+            return queue_pending(db, source, int(config.get('batch_size', 10)))
+        # Automation off: only a requested one-time backlog job is queued.
+        from .controls import backlog_entries
+        batch = int(config.get('batch_size', 10))
+        return queue_pending(db, source, batch, entry_ids=backlog_entries(db, source_id, batch))
     except Exception as exc:
         db.rollback()
         health = 'PARSER_SUSPECTED_BROKEN' if isinstance(exc, (ExtractionError, ValueError, KeyError, TypeError)) else 'SOURCE_UNREACHABLE'
@@ -267,6 +276,8 @@ def process_watch(db, watch, library_folder, source_options=None):
         raise ValueError('Webcomic source state is missing')
     source = dict(source)
     config = json.loads(source['config'])
+    if config.get('paused'):
+        return  # paused sources are never checked
     database_file = db.execute('PRAGMA database_list').fetchone()['file']
     with _LOCKS_GUARD:
         lock = _LOCKS.setdefault((database_file, source['id']), threading.Lock())
@@ -281,11 +292,15 @@ def process_watch(db, watch, library_folder, source_options=None):
         from .downloads import reconcile_archives
         reconcile_archives(db, source['id'])
         poll_source(db, source['id'])
-        if config.get('auto_archive', True):
+        backlog_until = config.get('backlog_until_ordinal')
+        if config.get('auto_archive', True) or backlog_until:
+            # Automation off: download only the one-time backlog (entries known when it was requested).
+            ceiling = float('inf') if config.get('auto_archive', True) else float(backlog_until)
             pending = db.execute('''SELECT e.id, e.queue_id, e.attempts FROM webcomic_entries e JOIN items i ON i.id=e.queue_id
                 WHERE e.source_id=? AND e.state='queued' AND i.state IN ('queued','failed','downloaded')
-                AND (e.retry_after IS NULL OR e.retry_after <= ?)
-                ORDER BY e.ordinal,e.id LIMIT ?''', (source['id'], time.time(), int(config.get('batch_size', 10)))).fetchall()
+                AND (e.retry_after IS NULL OR e.retry_after <= ?) AND e.ordinal <= ?
+                ORDER BY e.ordinal,e.id LIMIT ?''', (source['id'], time.time(), ceiling,
+                                                     int(config.get('batch_size', 10)))).fetchall()
             download_errors = []
             for row in pending:
                 try:

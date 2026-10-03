@@ -317,3 +317,54 @@ def unfollow(db, show_id):
     db.execute('DELETE FROM podcast_episodes WHERE show_id=?', (show_id,))
     db.execute('DELETE FROM podcast_shows WHERE id=?', (show_id,))
     db.commit()
+
+
+# OPML: the subscription list format every podcast app imports and exports ----
+
+def export_opml(db, title='Media Intake podcasts'):
+    """Return the followed shows as an OPML 2.0 document (bytes)."""
+    root = ET.Element('opml', version='2.0')
+    head = ET.SubElement(root, 'head')
+    ET.SubElement(head, 'title').text = title
+    ET.SubElement(head, 'dateCreated').text = email.utils.format_datetime(dt.datetime.now(dt.timezone.utc))
+    body = ET.SubElement(root, 'body')
+    for row in db.execute('SELECT title, feed_url FROM podcast_shows ORDER BY title COLLATE NOCASE'):
+        ET.SubElement(body, 'outline', type='rss', text=row['title'], title=row['title'], xmlUrl=row['feed_url'])
+    ET.indent(root)
+    return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+
+def parse_opml(body):
+    """Return ``[(title, feed_url)]`` for every feed outline, including nested folders."""
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise ValueError(f'Not an OPML file: {exc}') from None
+    if root.tag != 'opml':
+        raise ValueError('Not an OPML file')
+    feeds, seen = [], set()
+    for node in root.iter('outline'):
+        url = _safe_url(node.get('xmlUrl') or node.get('xmlurl') or '')
+        if url and url not in seen:
+            seen.add(url)
+            feeds.append((node.get('title') or node.get('text') or url, url))
+    return feeds
+
+
+def import_opml(db, body, backlog='none', latest=0, client=None):
+    """Follow every feed in an OPML file; already-followed feeds are left alone.
+
+    Importing defaults to no back catalogue, so moving a subscription list from
+    another app does not queue years of old episodes. Returns a summary dict.
+    """
+    added, existing, failed = [], [], []
+    for title, url in parse_opml(body):
+        if db.execute('SELECT 1 FROM podcast_shows WHERE feed_url=?', (url,)).fetchone():
+            existing.append(title)
+            continue
+        try:
+            follow(db, url, backlog=backlog, latest=latest, client=client)
+            added.append(title)
+        except Exception as exc:  # one dead feed should not stop the rest
+            failed.append(f'{title}: {exc}')
+    return {'added': added, 'existing': existing, 'failed': failed}

@@ -132,5 +132,35 @@ class FollowTests(unittest.TestCase):
             self.assertEqual(self.db.execute('SELECT COUNT(*) FROM podcast_shows').fetchone()[0], 0)
 
 
+class OpmlTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = connect(self.temp.name)
+
+    def tearDown(self):
+        self.db.close()
+        self.temp.cleanup()
+
+    def test_import_follows_new_feeds_without_back_catalogue_and_export_round_trips(self):
+        podcasts.follow(self.db, FEED, backlog='none', client=FeedClient(rss([(1, 'https://cdn.example')])))
+        opml = (b'<?xml version="1.0"?><opml version="1.0"><head><title>From another app</title></head><body>'
+                b'<outline text="Folder"><outline type="rss" text="Second" xmlUrl="https://pod.example/second.xml"/>'
+                b'<outline type="rss" text="Again" xmlUrl="https://pod.example/second.xml"/></outline>'
+                b'<outline type="rss" text="Fixture Show" xmlUrl="https://pod.example/feed.xml"/>'
+                b'<outline type="rss" text="Unsafe" xmlUrl="file:///etc/passwd"/></body></opml>')
+        self.assertEqual(podcasts.parse_opml(opml), [('Second', 'https://pod.example/second.xml'), ('Fixture Show', FEED)])
+        episodes = [(n, 'https://cdn.example') for n in range(1, 4)]
+        summary = podcasts.import_opml(self.db, opml, client=FeedClient(rss(episodes, 'Second Show')))
+        self.assertEqual(summary, {'added': ['Second'], 'existing': ['Fixture Show'], 'failed': []})
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM podcast_episodes WHERE state='queued'").fetchone()[0], 0)
+        exported = podcasts.parse_opml(podcasts.export_opml(self.db))
+        self.assertEqual(sorted(url for _title, url in exported), sorted([FEED, 'https://pod.example/second.xml']))
+
+    def test_bad_files_are_rejected(self):
+        for body in (b'not xml', b'<rss/>'):
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, 'OPML'):
+                podcasts.parse_opml(body)
+
+
 if __name__ == '__main__':
     unittest.main()

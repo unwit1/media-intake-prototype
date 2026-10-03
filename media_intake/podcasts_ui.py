@@ -1,6 +1,6 @@
 """Podcasts tab: find and follow shows, see episodes, and control automatic downloads."""
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from . import podcasts
 from .core import connect
@@ -53,7 +53,8 @@ class PodcastsPanel:
         bar.pack(fill='x', pady=6)
         for label, command in (('Check now', self.check_selected), ('Check all', self.check_all),
                                ('Toggle auto-download', self.toggle_auto), ('Keep latest…', self.set_keep),
-                               ('Check every…', self.set_interval), ('Unfollow', self.unfollow)):
+                               ('Check every…', self.set_interval), ('Unfollow', self.unfollow),
+                               ('Import OPML…', self.import_opml), ('Export OPML…', self.export_opml)):
             ttk.Button(bar, text=label, command=command).pack(side='left', padx=(0, 6))
         self.episodes = ttk.Treeview(shows_frame, columns=('published', 'number', 'duration', 'state'),
                                      show='tree headings', selectmode='extended')
@@ -152,6 +153,44 @@ class PodcastsPanel:
                            'Latest 10 episodes': ('latest', 10), 'Every episode': ('all', 0)}[choice]
         self._run('Following podcast…', lambda db: podcasts.follow(db, feed, backlog=backlog, latest=latest),
                   lambda _show_id: self.app._done(f'Following; {choice.lower()} queued for download'))
+
+    def import_opml(self):
+        path = filedialog.askopenfilename(title='Import podcast subscriptions',
+                                          filetypes=[('OPML', '*.opml *.xml'), ('All files', '*.*')])
+        if not path:
+            return
+        try:
+            with open(path, 'rb') as source:
+                body = source.read(5_000_000)
+            feeds = podcasts.parse_opml(body)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror('Import OPML', str(exc))
+            return
+        if not feeds:
+            messagebox.showinfo('Import OPML', 'That file lists no podcast feeds.')
+            return
+
+        def done(summary):
+            lines = [f"Followed {len(summary['added'])} new show(s); {len(summary['existing'])} already followed."]
+            if summary['failed']:
+                lines += ['', 'Could not follow:'] + summary['failed'][:15]
+            lines += ['', 'No back catalogue was queued; new episodes download as they are released.']
+            messagebox.showinfo('Import OPML', '
+'.join(lines))
+        self._run(f'Importing {len(feeds)} podcast feed(s)…', lambda db: podcasts.import_opml(db, body), done)
+
+    def export_opml(self):
+        path = filedialog.asksaveasfilename(title='Export podcast subscriptions', defaultextension='.opml',
+                                            initialfile='podcasts.opml', filetypes=[('OPML', '*.opml')])
+        if not path:
+            return
+        try:
+            with open(path, 'wb') as target:
+                target.write(podcasts.export_opml(self._db()))
+        except OSError as exc:
+            messagebox.showerror('Export OPML', str(exc))
+            return
+        self.app._done(f'Exported podcast subscriptions to {path}')
 
     def check_selected(self):
         show_id = self._selected_show()

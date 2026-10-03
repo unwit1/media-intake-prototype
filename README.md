@@ -171,6 +171,10 @@ AniList offers a public GraphQL API for manga metadata and does not require auth
 
 Downloads use a built-in engine: multiple connections per file, resume after pauses, errors and restarts, pause/cancel, a speed limit, and retries. Shortlinks and file-host pages are resolved automatically. Magnet and `.torrent` links download natively with the optional `requirements-torrent.txt`. Jackett search and clipboard link capture are also built in. See [Downloads](docs/DOWNLOADS.md).
 
+**Back up database…** (toolbar) saves a consistent copy of `intake.sqlite3`, which holds the queue, watch list, settings and follows, while the app runs. To restore, close the app and put the copy in the data folder as `intake.sqlite3`. **Export watch list (CSV)…** on the Watched tab writes every watched item with its series, release date and status.
+
+`python tools/metadata_check.py` runs a live search for 50 well-known series across every category and reports missing titles, duplicate rows and edition clutter.
+
 `python -m unittest discover -s tests -v` runs local HTTP, source-parser, Calibre invocation, fake IRC/DCC, Goodreads saved-page, and mocked FanFicFare update tests. These tests do not contact live ebook/IRC/fanfiction servers. Calibre must be installed and `calibredb` on PATH for a real import.
 
 ## Syncing to a Windows PC

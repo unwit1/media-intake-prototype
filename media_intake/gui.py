@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import threading
+import sqlite3
 import traceback
 import uuid
 import datetime as dt
@@ -316,6 +317,7 @@ class MediaIntakeApp:
         ttk.Entry(toolbar, textvariable=tk.StringVar(value=str(self.data_root)), width=58, state='readonly').pack(side='left', padx=6)
         ttk.Button(toolbar, text='Choose…', command=self.choose_root).pack(side='left')
         ttk.Button(toolbar, text='Open logs', command=self.open_logs).pack(side='left', padx=6)
+        ttk.Button(toolbar, text='Back up database…', command=self.backup_database).pack(side='left')
         rights_actions = ttk.Frame(toolbar)
         rights_actions.pack(side='right', padx=(8, 0))
         ttk.Button(rights_actions, text='Open rights file', command=self.open_rights_evidence).pack(side='left')
@@ -1766,6 +1768,7 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Discover related', command=self.discover_watched_relationships).pack(side='left', padx=6)
         ttk.Button(buttons, text='Set/clear release date', command=self.edit_watch_release_date).pack(side='left', padx=6)
         ttk.Button(buttons, text='Remove selected', command=self.delete_watched).pack(side='left')
+        ttk.Button(buttons, text='Export watch list (CSV)…', command=self.export_watch_list).pack(side='left', padx=6)
 
         graph_tools = ttk.Frame(parent)
         graph_tools.pack(fill='x', pady=(5, 0))
@@ -6158,6 +6161,40 @@ class MediaIntakeApp:
         if done:
             return f'{source} · {message} · {self._format_bytes(done)} received'
         return f'{source} · {message}'
+
+    def backup_database(self):
+        from datetime import date
+        from .backup import backup_database
+        path = filedialog.asksaveasfilename(
+            title='Back up the app database', defaultextension='.sqlite3',
+            initialfile=f'media-intake-backup-{date.today().isoformat()}.sqlite3',
+            filetypes=[('SQLite database', '*.sqlite3'), ('All files', '*.*')])
+        if not path:
+            return
+        try:
+            backup_database(self.db, path)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            messagebox.showerror('Back up database', str(exc))
+            return
+        self._done(f'Database backed up to {path}')
+        messagebox.showinfo('Back up database', (
+            f'Saved {path}.\n\nIt holds the queue, watch list, settings and follows, not the downloaded files. '
+            'To restore, close the app and put it in the data folder as intake.sqlite3. Saved passwords '
+            'and API keys only unlock for this Windows user.'))
+
+    def export_watch_list(self):
+        from .backup import export_watch_list
+        path = filedialog.asksaveasfilename(
+            title='Export watch list', defaultextension='.csv', initialfile='watch-list.csv',
+            filetypes=[('CSV files', '*.csv')])
+        if not path:
+            return
+        try:
+            count = export_watch_list(self.db, path)
+        except OSError as exc:
+            messagebox.showerror('Export watch list', str(exc))
+            return
+        self._done(f'Exported {count} watched item(s) to {path}')
 
     def import_goodreads_list_csv(self):
         path = filedialog.askopenfilename(

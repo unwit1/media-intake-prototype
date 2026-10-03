@@ -73,7 +73,8 @@ def _memo(provider, identity, loader, interval=1):
         if cached and cached[0] > time.monotonic():
             return copy.deepcopy(cached[1])
         if state['blocked'] > time.monotonic():
-            raise ValueError(f'{provider} is rate limited; try again later')
+            minutes = max(1, round((state['blocked'] - time.monotonic()) / 60))
+            raise ValueError(f'{provider} is rate limited for about {minutes} more minute(s)')
         delay = state['last'] + interval - time.monotonic()
         if delay > 0:
             time.sleep(delay)
@@ -87,7 +88,10 @@ def _memo(provider, identity, loader, interval=1):
         except urllib.error.HTTPError as exc:
             code = exc.code
             if code == 429:
-                state['blocked'] = time.monotonic() + (retry_seconds((exc.headers or {}).get('Retry-After')) or 60)
+                wait = retry_seconds((exc.headers or {}).get('Retry-After')) or 60
+                state['blocked'] = time.monotonic() + wait
+                exc.close()
+                raise ValueError(f'{provider} is rate limited for about {max(1, round(wait / 60))} minute(s)') from None
             exc.close()
             # HTTPError embeds the full Comic Vine query URL, including API key.
             raise ValueError(f'{provider} returned HTTP {code}; check credentials or retry later') from None

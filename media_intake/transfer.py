@@ -303,7 +303,16 @@ def _save_state(part, state):
     path = _state_path(part)
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(state), encoding='utf-8')
-    os.replace(temporary, path)
+    # On Windows a file cannot be replaced while anything has it open, and the
+    # queue's progress display reads this checkpoint; that read takes moments.
+    for attempt in range(20):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def discard_partial(part):

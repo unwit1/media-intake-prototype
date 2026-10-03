@@ -259,6 +259,19 @@ class QueueIntegrationTests(unittest.TestCase):
             db.execute("INSERT INTO gui_settings(key,value) VALUES('download_window_end_hour','99')")
             self.assertEqual(core.download_settings(db)['window_end_hour'], 23)
 
+    def test_checkpoint_save_waits_out_a_reader_holding_the_file(self):
+        real_replace, calls = transfer.os.replace, []
+        def busy_then_free(source, target):
+            calls.append(target)
+            if len(calls) < 3:
+                raise PermissionError(5, 'Access is denied')
+            real_replace(source, target)
+        with tempfile.TemporaryDirectory() as root, patch.object(transfer.os, 'replace', side_effect=busy_then_free):
+            part = Path(root) / '.partial-1.part'
+            transfer._save_state(part, {'segments': []})
+            self.assertEqual(json.loads(Path(str(part) + '.json').read_text(encoding='utf-8')), {'segments': []})
+        self.assertEqual(len(calls), 3)
+
     def test_the_same_item_cannot_download_twice_at_once(self):
         with RangeServer() as server, tempfile.TemporaryDirectory() as root, closing(connect(root)) as db:
             queued = self.queue(db, server.url)

@@ -28,6 +28,7 @@ class WebcomicsPanel:
                      values=('auto', 'feed', 'static', 'wordpress', 'comicfury', 'webtoon', 'xkcd')).grid(row=0, column=2)
         ttk.Button(form, text='Resolve and watch', command=self.add).grid(row=0, column=3, padx=6)
         ttk.Button(form, text='Load recipe…', command=self.load_recipe).grid(row=1, column=2, padx=6)
+        ttk.Button(form, text='Suggest recipe…', command=self.suggest_recipe).grid(row=1, column=3, padx=6)
         ttk.Checkbutton(form, text='Archive existing entries', variable=self.archive_existing).grid(row=2, column=1, sticky='w')
         ttk.Checkbutton(form, text='Automatically archive future entries', variable=self.auto_archive).grid(row=2, column=2, columnspan=2, sticky='w')
         form.columnconfigure(1, weight=1)
@@ -49,6 +50,7 @@ class WebcomicsPanel:
         ttk.Button(more, text='Health', command=self.health).pack(side='left', padx=6)
         ttk.Button(more, text='Mirrors', command=self.mirrors).pack(side='left')
         ttk.Button(more, text='Wayback report', command=self.wayback_report).pack(side='left', padx=6)
+        ttk.Button(more, text='Export…', command=self.export).pack(side='left')
         ttk.Label(more, text='Filter').pack(side='left', padx=(18, 4))
         self.filter_text = tk.StringVar()
         ttk.Entry(more, textvariable=self.filter_text, width=24).pack(side='left')
@@ -89,6 +91,11 @@ class WebcomicsPanel:
             config['library_profile_ids'] = [profile]
         if self.adapter.get() != 'auto':
             config['adapter'] = self.adapter.get()
+        if not self.recipe and self.adapter.get() == 'auto':
+            from .infer import recipe_for
+            saved = recipe_for(self.app.db, url)  # a recipe accepted earlier for this site
+            if saved:
+                self.recipe = saved
         if self.recipe:
             config.update({'recipe': self.recipe, 'adapter': self.recipe['id']})
         archive_existing = self.archive_existing.get()
@@ -105,6 +112,49 @@ class WebcomicsPanel:
             self.app.refresh_watches()
             self.app._done('Webcomic resolved and watched')
         self.app._worker('Resolving Webcomic…', action, added)
+
+    def suggest_recipe(self):
+        from .http import HttpClient
+        from .infer import infer_recipe, save_recipe
+        url = self.url.get().strip()
+        if not url:
+            messagebox.showinfo('Suggest recipe', 'Enter the comic site address first.')
+            return
+        data_root = self.app.data_root
+        def action():
+            db = connect(data_root)
+            try:
+                return infer_recipe(HttpClient(db), url)
+            finally:
+                db.close()
+        def show(result):
+            if not result:
+                messagebox.showinfo('Suggest recipe', 'No convincing archive and comic-image layout was found on this site.')
+                return
+            dialog = tk.Toplevel(self.app.root)
+            dialog.title('Suggested recipe')
+            dialog.geometry('820x440')
+            recipe = result['recipe']
+            lines = [f"Confidence {result['confidence']:.0%}", ''] + [f'• {line}' for line in result['evidence']]
+            lines += ['', f"Archive page: {recipe['archive_url']}", f"Entry links: {recipe['archive_selector']}",
+                      f"Comic image: {recipe['image_selector']}", '', 'Dry run on sample entries:']
+            for sample in result['samples']:
+                lines.append(f"  {sample['url']}")
+                lines += [f'      image: {image}' for image in sample['images']]
+            text = tk.Text(dialog, wrap='word')
+            text.insert('1.0', '\n'.join(lines))
+            text.configure(state='disabled')
+            text.pack(fill='both', expand=True, padx=12, pady=12)
+            def accept():
+                save_recipe(self.app.db, recipe)
+                self.recipe = recipe
+                dialog.destroy()
+                self.add()
+            bar = ttk.Frame(dialog)
+            bar.pack(fill='x', padx=12, pady=(0, 12))
+            ttk.Button(bar, text='Use this recipe and watch', command=accept).pack(side='left')
+            ttk.Button(bar, text='Cancel', command=dialog.destroy).pack(side='right')
+        self.app._worker('Studying the site layout…', action, show)
 
     def refresh(self):
         self.rows = {str(row['id']): row for row in library(self.app.db)}
@@ -177,6 +227,34 @@ class WebcomicsPanel:
             count = retry_failed_entries(self.app.db, source['id'])
             self.refresh()
             self.app._done(f'{count} failed entries will be retried')
+
+    def export(self):
+        from .export import export_source
+        source = self.selected()
+        if not source:
+            return
+        dialog = tk.Toplevel(self.app.root)
+        dialog.title(f"Export {source['title']}")
+        modes = {'One CBZ per chapter': 'chapter_cbz', 'One CBZ for the series': 'series_cbz',
+                 'Image EPUB': 'epub', 'Original image folders': 'folders'}
+        choice = tk.StringVar(value='One CBZ per chapter')
+        ttk.Label(dialog, text='Format (original image bytes are kept; an OPDS catalog.json is written too)').pack(
+            anchor='w', padx=12, pady=(12, 4))
+        ttk.Combobox(dialog, textvariable=choice, values=list(modes), state='readonly', width=30).pack(anchor='w', padx=12)
+        def run():
+            folder = filedialog.askdirectory(title='Export to folder', parent=dialog)
+            if not folder:
+                return
+            dialog.destroy()
+            data_root = self.app.data_root
+            def action():
+                db = connect(data_root)
+                try:
+                    return export_source(db, source['id'], folder, modes[choice.get()])
+                finally:
+                    db.close()
+            self.app._worker('Exporting…', action, lambda written: self.app._done(f'Exported {len(written)} item(s) to {folder}'))
+        ttk.Button(dialog, text='Choose folder and export', command=run).pack(padx=12, pady=12)
 
     def wayback_report(self):
         from . import wayback

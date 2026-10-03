@@ -141,24 +141,31 @@ class GcdTests(unittest.TestCase):
                          [('Sandman', '1989'), ('The Sandman', '1974')])
         self.assertNotIn('pt', {r.get('language') for r in series_rows})
 
-    def test_collected_edition_runs_list_volumes_not_duplicate_issues(self):
+    def gcd_runs(self, *runs):
         def pages(provider, url, **kwargs):
             if '/name/' in url:
-                return [{'api_url': 'https://www.comics.org/api/series/1/', 'name': 'Invincible', 'year_began': 2003,
-                         'language': 'en', 'active_issues': [1] * 170, 'publishing_format': 'was ongoing series'},
-                        {'api_url': 'https://www.comics.org/api/series/2/', 'name': 'Invincible', 'year_began': 2003,
-                         'language': 'en', 'active_issues': [1] * 34,
-                         'publishing_format': 'Collected Editions; Was Ongoing Series'}]
+                return [{'api_url': f'https://www.comics.org/api/series/{sid}/', 'name': 'Invincible',
+                         'year_began': 2003, 'language': 'en', 'active_issues': [1] * issues,
+                         'publishing_format': fmt} for sid, issues, fmt in runs]
             series_id = url.rstrip('/').split('/')[-2]
             return [{'issue_id': f'{series_id}0{n}', 'number': str(n),
                      'series': f'https://www.comics.org/api/series/{series_id}/'} for n in (1, 2)]
-        with patch.object(cm, '_pages', side_effect=pages):
+        requested = []
+        with patch.object(cm, '_pages', side_effect=lambda *a, **k: requested.append(a[1]) or pages(*a, **k)):
             rows, _errors = cm.search_gcd('Invincible')
         from media_intake.discovery import _merge_same_title
         merged = _merge_same_title([dict(r, source_role='metadata') for r in rows], 'Comics', [])
-        titles = sorted(r['title'] for r in merged if r.get('comic_entity') != 'series')
-        self.assertEqual(titles, ['Invincible', 'Invincible (2003) #1', 'Invincible (2003) #2',
-                                  'Invincible Vol. 1', 'Invincible Vol. 2'])  # 'Invincible': the trade run itself
+        return sorted(r['title'] for r in merged if r.get('comic_entity') != 'series'), requested
+
+    def test_collected_edition_runs_list_volumes_not_duplicate_issues(self):
+        titles, requested = self.gcd_runs((1, 170, 'was ongoing series'),
+                                          (2, 34, 'Collected Editions; Was Ongoing Series'))
+        # Only the main run's issues load (GCD's anonymous quota is small); the
+        # trade run is listed as a collection, not as a second copy of each issue.
+        self.assertEqual(titles, ['Invincible', 'Invincible (2003) #1', 'Invincible (2003) #2'])
+        self.assertEqual(sum('/overview/' in url for url in requested), 1)
+        titles, _requested = self.gcd_runs((2, 34, 'Collected Series'))
+        self.assertEqual(titles, ['Invincible', 'Invincible Vol. 1', 'Invincible Vol. 2'])
 
     def test_exact_run_is_found_pages_into_a_long_name_ordered_list(self):
         # GCD lists runs by sort name (article dropped): the two "Saga" runs sit pages in.
@@ -295,6 +302,92 @@ class HundredSeriesTests(unittest.TestCase):
         from media_intake.gui import MediaIntakeApp
         self.assertEqual([MediaIntakeApp._result_creator_label(r) for r in ordered[:2]],
                          ['Comic series · 1991 · 55 issues', 'Comic series · 2004 · 3 issues'])
+
+
+class ThirdSetTests(unittest.TestCase):
+    """General problems found by the third 100-series check."""
+
+    def test_series_names_ignore_generic_trailing_words(self):
+        from media_intake.discovery import _series_name_key
+        self.assertEqual(_series_name_key('Magic Tree House series'), _series_name_key('Magic Tree House'))
+        self.assertEqual(_series_name_key('Dune Chronicles'), 'dune')
+        self.assertEqual(_series_name_key('The Millennium Trilogy'), 'millennium')
+        self.assertEqual(_series_name_key('Saga'), 'saga')  # a one-word name is kept
+
+    def test_box_sets_dropped_and_edition_listings_merge_with_the_work(self):
+        rows = [{'title': 'Shift', 'author': 'Hugh Howey', 'kind': 'book', 'provider': 'A', 'source_url': 'a'},
+                {'title': "Shift Deluxe Collector's Edition", 'author': 'Hugh Howey', 'kind': 'book',
+                 'provider': 'B', 'source_url': 'b'},
+                {'title': 'The Baby-Sitters Club Graphix #1-4 Box Set', 'author': 'Ann M. Martin', 'kind': 'book',
+                 'provider': 'A', 'source_url': 'c'},
+                {'title': 'The Special Edition Blues', 'author': 'Ann Author', 'kind': 'book',
+                 'provider': 'A', 'source_url': 'd'}]
+        merged = _merge_same_title(rows, 'Books', [])
+        self.assertEqual(sorted(r['title'] for r in merged), ['Shift', 'The Special Edition Blues'])
+
+    def test_thin_wikidata_series_keeps_other_catalog_rows(self):
+        from media_intake.discovery import _expand_book_series_results
+        series = {'title': 'Magic Tree House series', 'kind': 'series', 'provider': 'Wikidata', 'source_url': 'w',
+                  'books': [{'title': 'Danger in the Darkest Hour', 'author': 'Mary Pope Osborne',
+                             'source_url': 'w1', 'release_date': '2015-01-01'}]}
+        other = {'title': 'Dinosaurs Before Dark', 'author': 'Mary Pope Osborne', 'kind': 'book', 'source_url': 'o'}
+        rows, bundle = _expand_book_series_results([series, other], 'Magic Tree House')
+        self.assertIn('Dinosaurs Before Dark', [row['title'] for row in rows])
+
+    def test_book_series_search_skips_comic_series_and_retries_without_series_word(self):
+        from media_intake import watched
+        self.assertFalse(watched._is_book_series('Comic book series.'))
+        calls = []
+        def fake_search(query, limit=20):
+            calls.append(query)
+            if query == 'Dune series':
+                return [{'qid': 'Q2', 'title': 'Dune', 'description': 'series of science fiction novels'}]
+            return []
+        with patch.object(watched, 'search_wikidata', side_effect=fake_search), \
+                patch.object(watched, '_wikidata_series_members', return_value=[]):
+            found = watched._search_wikidata_series('Dune Chronicles')
+        self.assertEqual(([r['qid'] for r in found], calls), (['Q2'], ['Dune Chronicles', 'Dune series']))
+
+    def test_one_off_open_library_authors_are_skipped(self):
+        from media_intake import sources
+        docs = {'docs': [{'key': '/authors/OL1A', 'name': 'Bridgerton Fans', 'work_count': 1},
+                         {'key': '/authors/OL2A', 'name': 'Julia Quinn', 'work_count': 120}]}
+        def fake_get(url, max_bytes=None):
+            body = docs if 'authors.json' in url else {'docs': []}
+            return json.dumps(body).encode(), 'https://openlibrary.org/search.json'
+        with patch.object(sources, 'http_get', side_effect=fake_get):
+            rows = sources.search_openlibrary_metadata('Bridgerton')
+        rows = rows[0] if isinstance(rows, tuple) else rows
+        self.assertEqual([r['title'] for r in rows if r.get('kind') == 'author'], ['Julia Quinn'])
+
+    def test_manga_rows_merge_by_alternate_titles_and_spelling(self):
+        rows = [{'title': "Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren'ai Zunousen", 'provider': 'MangaDex',
+                 'source_url': 'm'},
+                {'title': 'Kaguya-sama: Love is War', 'provider': 'AniList', 'source_url': 'a',
+                 'alternative_titles': ['Kaguya-sama wa Kokurasetai: Tensaitachi no Renai Zunousen']},
+                {'title': 'Kaguya-sama: Love is War', 'provider': 'MangaDex', 'source_url': 'm2'},
+                {'title': 'Kaguya-sama: Love Is War (Fan Colored)', 'provider': 'MangaDex', 'source_url': 'm3'}]
+        merged = _merge_same_title(rows, 'Manga', [])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(len(merged[0]['metadata_variants']), 4)
+
+    def test_anime_editions_fold_and_ids_link_catalogs(self):
+        rows = [{'title': 'Mobile Suit Gundam Seed', 'provider': 'AniList', 'source_url': 'a', 'video_subtype': 'tv_series',
+                 'release_date': '2002-10-05', 'external_ids': [{'provider': 'anilist', 'external_id': '93'}]},
+                {'title': 'Mobile Suit Gundam Seed Special Edition', 'provider': 'AniList', 'source_url': 'b',
+                 'video_subtype': 'tv_series', 'release_date': '2002-10-05'},
+                {'title': 'Gundam SEED', 'provider': 'Wikidata', 'source_url': 'w', 'video_subtype': 'anime',
+                 'external_ids': [{'provider': 'anilist', 'external_id': '93'}]}]
+        self.assertEqual(len(_merge_same_title(rows, 'Anime', [])), 1)
+
+    def test_equal_title_matches_go_most_followed_first_and_spacing_is_forgiven(self):
+        rows = [{'title': 'Code Geass: Akito the Exiled', 'popularity': 50},
+                {'title': 'Code Geass: Lelouch of the Rebellion', 'popularity': 900},
+                {'title': 'Geass Code'}]
+        self.assertEqual([r['title'] for r in _sort_by_title_relevance(rows, 'Code Geass')][:2],
+                         ['Code Geass: Lelouch of the Rebellion', 'Code Geass: Akito the Exiled'])
+        from media_intake.discovery import _title_relevance
+        self.assertEqual((_title_relevance('spider man', 'Spider-Man'), _title_relevance('Bone', 'Bones')), (0, 3))
 
 
 if __name__ == '__main__':

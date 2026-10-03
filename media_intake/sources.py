@@ -276,6 +276,9 @@ _CORPORATE_AUTHOR = re.compile(
     r'workshop|seminar|meeting|colloquium)\b|\((?:U\.S\.|Great Britain|Firm)\)', re.I)
 
 
+MIN_AUTHOR_WORKS = 3
+
+
 def search_openlibrary_metadata(query, limit=20):
     """Search Open Library for authors, books, and series with member works."""
     query = str(query or '').strip()
@@ -296,7 +299,10 @@ def search_openlibrary_metadata(query, limit=20):
             name = str(row.get('name') or '').strip()
             key = key if key.startswith('/authors/') else '/authors/' + key
             normalized_name = ' '.join(name.casefold().split())
+            # "Bridgerton Fans" or "For The For The Culture 365" are one-off records,
+            # not authors to follow; real authors have a body of work.
             if (name and normalized_name not in seen_authors and not _CORPORATE_AUTHOR.search(name) and
+                    int(row.get('work_count') or 0) >= MIN_AUTHOR_WORKS and
                     re.fullmatch(r'/authors/OL\d+A', key)):
                 seen_authors.add(normalized_name)
                 results.append({

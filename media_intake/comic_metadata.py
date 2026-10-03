@@ -349,7 +349,9 @@ def search_gcd(query, limit=100):
             errors.append(f'Issue search: {exc}')
     else:
         # Bounded overview gives individual issues without one request per issue.
-        for row in output[:2]:
+        # Only the best run: GCD's anonymous quota is small, and other runs are
+        # still listed (their issues load when that run is searched by name/year).
+        for row in output[:1]:
             try:
                 issue_rows.extend({**entry, 'series_name': row['title'], 'series': row['source_url'],
                     'series_start_year': row['series_start_year'], 'publisher': row['publisher'], 'language': row['language']}

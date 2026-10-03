@@ -599,6 +599,20 @@ def search_goodreads_with_fallback(query, limit=80):
 
 
 _BARE_QID = re.compile(r'Q[1-9]\d{0,11}')
+_GENERIC_SERIES_TAIL = re.compile(
+    r'(?:\s+(?:series|saga|cycle|trilogy|duology|quartet|chronicles|sequence|books|novels|collection))+\s*$', re.I)
+
+
+def _is_book_series(description):
+    # "comic book series" and "manga series" are found in the Comics and Manga categories.
+    return bool(_BOOK_SERIES_DESCRIPTION.search(description)) and not re.search(
+        r'\b(?:comic|comics|manga|manhwa|graphic novels?)\b', description, re.I)
+
+
+def _series_words_removed(value):
+    """Normalized series name without a leading article or a generic trailing word."""
+    text = re.sub(r'^(?:the|a|an)\s+', '', _normalized(value))
+    return _GENERIC_SERIES_TAIL.sub('', text).strip() or text
 _EDITION_MEMBER = re.compile(r'\b(?:translation|edition|reprint|omnibus|box(?:ed)? set)\s+of\b|^(?:version, edition|edition|translation)\b', re.I)
 
 
@@ -718,21 +732,20 @@ def _search_wikidata_series(query):
     for search_query in queries:
         for entity in search_wikidata(search_query, limit=20):
             description = str(entity.get('description') or '')
-            if _BOOK_SERIES_DESCRIPTION.search(description):
+            if _is_book_series(description):
                 by_qid.setdefault(entity.get('qid'), (entity, search_query))
-    if not by_qid and not re.search(r'\b(?:series|saga|cycle|trilogy|chronicles?)\s*$', queries[0], re.I):
+    if not by_qid:
         # A common word ("Foundation") ranks a foundation, a film and a company
-        # above Asimov's books; asking for the series by name finds it.
-        for entity in search_wikidata(queries[0] + ' series', limit=10):
-            if _BOOK_SERIES_DESCRIPTION.search(str(entity.get('description') or '')):
+        # above Asimov's books, and a descriptive word ("Dune Chronicles", "The
+        # Silo Series") hides the series' own label; ask for "<name> series".
+        base = _GENERIC_SERIES_TAIL.sub('', queries[0]).strip() or queries[0]
+        for entity in search_wikidata(base + ' series', limit=10):
+            if _is_book_series(str(entity.get('description') or '')):
                 by_qid.setdefault(entity.get('qid'), (entity, queries[0]))
     entities = list(by_qid.values())
-    query_key = _normalized(query)
     def score(entity):
-        title_key = _normalized(entity.get('title'))
-        title_key = re.sub(r'^(?:the|a|an)\s+', '', title_key)
-        normalized_query = re.sub(r'^(?:the|a|an)\s+', '', query_key)
-        return difflib.SequenceMatcher(None, normalized_query, title_key).ratio()
+        title_key = _series_words_removed(entity.get('title'))
+        return difflib.SequenceMatcher(None, _series_words_removed(query), title_key).ratio()
     entities = [pair for pair in entities if score(pair[0]) >= 0.5]
     entities.sort(key=lambda pair: (-score(pair[0]), _normalized(pair[0].get('title'))))
     for entity, matched_query in entities[:5]:

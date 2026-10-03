@@ -501,7 +501,8 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
             'unresolved_entities': sum(target_payloads.get(value) is None for value in related_ids)}
 
 
-_ID_PROPERTIES = {'P345': 'imdb', 'P8600': 'tvmaze', 'P4947': 'tmdb_movie', 'P4983': 'tmdb_tv', 'P4835': 'thetvdb'}
+_ID_PROPERTIES = {'P345': 'imdb', 'P8600': 'tvmaze', 'P4947': 'tmdb_movie', 'P4983': 'tmdb_tv', 'P4835': 'thetvdb',
+                  'P8729': 'anilist', 'P8731': 'anilist', 'P4086': 'mal_anime', 'P4087': 'mal_manga'}
 
 
 def wikidata_external_ids(qids):

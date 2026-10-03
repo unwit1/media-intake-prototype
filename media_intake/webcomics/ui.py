@@ -355,6 +355,10 @@ class WebcomicsPanel:
         lines = [f"Status: {info['health']}  ·  adapter {info['adapter']} v{info['adapter_version']}  ·  "
                  f"last success {info['last_success'] or 'never'}  ·  failures in a row {info['failures']}", '']
         lines += ['Warnings:'] + [f'  • {text}' for text in info['warnings']] if info['warnings'] else ['No warnings.']
+        estimate = health.estimate_next_release(self.app.db, source['id'])
+        if estimate:
+            lines += ['', f"Next release (estimate from the last {estimate['based_on']} gaps, about every "
+                          f"{estimate['cadence_days']} days): {estimate['estimated_next']}"]
         if info['history']:
             lines += ['', 'Recent checks (entries listed · stored · images per entry):']
             for sample in info['history'][-10:]:

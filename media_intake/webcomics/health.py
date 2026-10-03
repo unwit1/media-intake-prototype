@@ -107,3 +107,29 @@ def reprocess_metadata(db, source_id, client=None):
     event(db, source_id, 'METADATA_REPROCESSED', detail={'entries': updated, 'adapter_version': adapter.version})
     db.commit()
     return updated
+
+
+def estimate_next_release(db, source_id, recent=12):
+    """An inferred next-release date from the median gap between recent publication dates.
+
+    Returns {'estimated_next', 'cadence_days', 'based_on'} or None; always labelled as an estimate.
+    """
+    import datetime as dt
+    import statistics
+    dates = []
+    for (value,) in db.execute("""SELECT published_at FROM webcomic_entries WHERE source_id=? AND removed=0
+            AND published_at IS NOT NULL ORDER BY published_at DESC LIMIT ?""", (source_id, recent + 1)):
+        try:
+            dates.append(dt.datetime.fromisoformat(str(value).replace('Z', '+00:00')[:19]))
+        except ValueError:
+            continue
+    if len(dates) < 4:
+        return None
+    gaps = [(newer - older).total_seconds() / 86400 for newer, older in zip(dates, dates[1:]) if newer > older]
+    if len(gaps) < 3:
+        return None
+    cadence = statistics.median(gaps)
+    if cadence <= 0 or cadence > 120:
+        return None
+    return {'estimated_next': (dates[0] + dt.timedelta(days=cadence)).date().isoformat(),
+            'cadence_days': round(cadence, 1), 'based_on': len(gaps), 'label': 'estimate'}

@@ -46,6 +46,17 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM items').fetchone()[0], 0)
         self.assertEqual(health.reprocess_metadata(self.db, 1, self.site), 0)
 
+    def test_release_estimate_is_labelled_and_needs_enough_history(self):
+        for n in range(1, 21):
+            self.db.execute('UPDATE webcomic_entries SET published_at=? WHERE ordinal=?',
+                            (f'2024-03-{n:02d}T00:00:00' if n % 2 else None, n))
+        self.db.commit()
+        estimate = health.estimate_next_release(self.db, 1)
+        self.assertEqual((estimate['cadence_days'], estimate['estimated_next'], estimate['label']), (2.0, '2024-03-21', 'estimate'))
+        self.db.execute('UPDATE webcomic_entries SET published_at=NULL WHERE ordinal > 5')
+        self.db.commit()
+        self.assertIsNone(health.estimate_next_release(self.db, 1))
+
 
 if __name__ == '__main__':
     unittest.main()

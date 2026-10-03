@@ -511,7 +511,8 @@ def fetch_igdb_game(game_id, client_id, client_secret):
 
 _STEAM_EXTRA = re.compile(
     r'\b(?:soundtrack|ost|artbook|art book|wallpapers?|season pass|expansion pass|dlc|'
-    r'(?:recruit|costume|skin|weapon|booster|starter|supporter|bonus|content|item|outfit|upgrade)\s+pack|'
+    r'(?:recruit|costume|skin|weapon|booster|starter|supporter|bonus|content|item|outfit|upgrade|collaboration)'
+    r'\s+(?:pack|set)|edition\s+upgrade|upgrade\s+(?:pack|bundle)?\s*$|'
     r'pack\s*\d*$)\b', re.I)
 _STEAM_EDITION = re.compile(
     r'\s*(?:[-:\u2013]\s*)?(?:\(\d{4}\)\s*)?(?:(?:(?:N7\s+)?digital\s+)?(?:deluxe|enhanced|complete|'

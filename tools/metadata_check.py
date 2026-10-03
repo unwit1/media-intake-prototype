@@ -1,6 +1,6 @@
 """Live metadata search check: run the app's category search for well-known series and flag problems.
 
-Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more | --third]
+Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more | --third | --fourth] [--resume]
 
 For each query it records the top results and flags: the expected title missing
 from the top 5, duplicate rows for one work (same normalized title and creator
@@ -45,7 +45,7 @@ QUERIES = [
     ('Games', 'The Witcher', 'witcher'), ('Games', 'Persona', 'persona'),
     ('Light novels', 'Re:Zero', 're zero'), ('Light novels', 'Overlord', 'overlord'), ('Light novels', 'Spice and Wolf', 'spice and wolf'),
 ]
-COMICS_PAUSE = 60
+COMICS_PAUSE = 90
 # A second, wider set: older and newer works, non-English originals, punctuation,
 # numbers, subtitles, one-word and very common titles.
 MORE_QUERIES = [
@@ -141,6 +141,53 @@ THIRD_QUERIES = [
     ('Light novels', 'Overlord', 'overlord'), ('Light novels', 'Classroom of the Elite', 'classroom of the elite'),
     ('Light novels', 'The Rising of the Shield Hero', 'shield hero'), ('Light novels', 'No Game No Life', 'no game no life'),
 ]
+# Fourth set: international works (K-drama, manhwa, European comics, anime films),
+# long-running franchises, remakes sharing a name, numbers and symbols, and book
+# series known by a character or a world.
+FOURTH_QUERIES = [
+    ('Books', 'Percy Jackson', 'percy jackson'), ('Books', 'The Heroes of Olympus', 'heroes of olympus'),
+    ('Books', 'Throne of Glass', 'throne of glass'), ('Books', 'The Stormlight Archive', 'stormlight'),
+    ('Books', 'Cosmere', 'cosmere'), ('Books', 'Middle-earth', 'middle earth'), ('Books', 'Xanth', 'xanth'),
+    ('Books', 'The Realm of the Elderlings', 'elderlings'), ('Books', 'Malazan Book of the Fallen', 'malazan'),
+    ('Books', 'The Sword of Truth', 'sword of truth'), ('Books', 'Shannara', 'shannara'),
+    ('Books', 'Vorkosigan Saga', 'vorkosigan'), ('Books', 'Honor Harrington', 'honor harrington'),
+    ('Books', 'Miss Marple', 'marple'), ('Books', 'Inspector Morse', 'morse'),
+    ('Books', 'Discworld City Watch', 'city watch'), ('Books', 'The Thursday Murder Club', 'thursday murder club'),
+    ('Books', 'Bosch', 'bosch'), ('Books', 'Dirk Pitt', 'dirk pitt'), ('Books', 'Captain Underpants', 'captain underpants'),
+    ('Books', 'Dog Man', 'dog man'), ('Books', 'Warriors', 'warriors'), ('Books', 'Animorphs', 'animorphs'),
+    ('Books', 'Fear Street', 'fear street'), ('Books', 'The Lunar Chronicles', 'lunar chronicles'),
+    ('Videos', 'Crash Landing on You', 'crash landing on you'), ('Videos', 'Kingdom', 'kingdom'),
+    ('Videos', 'Downton Abbey', 'downton abbey'), ('Videos', 'Sherlock', 'sherlock'), ('Videos', 'Peaky Blinders', 'peaky blinders'),
+    ('Videos', 'The Crown', 'crown'), ('Videos', 'Westworld', 'westworld'), ('Videos', 'The Boys', 'boys'),
+    ('Videos', 'Yellowstone', 'yellowstone'), ('Videos', 'Euphoria', 'euphoria'), ('Videos', 'Shōgun', 'shogun'),
+    ('Videos', 'The Witcher', 'witcher'), ('Videos', 'The Handmaid\'s Tale', 'handmaid'),
+    ('Videos', 'Planet Earth', 'planet earth'), ('Videos', 'Cosmos', 'cosmos'),
+    ('Videos', 'Halloween', 'halloween'), ('Videos', 'Scream', 'scream'), ('Videos', 'Saw', 'saw'),
+    ('Videos', 'Die Hard', 'die hard'), ('Videos', 'Ghostbusters', 'ghostbusters'), ('Videos', 'Predator', 'predator'),
+    ('Videos', 'X-Men', 'x men'), ('Videos', 'The Avengers', 'avengers'), ('Videos', 'Dune', 'dune'),
+    ('Videos', '2001: A Space Odyssey', '2001'),
+    ('Comics', 'Blacksad', 'blacksad'), ('Comics', 'Lucky Luke', 'lucky luke'), ('Comics', 'The Incal', 'incal'),
+    ('Comics', 'Judge Dredd', 'judge dredd'), ('Comics', 'Scott Pilgrim', 'scott pilgrim'),
+    ('Comics', 'Calvin and Hobbes', 'calvin and hobbes'), ('Comics', 'Peanuts', 'peanuts'), ('Comics', 'Nimona', 'nimona'),
+    ('Manga', 'Solo Leveling', 'solo leveling'), ('Manga', 'Tower of God', 'tower of god'), ('Manga', 'The Breaker', 'breaker'),
+    ('Manga', 'Lookism', 'lookism'), ('Manga', 'Omniscient Reader', 'omniscient reader'),
+    ('Manga', 'Cardcaptor Sakura', 'cardcaptor'), ('Manga', 'Inuyasha', 'inuyasha'), ('Manga', 'Fruits Basket', 'fruits basket'),
+    ('Manga', 'Mob Psycho 100', 'mob psycho'), ('Manga', 'Hellsing', 'hellsing'), ('Manga', 'Gintama', 'gintama'),
+    ('Manga', 'Pluto', 'pluto'),
+    ('Anime', 'Cowboy Bebop: The Movie', 'cowboy bebop'), ('Anime', 'Akira', 'akira'), ('Anime', 'Princess Mononoke', 'mononoke'),
+    ('Anime', 'Your Name', 'your name'), ('Anime', 'Perfect Blue', 'perfect blue'), ('Anime', 'Trigun', 'trigun'),
+    ('Anime', 'Fate/Zero', 'fate zero'), ('Anime', 'Re:Zero', 're zero'), ('Anime', 'Bleach: Thousand-Year Blood War', 'thousand year blood war'),
+    ('Anime', 'Puella Magi Madoka Magica', 'madoka'),
+    ('Games', 'Sonic the Hedgehog', 'sonic'), ('Games', 'Street Fighter II', 'street fighter ii'),
+    ('Games', 'Final Fantasy XIV', 'final fantasy xiv'), ('Games', 'Doom', 'doom'), ('Games', 'Quake', 'quake'),
+    ('Games', 'Tetris', 'tetris'), ('Games', 'Portal', 'portal'), ('Games', 'BioShock', 'bioshock'),
+    ('Games', 'Uncharted', 'uncharted'), ('Games', 'God of War', 'god of war'), ('Games', 'Monster Hunter', 'monster hunter'),
+    ('Games', 'Xenoblade Chronicles', 'xenoblade'),
+    ('Light novels', 'Toradora!', 'toradora'), ('Light novels', 'Durarara!!', 'durarara'),
+    ('Light novels', 'Oregairu', 'oregairu'), ('Light novels', 'Monogatari', 'monogatari'),
+    ('Light novels', 'Goblin Slayer', 'goblin slayer'), ('Light novels', 'The Eminence in Shadow', 'eminence in shadow'),
+    ('Light novels', 'DanMachi', 'danmachi'), ('Light novels', 'Log Horizon', 'log horizon'),
+]
 EDITION = re.compile(r'\b(paperback|hardcover|hardback|kindle edition|mass market|box(ed)? set|boxset|collector\'?s|'
                      r'omnibus|deluxe edition|anniversary edition|special edition|illustrated edition|audiobook|'
                      r'unabridged|large print|\d+(st|nd|rd|th) edition|edition)\b', re.I)
@@ -182,13 +229,22 @@ def check(category, query, expect, options):
 
 
 def main():
+    # Titles like "Shōgun" must not crash the run on a Windows console or log file.
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     output = Path(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith('--') else Path('build/metadata-check.json')
     only = sys.argv[sys.argv.index('--only') + 1] if '--only' in sys.argv else None
     with tempfile.TemporaryDirectory() as root:
         options = {'rights_evidence_path': str(ensure_rights_evidence(Path(root) / 'rights-evidence.json'))}
         report = []
-        chosen = THIRD_QUERIES if '--third' in sys.argv else MORE_QUERIES if '--more' in sys.argv else QUERIES
+        if '--resume' in sys.argv and output.exists():
+            # Continue an interrupted run: keep finished queries, run the rest.
+            report = [row for row in json.loads(output.read_text(encoding='utf-8')) if 'error' not in row]
+        done = {(row['category'], row['query']) for row in report}
+        chosen = (FOURTH_QUERIES if '--fourth' in sys.argv else THIRD_QUERIES if '--third' in sys.argv else
+                  MORE_QUERIES if '--more' in sys.argv else QUERIES)
         for category, query, expect in chosen:
+            if (category, query) in done:
+                continue
             if only and category != only:
                 continue
             if category == 'Comics' and report and report[-1]['category'] == 'Comics':

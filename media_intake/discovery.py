@@ -359,7 +359,11 @@ def _cross_catalog_ids(item):
 
 
 _BOX_SET = re.compile(r'\bbox(?:ed)?[\s-]*set\b|\b(?:books?|vols?\.?|volumes?|#)\s*\d+\s*(?:-|\u2013|to|&)\s*\d+\b|'
-                      r'\bcollection\s*#\s*\d+\b', re.I)
+                      r'\bcollection\s*#\s*\d+\b|'
+                      # One volume holding several: "The second Inspector Morse omnibus", "The City
+                      # Watch Trilogy", "Legends II [11 works]", "3 novels in 1".
+                      r'\bomnibus\b|\b(?:trilogy|quartet|quintet)\s*(?:$|[(:])|\[\d+\s+works\]|'
+                      r'\b\d+\s+(?:books|novels|stories)\s+in\s+(?:one|1)\b', re.I)
 # Edition and listing noise on otherwise identical works: "Shift Deluxe Collector's
 # Edition", "The Girl with the Dragon Tattoo (Millennium Trilogy) by Stieg Larsson
 # (2008) Hardcover". Stripped only to decide whether two rows are one work.
@@ -616,6 +620,10 @@ def _title_relevance(query, title):
 
 
 _RELEVANCE_SORTED = {'Videos', 'Anime', 'Games', 'Manga', 'Light novels'}
+# Catalogs whose own search resolves nicknames reliably; MangaDex and LNORI often
+# top-rank doujinshi or unrelated titles, so their first hit proves nothing.
+_ALIAS_MATCHING_CATALOGS = {'anilist', 'ranobedb', 'mangaupdates'}
+_FAN_FICTION_ARCHIVES = {'novelarchive'}
 
 
 def _sort_by_title_relevance(results, query):
@@ -629,11 +637,20 @@ def _sort_by_title_relevance(results, query):
         for variant in row.get('metadata_variants') or []:
             names += [variant.get('title')] + list(variant.get('alternative_titles') or [])
         tier = min(_title_relevance(query, name) for name in names if name) if any(names) else 3
+        rows = [row] + list(row.get('metadata_variants') or [])
+        if any(_provider_label(r).casefold() in _ALIAS_MATCHING_CATALOGS and r.get('catalog_rank') == 0
+               for r in rows):
+            # Official catalogs match nicknames ("DanMachi", "Oregairu") to works
+            # listed under their full English title; their top hit is a real match.
+            tier = min(tier, 1)
+        fan_archive = all(_provider_label(r).casefold() in _FAN_FICTION_ARCHIVES for r in rows)
         # Equally good title matches ("Code Geass: ...") go most-followed first, so
         # the main series precedes its specials and spin-offs.
         popularity = max([int(row.get('popularity') or 0)] + [int(v.get('popularity') or 0)
                                                                for v in row.get('metadata_variants') or []])
-        return tier, -popularity
+        # Fan works borrow the work's name ("Danmachi: RNG System"); at an equal
+        # match they follow the official catalogs' entries.
+        return tier, fan_archive, -popularity
     return sorted(results or [], key=best)
 
 
@@ -801,6 +818,7 @@ def _merge_series_member(members, incoming, default_provider, review_members=Non
 
 
 THIN_SERIES_MEMBERS = 3
+AUTHOR_NAME_MATCH = 0.85
 
 
 def _expand_book_series_results(results, query):
@@ -1362,7 +1380,8 @@ def search_media_category(query, category, source_options=None, credentials=None
                         logger.warning('%s category search failed for %r: %s', provider, query, error)
                 else:
                     found, provider_errors = value, []
-                for row in _catalog_rows(found, category, provider):
+                for catalog_rank, row in enumerate(_catalog_rows(found, category, provider)):
+                    row['catalog_rank'] = catalog_rank
                     if not row.get('kind'):
                         if category == 'Books':
                             row['kind'] = 'book'
@@ -1394,6 +1413,10 @@ def search_media_category(query, category, source_options=None, credentials=None
             except Exception as exc:
                 logger.warning('%s category search failed for %r: %s', provider, query, exc)
                 errors.append(f'{provider}: {exc}')
+    if category == 'Comics' and not re.search(r'free comic book day|fcbd', query, re.I):
+        # Free Comic Book Day samplers reprint a few pages to promote the series.
+        results = [row for row in results if not re.search(r'\bfree comic book day\b|\bfcbd\b',
+                                                            str(row.get('title') or ''), re.I)]
     if category in {'Manga', 'Light novels'} and not re.search(r'doujin', query, re.I):
         # Fan-made doujinshi share the work's name but are not the work.
         results = [row for row in results if not re.search(r'\bdoujin(?:shi)?\b', str(row.get('title') or ''), re.I)]
@@ -1412,6 +1435,12 @@ def search_media_category(query, category, source_options=None, credentials=None
             for entity in ('issue', 'series', 'collection')}
         response['comic_summary']['truncated'] = len(unique_titles) > result_limit
     if category == 'Books':
+        # People and works share words ("Hieronymus Bosch" for the Bosch novels):
+        # an author leads only when the search is that author's name.
+        def stray_author(row):
+            return row.get('kind') == 'author' and _series_match_score(query, row.get('title')) < AUTHOR_NAME_MATCH
+        unique_titles.sort(key=stray_author)
+        response['results'].sort(key=stray_author)
         series_rows, series_bundle = _expand_book_series_results(unique_titles, query)
         if series_bundle:
             response['results'] = series_rows[:5000]

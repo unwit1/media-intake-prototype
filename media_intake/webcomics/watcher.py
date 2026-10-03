@@ -312,6 +312,7 @@ def process_watch(db, watch, library_folder, source_options=None):
                     record_entry_failure(db, source['id'], row['id'], exc)
             if download_errors:
                 error = '; '.join(download_errors[:3])
+        run_scheduled_audit(db, source['id'], config)
     except Exception as exc:
         error = str(exc)
         failures = db.execute('SELECT failures FROM webcomic_sources WHERE id=?', (source['id'],)).fetchone()[0]
@@ -360,3 +361,28 @@ def retry_failed_entries(db, source_id):
         WHERE source_id=? AND state='failed' AND queue_id IS NOT NULL""", (source_id,)).rowcount
     db.commit()
     return changed
+
+
+AUDIT_EVERY_DAYS = 7
+
+
+def run_scheduled_audit(db, source_id, config, client=None):
+    """Revalidate a few archived entries about once a week (audit_sample 0 turns it off)."""
+    sample = int(config.get('audit_sample', 3))
+    every = float(config.get('audit_every_days', AUDIT_EVERY_DAYS)) * 86400
+    last = float(config.get('last_audit_at') or 0)
+    if sample <= 0 or time.time() - last < every:
+        return None
+    from .audit import audit_source
+    client = client or HttpClient(db, interval=config.get('request_interval', 1),
+                                  user_agent=config.get('user_agent', 'MediaArchiveImporter/0.3'))
+    try:
+        outcome = audit_source(db, source_id, client, sample)
+    except Exception as exc:
+        event(db, source_id, 'AUDIT_FAILED', detail={'error': str(exc)[:300]})
+        outcome = None
+    stored = json.loads(db.execute('SELECT config FROM webcomic_sources WHERE id=?', (source_id,)).fetchone()[0])
+    stored['last_audit_at'] = time.time()
+    db.execute('UPDATE webcomic_sources SET config=? WHERE id=?', (json.dumps(stored), source_id))
+    db.commit()
+    return outcome

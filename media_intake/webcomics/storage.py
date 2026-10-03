@@ -50,7 +50,8 @@ def migrate(db):
     # Failure and concurrency hardening (additive).
     for table, column, declaration in (('webcomic_sources', 'lease_until', 'REAL'),
                                        ('webcomic_entries', 'attempts', 'INTEGER NOT NULL DEFAULT 0'),
-                                       ('webcomic_entries', 'retry_after', 'REAL')):
+                                       ('webcomic_entries', 'retry_after', 'REAL'),
+                                       ('webcomic_entries', 'audited_at', 'REAL')):
         if column not in {row[1] for row in db.execute(f'PRAGMA table_info({table})')}:
             db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
     db.execute('''CREATE TABLE IF NOT EXISTS webcomic_source_aliases(

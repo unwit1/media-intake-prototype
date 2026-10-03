@@ -12,7 +12,7 @@ import zipfile
 from ..core import check_download, file_name, update_download_progress
 from ..serial import validate_manifest
 from .images import CorruptImage, inspect_image
-from .http import ExtractionError, HttpClient
+from .http import ExtractionError, HttpClient, SourceUnavailable
 from .models import WebcomicAsset, WebcomicEntry, record
 from .resolver import registry_for
 from .storage import event
@@ -41,14 +41,17 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
                                                (source['series_id'],)).fetchone()[0]),
                 'source': {'url': source['url'], 'adapter': adapter.id, 'version': adapter.version},
                 'entry': record(entry), 'revision': job['revision'], 'assets': []}
-    spent = 0
+    spent = reused = 0
     try:
         with os.fdopen(fd, 'wb') as stream, zipfile.ZipFile(stream, 'w', zipfile.ZIP_STORED) as archive:
             for ordinal, asset in enumerate(entry.assets, 1):
                 if spent >= max_bytes:
                     raise ValueError('Entry exceeds archive byte budget')
-                response = client.get(asset.source_url, max_bytes=min(25_000_000, max_bytes - spent),
-                                      conditional=False, headers={'Referer': entry.source_url})
+                previous = previous_asset(db, asset.source_url)
+                response = fetch_asset(client, asset.source_url, entry.source_url, previous,
+                                       max_bytes=min(25_000_000, max_bytes - spent))
+                if response.status == 304:
+                    reused += 1
                 media_type = response.headers.get('content-type', '').split(';', 1)[0].lower()
                 try:
                     ext, width, height = inspect_image(response.body, media_type)
@@ -66,11 +69,15 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
                 asset.retrieved_at = dt.datetime.now(dt.timezone.utc).isoformat()
                 asset.media_type = media_type or {'.jpg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}[ext]
                 asset.provenance.update({'requested_url': asset.source_url, 'final_url': response.url,
-                                         'provider': adapter.id, 'adapter_version': adapter.version})
+                                         'provider': adapter.id, 'adapter_version': adapter.version,
+                                         'etag': response.headers.get('etag'),
+                                         'last_modified': response.headers.get('last-modified'),
+                                         'reused': response.status == 304})
                 asset.width, asset.height = width, height
                 manifest['assets'].append(record(asset))
                 update_download_progress(db, row['id'], spent, None, f'Archiving image {ordinal} of {len(entry.assets)}')
             manifest['entry'] = record(entry)
+            manifest['assets_reused'] = reused
             chapter = db.execute('SELECT metadata FROM webcomic_chapters WHERE source_id=? AND chapter_key=?',
                                  (source['id'], entry.chapter_id)).fetchone()
             manifest['chapter'] = json.loads(chapter[0]) if chapter else None
@@ -87,7 +94,9 @@ def download_entry(db, row, root, max_bytes, destination=None, client=None):
             digest = hasher.hexdigest()
         # Stable per-entry/revision path avoids collision across mirrors, renames,
         # numbered title duplicates, and interrupted retries.
-        dest = folder / file_name({**item, 'title': item['title'] + f" [{job['entry_id']}-{job['revision'][:8]}]"})
+        # A hash of the whole revision: revisions that share a prefix must never overwrite each other.
+        revision_tag = hashlib.sha256(job['revision'].encode('utf-8')).hexdigest()[:8]
+        dest = folder / file_name({**item, 'title': item['title'] + f" [{job['entry_id']}-{revision_tag}]"})
         # Record the destination first: a crash after the move can then be reconciled.
         db.execute('UPDATE items SET file_path=? WHERE id=?', (str(dest.resolve()), row['id']))
         db.commit()
@@ -262,3 +271,46 @@ def repair_manifest(db, entry_id):
     event(db, source['id'], 'MANIFEST_REPAIRED', entry['entry_key'])
     db.commit()
     return True
+
+
+
+def previous_asset(db, source_url):
+    """The newest archived copy of an image URL (with its validators), if any."""
+    for row in db.execute('SELECT metadata FROM webcomic_assets ORDER BY rowid DESC'):
+        data = json.loads(row['metadata'])
+        if data.get('source_url') == source_url and data.get('local_path') and data.get('archive_path'):
+            return data
+    return None
+
+
+def _archived_bytes(asset):
+    try:
+        with zipfile.ZipFile(asset['local_path']) as archive:
+            data = archive.read(asset['archive_path'])
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+    return data if hashlib.sha256(data).hexdigest() == asset.get('checksum') else None
+
+
+def fetch_asset(client, url, referer, previous=None, max_bytes=25_000_000):
+    """Fetch an image, revalidating against the previous archived copy so unchanged bytes are reused."""
+    from .http import Response
+    headers = {'Referer': referer}
+    stored = _archived_bytes(previous) if previous else None
+    validators = (previous or {}).get('provenance') or {}
+    if stored is not None:
+        if validators.get('etag'):
+            headers['If-None-Match'] = validators['etag']
+        if validators.get('last_modified'):
+            headers['If-Modified-Since'] = validators['last_modified']
+    try:
+        response = client.get(url, max_bytes=max_bytes, conditional=False, headers=headers)
+    except SourceUnavailable as exc:
+        if exc.status == 304 and stored is not None:
+            return Response(stored, url, {'content-type': previous.get('media_type') or '',
+                                          'etag': validators.get('etag'),
+                                          'last-modified': validators.get('last_modified')}, 304, True)
+        raise
+    if stored is not None and hashlib.sha256(response.body).hexdigest() == previous.get('checksum'):
+        return Response(stored, response.url, response.headers, 304, True)  # identical bytes: reuse
+    return response

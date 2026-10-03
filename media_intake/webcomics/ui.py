@@ -44,6 +44,7 @@ class WebcomicsPanel:
         ttk.Button(more, text='Archive backlog now', command=self.archive_backlog).pack(side='left', padx=6)
         ttk.Button(more, text='Retry failed entries', command=self.retry_failed).pack(side='left')
         ttk.Button(more, text='Open site', command=self.open_site).pack(side='left', padx=6)
+        ttk.Button(more, text='Audit images', command=self.audit_images).pack(side='left')
         ttk.Label(more, text='Filter').pack(side='left', padx=(18, 4))
         self.filter_text = tk.StringVar()
         ttk.Entry(more, textvariable=self.filter_text, width=24).pack(side='left')
@@ -172,6 +173,25 @@ class WebcomicsPanel:
             count = retry_failed_entries(self.app.db, source['id'])
             self.refresh()
             self.app._done(f'{count} failed entries will be retried')
+
+    def audit_images(self):
+        from .audit import audit_source
+        from .http import HttpClient
+        source = self.selected()
+        if not source:
+            return
+        data_root = self.app.data_root
+        def action():
+            db = connect(data_root)
+            try:
+                return audit_source(db, source['id'], HttpClient(db), sample=20)
+            finally:
+                db.close()
+        def done(outcome):
+            self.refresh()
+            self.app._done(f"Audited {outcome['checked']} image(s): {outcome['unchanged']} unchanged, "
+                           f"{outcome['changed']} changed (re-archiving), {outcome['errors']} unreachable")
+        self.app._worker(f"Auditing {source['title']}…", action, done)
 
     def open_site(self):
         import webbrowser

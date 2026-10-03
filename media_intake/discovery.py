@@ -396,7 +396,7 @@ def _merge_same_title(results, category, download_priority):
                 if subtype in {'web_series', 'miniseries'}:
                     subtype = 'tv_series'
                 date_value = str(item.get('release_date') or metadata.get('premiere_date') or '')
-                year = date_value[:4]
+                year = date_value[:4] or str(item.get('release_year') or '')
                 key = (title, subtype, year)
                 if year:
                     undated = (title, subtype, '')
@@ -541,8 +541,9 @@ def _promote_matching_series_results(results, query):
                 'series', 'franchise', 'continuity'}:
             score = _series_match_score(query, row.get('title') or row.get('series'))
             # Connector searches can return fuzzy matches; only elevate a series
-            # when the query itself substantially identifies that series.
-            if score >= 0.60:
+            # when the query itself substantially identifies that series
+            # ("Cane" scores well against "Arcane" but does not contain it).
+            if score >= 0.60 and _title_relevance(query, row.get('title') or row.get('series')) < 3:
                 series_rows.append((score, index, row))
                 continue
         other_rows.append((index, row))
@@ -816,6 +817,11 @@ def _expand_book_series_results(results, query):
     return rows, bundle
 
 
+_NOT_A_VIDEO = re.compile(r'\b(?:comic book|comics?|graphic novel|album|soundtrack|single|song|video game|'
+                          r'novel|book|season of (?:a )?television series|episode of)\b', re.I)
+_DESCRIPTION_YEAR = re.compile(r'\b(1[89]\d\d|20\d\d)\b')
+
+
 def _query_wikidata(query, category=None):
     results = search_wikidata(query, limit=20)
     normalized = []
@@ -824,6 +830,8 @@ def _query_wikidata(query, category=None):
         description = item['description'].casefold()
         description_subtype = video_subtype_from_description(description)
         if category in {'Videos', 'Anime'}:
+            if _NOT_A_VIDEO.search(description):
+                continue  # comics, albums, games and single seasons share video titles
             if (category == 'Anime' and
                     not any(term in description for term in ('anime', 'japanese animated')) and
                     description_subtype not in {'anime_oad', 'anime_ova'}):
@@ -876,6 +884,11 @@ def _query_wikidata(query, category=None):
             numbered_issue = re.search(r'(?:#|\bissue\s*(?:no\.?\s*)?)\d+', str(item.get('title') or ''), re.I)
             item.update(kind='webcomic' if 'webcomic' in description else 'comic',
                         comic_entity='collection' if collected else 'issue' if numbered_issue else 'series')
+        year = _DESCRIPTION_YEAR.search(item['description'])
+        if year and category in {'Videos', 'Anime', 'Games'}:
+            # Wikidata search gives no dates; the description's year ("2014 film",
+            # "television series (1966-1973)") tells same-titled works apart.
+            item['release_year'] = year.group(1)
         item['catalog_metadata'] = {
             'wikidata_qid': item.get('qid'), 'description': item['description'],
             'entity_type': item.get('entity_type', 'work'),

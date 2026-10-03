@@ -82,6 +82,20 @@ class VideoTests(unittest.TestCase):
         self.assertEqual([r['title'] for r in _sort_by_title_relevance(rows, 'Arcane')],
                          ['Arcane', 'Arcane: League of Legends', 'Cane', 'Crane'])
 
+    def test_wikidata_videos_skip_other_media_and_carry_their_year(self):
+        from media_intake.discovery import _query_wikidata
+        from media_intake.gui import MediaIntakeApp
+        found = [{'qid': 'Q1', 'title': 'John Wick', 'description': '2014 film directed by Chad Stahelski'},
+                 {'qid': 'Q2', 'title': 'John Wick', 'description': 'comic book limited series'},
+                 {'qid': 'Q3', 'title': 'The Matrix: Music from the Motion Picture', 'description': 'soundtrack album'},
+                 {'qid': 'Q4', 'title': 'Show, season 2', 'description': 'season of television series'},
+                 {'qid': 'Q5', 'title': 'John Wick', 'description': 'American media franchise'}]
+        with patch('media_intake.discovery.search_wikidata', return_value=found):
+            rows = _query_wikidata('John Wick', 'Videos')
+        self.assertEqual([(r['qid'], MediaIntakeApp._result_creator_label(r)) for r in rows],
+                         [('Q1', 'Film · 2014'), ('Q5', 'Franchise')])
+        self.assertEqual(MediaIntakeApp._result_creator_label({'author': 'Ann Author'}), 'Ann Author')
+
 
 class GcdTests(unittest.TestCase):
     def test_article_dropped_longest_english_run_first_and_translations_hidden(self):

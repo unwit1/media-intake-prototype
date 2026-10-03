@@ -3958,10 +3958,27 @@ class MediaIntakeApp:
         for index, item in enumerate(results):
             self.results_view.insert('', 'end', iid=str(index), values=(
                 item.get('category') or self.search_category.get(), item.get('title', ''),
-                item.get('author', ''), item.get('series', ''),
+                self._result_creator_label(item), item.get('series', ''),
                 self._series_order_label(item), item.get('format', ''),
                 item.get('display_source') or item.get('source', '')))
         self._done(f'{len(results)} result(s)')
+
+    @staticmethod
+    def _result_creator_label(item):
+        """Author, or for films, shows and games (which have none) the type and year.
+
+        Same-titled works ("John Wick" the film, the franchise and the comic)
+        otherwise look like duplicate rows.
+        """
+        author = str(item.get('author') or '')
+        if author and author.casefold() != 'unknown':
+            return author
+        kind = str(item.get('video_subtype') or item.get('game_subtype') or item.get('entity_type') or '')
+        label = {'movie': 'Film', 'tv_series': 'TV series', 'web_series': 'Web series', 'miniseries': 'Miniseries',
+                 'franchise': 'Franchise', 'anime': 'Anime', 'base_game': 'Game', 'short_film': 'Short film',
+                 'animated_film': 'Animated film', 'anime_ova': 'OVA', 'anime_oad': 'OAD'}.get(kind, '')
+        year = str(item.get('release_date') or '')[:4] or str(item.get('release_year') or '')
+        return ' · '.join(part for part in (label, year) if part) or author
 
     @staticmethod
     def _series_order_label(item):

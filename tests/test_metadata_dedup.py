@@ -217,6 +217,20 @@ class RetryTests(unittest.TestCase):
             core.http_get('https://example.org/feed')
         self.assertEqual(opened, [url, 'https://example.org/feed', 'https://example.org/feed'])
 
+    def test_google_books_uses_a_configured_key(self):
+        from media_intake import sources
+        seen = []
+        def fake_get(url, max_bytes=None):
+            seen.append(url)
+            return b'{"items": []}', 'https://www.googleapis.com/books/v1/volumes'
+        with patch.object(sources, 'http_get', side_effect=fake_get):
+            with patch.dict('os.environ', {'GOOGLE_BOOKS_API_KEY': 'abc123'}):
+                sources.search_google_books_metadata('Dune')
+            with patch.dict('os.environ', {}, clear=True):
+                sources.search_google_books_metadata('Dune')
+        self.assertIn('key=abc123', seen[0])
+        self.assertNotIn('key=', seen[1])
+
 
 if __name__ == '__main__':
     unittest.main()

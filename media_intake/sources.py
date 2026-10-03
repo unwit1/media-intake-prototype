@@ -1,6 +1,7 @@
 """Source discovery adapters. A result page is metadata until a file URL is resolved."""
 import datetime as dt
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -413,10 +414,13 @@ def search_google_books_metadata(query, limit=20):
     if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
         raise ValueError('Enter a search up to 150 characters')
     limit = max(1, min(int(limit), 40))
-    params = urllib.parse.urlencode({
-        'q': query, 'maxResults': limit, 'projection': 'full', 'printType': 'books',
-    })
-    raw, final = http_get('https://www.googleapis.com/books/v1/volumes?' + params,
+    fields = {'q': query, 'maxResults': limit, 'projection': 'full', 'printType': 'books'}
+    # Without a key, every app shares one small quota and Google answers 429.
+    # A free key (Google Cloud console, Books API) gives this app its own quota.
+    key = os.environ.get('GOOGLE_BOOKS_API_KEY', '').strip()
+    if key:
+        fields['key'] = key
+    raw, final = http_get('https://www.googleapis.com/books/v1/volumes?' + urllib.parse.urlencode(fields),
                           max_bytes=5_000_000)
     if urllib.parse.urlsplit(final).hostname != 'www.googleapis.com':
         raise ValueError('Google Books search redirected away from its API host')

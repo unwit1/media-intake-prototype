@@ -44,6 +44,7 @@ QUERIES = [
     ('Games', 'The Witcher', 'witcher'), ('Games', 'Persona', 'persona'),
     ('Light novels', 'Re:Zero', 're zero'), ('Light novels', 'Overlord', 'overlord'), ('Light novels', 'Spice and Wolf', 'spice and wolf'),
 ]
+COMICS_PAUSE = 30
 EDITION = re.compile(r'\b(paperback|hardcover|hardback|kindle edition|mass market|box(ed)? set|boxset|collector\'?s|'
                      r'omnibus|deluxe edition|anniversary edition|special edition|illustrated edition|audiobook|'
                      r'unabridged|large print|\d+(st|nd|rd|th) edition|edition)\b', re.I)
@@ -67,10 +68,12 @@ def check(category, query, expect, options):
     for row in results[:40]:
         if row.get('kind') == 'book' and row.get('series'):
             continue  # series member rows are expected under a series bundle
+        subtype = row.get('video_subtype') or row.get('game_subtype') or row.get('comic_entity') or row.get('entity_type')
+        year = (row.get('release_date') or '')[:4] or str(row.get('release_year') or row.get('series_start_year') or '')
         key = (norm(row.get('title')), norm(row.get('author') if str(row.get('author')).casefold() != 'unknown' else ''),
-               row.get('kind'), (row.get('release_date') or '')[:4] if row.get('kind') in ('movie', 'video') else '')
+               row.get('kind'), subtype, year)
         keys.setdefault(key, []).append(row.get('display_source') or row.get('source'))
-    duplicates = [{'title': key[0], 'author': key[1], 'kind': key[2], 'sources': sources}
+    duplicates = [{'title': key[0], 'author': key[1], 'kind': key[2], 'type': key[3], 'year': key[4], 'sources': sources}
                   for key, sources in keys.items() if len(sources) > 1]
     editions = [r.get('title') for r in results[:40] if EDITION.search(str(r.get('title') or ''))]
     return {'category': category, 'query': query, 'seconds': round(time.time() - started, 1), 'count': len(results),
@@ -88,6 +91,8 @@ def main():
         for category, query, expect in QUERIES:
             if only and category != only:
                 continue
+            if category == 'Comics' and report and report[-1]['category'] == 'Comics':
+                time.sleep(COMICS_PAUSE)  # the Grand Comics Database limits bursts of searches
             result = check(category, query, expect, options)
             report.append(result)
             flag = ('ERROR ' + result['error']) if 'error' in result else (

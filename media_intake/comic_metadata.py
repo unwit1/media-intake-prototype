@@ -322,6 +322,7 @@ def search_gcd(query, limit=100):
             series_title=row['name'], series_start_year=str(row.get('year_began') or ''),
             publisher=_name(row.get('publisher')), language=row.get('language'),
             series_type=str(row.get('publishing_format') or ''),
+            issue_count=len(row.get('active_issues') or []) or None,
             external_ids=[_id('gcd_series', match.group(1), source)], gcd_series_id=match.group(1),
             catalog_metadata={'license': 'CC-BY-SA-4.0', 'attribution': 'Grand Comics Database',
                               'cover_rights': 'Cover images retain their respective copyright', 'source_url': source}))
@@ -534,7 +535,13 @@ def sort_comics(rows, query=''):
             order = (0, Decimal(number))
         except InvalidOperation:
             order = (1, number)
-        return (entity_order.get(row.get('comic_entity'), 3),
+        # A plain series-name search ("Bone") leads with that series; issues of it
+        # follow in the usual order instead of hiding it below dozens of rows.
+        named_series = (parsed.title and not parsed.number and not parsed.collections and
+                        row.get('comic_entity') == 'series' and
+                        _bare_title(row.get('series_title') or row.get('title')) == _bare_title(parsed.title))
+        return (0 if named_series else 1, -int(row.get('issue_count') or 0) if named_series else 0,
+                entity_order.get(row.get('comic_entity'), 3),
                 0 if not parsed.number or number == parsed.number else 1,
                 -difflib.SequenceMatcher(None, key(parsed.title), key(row.get('series_title'))).ratio() if parsed.title else 0,
                 key(row.get('series_title')), str(row.get('series_start_year') or ''), order)

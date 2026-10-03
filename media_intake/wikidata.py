@@ -2,6 +2,7 @@
 import concurrent.futures
 import json
 import re
+import urllib.error
 import urllib.parse
 from datetime import date, datetime, timezone
 
@@ -52,7 +53,14 @@ def search_wikidata(query, limit=10):
         'action': 'wbsearchentities', 'search': query, 'language': 'en',
         'uselang': 'en', 'format': 'json', 'formatversion': 2, 'limit': limit,
     })
-    payload = _get_json(API_URL + '?' + params)
+    try:
+        payload = _get_json(API_URL + '?' + params)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (429, 503):
+            raise
+        # Wikidata throttles bursts; Wikipedia's search gives the same items
+        # (QID and short description) from a separately limited host.
+        return _search_via_wikipedia(query, limit)
     results = []
     for row in payload.get('search', []):
         qid = str(row.get('id') or '')
@@ -64,6 +72,35 @@ def search_wikidata(query, limit=10):
             'description': str(row.get('description') or ''),
             'source_url': row.get('concepturi') or f'https://www.wikidata.org/entity/{qid}',
         })
+    return results
+
+
+WIKIPEDIA_API = 'https://en.wikipedia.org/w/api.php'
+
+
+def _search_via_wikipedia(query, limit=10):
+    """Wikidata-shaped search results from English Wikipedia (title, QID, short description)."""
+    params = urllib.parse.urlencode({
+        'action': 'query', 'generator': 'search', 'gsrsearch': query, 'gsrlimit': limit,
+        'prop': 'pageprops|description', 'ppprop': 'wikibase_item|disambiguation',
+        'format': 'json', 'formatversion': 2,
+    })
+    raw, final_url = http_get(WIKIPEDIA_API + '?' + params, max_bytes=4_000_000)
+    if (urllib.parse.urlsplit(final_url).hostname or '').casefold() != 'en.wikipedia.org':
+        raise ValueError('Wikipedia search redirected away from en.wikipedia.org')
+    pages = (json.loads(raw.decode('utf-8')).get('query') or {}).get('pages') or []
+    results = []
+    for page in sorted(pages, key=lambda page: page.get('index', 0)):
+        props = page.get('pageprops') or {}
+        qid = str(props.get('wikibase_item') or '')
+        if not _QID.fullmatch(qid) or 'disambiguation' in props:
+            continue
+        # "Shrek (franchise)" -> "Shrek"; the description already says what it is.
+        title = re.sub(r'\s+\([^)]*\)$', '', str(page.get('title') or '')).strip()
+        if title:
+            results.append({'provider': 'Wikidata', 'qid': qid, 'kind': 'entity', 'title': title,
+                            'description': str(page.get('description') or ''),
+                            'source_url': f'http://www.wikidata.org/entity/{qid}', 'via': 'Wikipedia'})
     return results
 
 

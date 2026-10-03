@@ -15,6 +15,7 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -96,6 +97,7 @@ EDITION = re.compile(r'\b(paperback|hardcover|hardback|kindle edition|mass marke
 
 
 def norm(value):
+    value = ''.join(c for c in unicodedata.normalize('NFKD', str(value or '')) if not unicodedata.combining(c))
     return re.sub(r'[\W_]+', ' ', str(value or '').casefold().replace('&', ' and ')).strip()
 
 

@@ -298,7 +298,8 @@ HTTP_GET_RETRY_STATUSES = {429, 503}
 # gap between them, and identical requests answered from memory for a few minutes
 # (a category search asks Wikidata several things at once, and people re-run
 # searches). Other hosts are untouched, so watchers always see fresh pages.
-PACED_HOSTS = {'www.wikidata.org': 0.2, 'query.wikidata.org': 0.5, 'www.googleapis.com': 0.5}
+PACED_HOSTS = {'www.wikidata.org': 0.2, 'query.wikidata.org': 0.5, 'en.wikipedia.org': 0.2,
+               'www.googleapis.com': 0.5}
 PACED_CACHE_SECONDS = 300
 _PACE_LOCKS = {host: threading.Lock() for host in PACED_HOSTS}
 _PACE_LAST = {}

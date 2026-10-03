@@ -4022,12 +4022,20 @@ class MediaIntakeApp:
         author = str(item.get('author') or '')
         if author and author.casefold() != 'unknown':
             return author
-        kind = str(item.get('video_subtype') or item.get('game_subtype') or item.get('entity_type') or '')
+        kind = str(item.get('video_subtype') or item.get('game_subtype') or item.get('entity_type') or
+                   (item.get('comic_entity') and 'comic_' + item['comic_entity']) or '')
         label = {'movie': 'Film', 'tv_series': 'TV series', 'web_series': 'Web series', 'miniseries': 'Miniseries',
                  'franchise': 'Franchise', 'anime': 'Anime', 'base_game': 'Game', 'short_film': 'Short film',
-                 'animated_film': 'Animated film', 'anime_ova': 'OVA', 'anime_oad': 'OAD'}.get(kind, '')
-        year = str(item.get('release_date') or '')[:4] or str(item.get('release_year') or '')
-        return ' · '.join(part for part in (label, year) if part) or author
+                 'animated_film': 'Animated film', 'anime_ova': 'OVA', 'anime_oad': 'OAD',
+                 'comic_series': 'Comic series', 'comic_collection': 'Collection', 'comic_issue': 'Issue'}.get(kind, '')
+        # Comic runs share names across publishers and relaunches (Bone 1991, 1995,
+        # 1997), so their start year and length tell them apart.
+        year = (str(item.get('series_start_year') or '') if kind.startswith('comic_') else '') or \
+            str(item.get('release_date') or '')[:4] or str(item.get('release_year') or '')
+        issues = item.get('issue_count') if kind == 'comic_series' else None
+        parts = (label, year, f'{issues} issues' if issues else '', str(item.get('publisher') or '') if
+                 kind.startswith('comic_') else '')
+        return ' · '.join(part for part in parts if part) or author
 
     @staticmethod
     def _series_order_label(item):

@@ -720,6 +720,12 @@ def _search_wikidata_series(query):
             description = str(entity.get('description') or '')
             if _BOOK_SERIES_DESCRIPTION.search(description):
                 by_qid.setdefault(entity.get('qid'), (entity, search_query))
+    if not by_qid and not re.search(r'\b(?:series|saga|cycle|trilogy|chronicles?)\s*$', queries[0], re.I):
+        # A common word ("Foundation") ranks a foundation, a film and a company
+        # above Asimov's books; asking for the series by name finds it.
+        for entity in search_wikidata(queries[0] + ' series', limit=10):
+            if _BOOK_SERIES_DESCRIPTION.search(str(entity.get('description') or '')):
+                by_qid.setdefault(entity.get('qid'), (entity, queries[0]))
     entities = list(by_qid.values())
     query_key = _normalized(query)
     def score(entity):

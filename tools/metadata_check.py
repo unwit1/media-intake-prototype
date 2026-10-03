@@ -1,6 +1,6 @@
 """Live metadata search check: run the app's category search for well-known series and flag problems.
 
-Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY]
+Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more]
 
 For each query it records the top results and flags: the expected title missing
 from the top 5, duplicate rows for one work (same normalized title and creator
@@ -15,6 +15,7 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -45,12 +46,58 @@ QUERIES = [
     ('Light novels', 'Re:Zero', 're zero'), ('Light novels', 'Overlord', 'overlord'), ('Light novels', 'Spice and Wolf', 'spice and wolf'),
 ]
 COMICS_PAUSE = 30
+# A second, wider set: older and newer works, non-English originals, punctuation,
+# numbers, subtitles, one-word and very common titles.
+MORE_QUERIES = [
+    ('Books', 'The Lord of the Rings', 'lord of the rings'), ('Books', 'The Chronicles of Narnia', 'narnia'),
+    ('Books', 'His Dark Materials', 'his dark materials'), ('Books', "The Hitchhiker's Guide to the Galaxy", 'hitchhiker'),
+    ('Books', 'Foundation', 'foundation'), ('Books', 'The Witcher', 'witcher'), ('Books', 'Earthsea', 'earthsea'),
+    ('Books', 'The Kingkiller Chronicle', 'kingkiller'), ('Books', 'The Dark Tower', 'dark tower'),
+    ('Books', 'Outlander', 'outlander'), ('Books', 'Jack Reacher', 'reacher'), ('Books', 'Twilight', 'twilight'),
+    ('Books', 'The Maze Runner', 'maze runner'), ('Books', 'Divergent', 'divergent'), ('Books', 'Shadow and Bone', 'shadow and bone'),
+    ('Books', 'The First Law', 'first law'), ('Books', 'The Murderbot Diaries', 'murderbot'),
+    ('Books', 'The Three-Body Problem', 'three body'), ('Books', 'Hyperion Cantos', 'hyperion'),
+    ('Books', 'The Belgariad', 'belgariad'), ('Books', 'Sherlock Holmes', 'sherlock holmes'),
+    ('Books', 'Hercule Poirot', 'poirot'), ('Books', 'Cormoran Strike', 'strike'),
+    ('Books', 'The Inheritance Cycle', 'inheritance'), ('Books', 'Wings of Fire', 'wings of fire'),
+    ('Videos', 'The Sopranos', 'sopranos'), ('Videos', 'The Wire', 'wire'), ('Videos', 'Friends', 'friends'),
+    ('Videos', 'Seinfeld', 'seinfeld'), ('Videos', 'The Simpsons', 'simpsons'), ('Videos', 'Better Call Saul', 'better call saul'),
+    ('Videos', 'The Mandalorian', 'mandalorian'), ('Videos', 'Ted Lasso', 'ted lasso'), ('Videos', 'Fargo', 'fargo'),
+    ('Videos', 'Twin Peaks', 'twin peaks'), ('Videos', 'Star Trek: The Next Generation', 'next generation'),
+    ('Videos', 'Black Mirror', 'black mirror'), ('Videos', 'The Last of Us', 'last of us'),
+    ('Videos', 'Harry Potter', 'harry potter'), ('Videos', 'Jurassic Park', 'jurassic park'),
+    ('Videos', 'Indiana Jones', 'indiana jones'), ('Videos', 'Back to the Future', 'back to the future'),
+    ('Videos', 'The Godfather', 'godfather'), ('Videos', 'Pirates of the Caribbean', 'pirates of the caribbean'),
+    ('Videos', 'Shrek', 'shrek'), ('Videos', 'Mad Max', 'mad max'), ('Videos', 'Terminator', 'terminator'),
+    ('Videos', 'Rocky', 'rocky'), ('Videos', 'Spider-Man', 'spider man'),
+    ('Comics', 'Bone', 'bone'), ('Comics', 'Y: The Last Man', 'last man'), ('Comics', 'Preacher', 'preacher'),
+    ('Comics', 'Paper Girls', 'paper girls'), ('Comics', 'Monstress', 'monstress'), ('Comics', 'Fables', 'fables'),
+    ('Comics', 'Transmetropolitan', 'transmetropolitan'), ('Comics', 'Usagi Yojimbo', 'usagi yojimbo'),
+    ('Comics', 'Sin City', 'sin city'), ('Comics', 'Locke & Key', 'locke and key'), ('Comics', 'Maus', 'maus'),
+    ('Comics', 'East of West', 'east of west'), ('Comics', 'Ms. Marvel', 'ms marvel'),
+    ('Manga', 'Naruto', 'naruto'), ('Manga', 'Vagabond', 'vagabond'), ('Manga', 'Jujutsu Kaisen', 'jujutsu kaisen'),
+    ('Manga', 'Dragon Ball', 'dragon ball'), ('Manga', 'Death Note', 'death note'), ('Manga', 'Vinland Saga', 'vinland saga'),
+    ('Manga', 'Monster', 'monster'), ('Manga', 'Akira', 'akira'), ('Manga', 'Yotsuba&!', 'yotsuba'),
+    ('Manga', 'Oyasumi Punpun', 'punpun'), ('Manga', 'Blue Lock', 'blue lock'), ('Manga', 'Dandadan', 'dandadan'),
+    ('Anime', 'Neon Genesis Evangelion', 'evangelion'), ('Anime', 'Mob Psycho 100', 'mob psycho'),
+    ('Anime', 'Demon Slayer', 'demon slayer'), ('Anime', 'Steins;Gate', 'steins gate'), ('Anime', 'Haikyu!!', 'haikyu'),
+    ('Anime', 'My Hero Academia', 'my hero academia'), ('Anime', 'Ghost in the Shell', 'ghost in the shell'),
+    ('Anime', 'Gurren Lagann', 'gurren lagann'), ('Anime', 'Bocchi the Rock!', 'bocchi'), ('Anime', 'Hunter x Hunter', 'hunter x hunter'),
+    ('Games', 'Super Mario', 'mario'), ('Games', 'Halo', 'halo'), ('Games', 'Metroid', 'metroid'),
+    ('Games', 'Dark Souls', 'dark souls'), ('Games', 'The Elder Scrolls', 'elder scrolls'), ('Games', 'Fallout', 'fallout'),
+    ('Games', 'Resident Evil', 'resident evil'), ('Games', 'Kingdom Hearts', 'kingdom hearts'),
+    ('Games', 'Pok\u00e9mon', 'pokemon'), ('Games', 'Half-Life', 'half life'),
+    ('Light novels', 'Sword Art Online', 'sword art online'), ('Light novels', 'Mushoku Tensei', 'mushoku tensei'),
+    ('Light novels', 'The Apothecary Diaries', 'apothecary diaries'), ('Light novels', 'Ascendance of a Bookworm', 'bookworm'),
+    ('Light novels', 'Konosuba', 'konosuba'), ('Light novels', 'That Time I Got Reincarnated as a Slime', 'slime'),
+]
 EDITION = re.compile(r'\b(paperback|hardcover|hardback|kindle edition|mass market|box(ed)? set|boxset|collector\'?s|'
                      r'omnibus|deluxe edition|anniversary edition|special edition|illustrated edition|audiobook|'
                      r'unabridged|large print|\d+(st|nd|rd|th) edition|edition)\b', re.I)
 
 
 def norm(value):
+    value = ''.join(c for c in unicodedata.normalize('NFKD', str(value or '')) if not unicodedata.combining(c))
     return re.sub(r'[\W_]+', ' ', str(value or '').casefold().replace('&', ' and ')).strip()
 
 
@@ -64,6 +111,8 @@ def check(category, query, expect, options):
     top = [{'title': r.get('title'), 'author': r.get('author'), 'kind': r.get('kind'), 'year': (r.get('release_date') or '')[:4],
             'source': r.get('display_source') or r.get('source'), 'format': r.get('format')} for r in results[:10]]
     expected_rank = next((i + 1 for i, r in enumerate(results[:20]) if norm(expect) in norm(r.get('title'))), None)
+    bare = lambda text: re.sub(r'^(?:the|a|an) ', '', norm(text))
+    exact_rank = next((i + 1 for i, r in enumerate(results[:20]) if bare(r.get('title')) == bare(query)), None)
     keys = {}
     for row in results[:40]:
         if row.get('kind') == 'book' and row.get('series'):
@@ -77,7 +126,7 @@ def check(category, query, expect, options):
                   for key, sources in keys.items() if len(sources) > 1]
     editions = [r.get('title') for r in results[:40] if EDITION.search(str(r.get('title') or ''))]
     return {'category': category, 'query': query, 'seconds': round(time.time() - started, 1), 'count': len(results),
-            'expected_rank': expected_rank, 'duplicates': duplicates, 'edition_rows': editions,
+            'expected_rank': expected_rank, 'exact_rank': exact_rank, 'duplicates': duplicates, 'edition_rows': editions,
             'series_name': response.get('series_name'), 'series_members': response.get('series_member_count'),
             'errors': (response.get('errors') or [])[:6], 'top': top}
 
@@ -88,7 +137,7 @@ def main():
     with tempfile.TemporaryDirectory() as root:
         options = {'rights_evidence_path': str(ensure_rights_evidence(Path(root) / 'rights-evidence.json'))}
         report = []
-        for category, query, expect in QUERIES:
+        for category, query, expect in (MORE_QUERIES if '--more' in sys.argv else QUERIES):
             if only and category != only:
                 continue
             if category == 'Comics' and report and report[-1]['category'] == 'Comics':
@@ -96,7 +145,7 @@ def main():
             result = check(category, query, expect, options)
             report.append(result)
             flag = ('ERROR ' + result['error']) if 'error' in result else (
-                f"rank={result['expected_rank']} n={result['count']} dup={len(result['duplicates'])} "
+                f"rank={result['expected_rank']} exact={result['exact_rank']} n={result['count']} dup={len(result['duplicates'])} "
                 f"editions={len(result['edition_rows'])} errs={len(result['errors'])} {result['seconds']}s")
             print(f'{category:12} {query:32} {flag}', flush=True)
             output.parent.mkdir(parents=True, exist_ok=True)

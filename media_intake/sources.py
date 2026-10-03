@@ -266,6 +266,16 @@ def search_openlibrary(query, limit=10):
     return results
 
 
+# Open Library lists organisations as authors ("Nuffield Foundation.", "International
+# Conference on the Three Body Problem"); for a series or title search they bury
+# the books, so only people are offered as author results.
+_CORPORATE_AUTHOR = re.compile(
+    r'\b(?:foundation|conference|symposium|congress|society|institute|institution|university|college|'
+    r'association|council|committee|commission|department|ministry|agency|bureau|project|library|museum|'
+    r'company|corporation|inc|ltd|llc|gmbh|press|publishing|publishers|club|league|office|'
+    r'workshop|seminar|meeting|colloquium)\b|\((?:U\.S\.|Great Britain|Firm)\)', re.I)
+
+
 def search_openlibrary_metadata(query, limit=20):
     """Search Open Library for authors, books, and series with member works."""
     query = str(query or '').strip()
@@ -286,7 +296,7 @@ def search_openlibrary_metadata(query, limit=20):
             name = str(row.get('name') or '').strip()
             key = key if key.startswith('/authors/') else '/authors/' + key
             normalized_name = ' '.join(name.casefold().split())
-            if (name and normalized_name not in seen_authors and
+            if (name and normalized_name not in seen_authors and not _CORPORATE_AUTHOR.search(name) and
                     re.fullmatch(r'/authors/OL\d+A', key)):
                 seen_authors.add(normalized_name)
                 results.append({

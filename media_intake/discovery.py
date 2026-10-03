@@ -1348,4 +1348,8 @@ def search_media_category(query, category, source_options=None, credentials=None
                 if retry.get('results'):
                     response['query_correction'] = {'from': query, 'to': corrected}
     response['results'] = _promote_matching_series_results(response.get('results'), query)
+    if category in {'Videos', 'Anime', 'Games'}:
+        # A promoted series still follows closer title matches: "Rocky Road" (a
+        # show) must not jump ahead of the film "Rocky".
+        response['results'] = _sort_by_title_relevance(response['results'], query)
     return response

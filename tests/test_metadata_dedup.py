@@ -232,5 +232,70 @@ class RetryTests(unittest.TestCase):
         self.assertNotIn('key=', seen[1])
 
 
+class HundredSeriesTests(unittest.TestCase):
+    """General problems found by the 100-series check."""
+
+    def test_wikidata_search_falls_back_to_wikipedia_when_throttled(self):
+        from media_intake import wikidata
+        busy = urllib.error.HTTPError('https://www.wikidata.org/w/api.php', 429, 'Too Many Requests', {}, None)
+        pages = {'query': {'pages': [
+            {'index': 2, 'title': 'Shrek (franchise)', 'description': 'DreamWorks Animation media franchise',
+             'pageprops': {'wikibase_item': 'Q1203222'}},
+            {'index': 1, 'title': 'Shrek', 'description': '2001 DreamWorks Animation film',
+             'pageprops': {'wikibase_item': 'Q483815'}},
+            {'index': 3, 'title': 'Shrek (disambiguation)', 'pageprops': {'wikibase_item': 'Q1', 'disambiguation': ''}}]}}
+        def fake_get(url, max_bytes=None):
+            if 'wikidata.org' in url:
+                raise busy
+            return json.dumps(pages).encode(), 'https://en.wikipedia.org/w/api.php'
+        with patch.object(wikidata, 'http_get', side_effect=fake_get):
+            rows = wikidata.search_wikidata('Shrek')
+        self.assertEqual([(r['qid'], r['title']) for r in rows], [('Q483815', 'Shrek'), ('Q1203222', 'Shrek')])
+
+    def test_organisations_are_not_offered_as_book_authors(self):
+        from media_intake.sources import _CORPORATE_AUTHOR
+        for name in ('Nuffield Foundation.', 'National Science Foundation (U.S.)',
+                     'International Conference on the Three Body Problem (1st 1969 Birmingham)'):
+            self.assertTrue(_CORPORATE_AUTHOR.search(name), name)
+        for name in ('Isaac Asimov', 'Ursula K. Le Guin', 'Clubb Smith', 'Steven Pressfield'):
+            self.assertFalse(_CORPORATE_AUTHOR.search(name), name)
+
+    def test_common_word_series_is_found_by_asking_for_the_series(self):
+        from media_intake import watched
+        calls = []
+        def fake_search(query, limit=20):
+            calls.append(query)
+            if query == 'Foundation series':
+                return [{'qid': 'Q2', 'title': 'Foundation series', 'description': 'science fiction book series by Isaac Asimov'}]
+            return [{'qid': 'Q1', 'title': 'Foundation', 'description': 'type of nonprofit organization'}]
+        with patch.object(watched, 'search_wikidata', side_effect=fake_search), \
+                patch.object(watched, '_wikidata_series_members', return_value=[]):
+            found = watched._search_wikidata_series('Foundation')
+        self.assertEqual([row['qid'] for row in found], ['Q2'])
+        self.assertEqual(calls, ['Foundation', 'Foundation series'])
+
+    def test_exact_title_film_precedes_a_promoted_prefix_series(self):
+        from media_intake.discovery import _promote_matching_series_results
+        rows = [{'title': 'Rocky Road', 'entity_type': 'series'}, {'title': 'Rocky', 'entity_type': 'work'}]
+        ordered = _sort_by_title_relevance(_promote_matching_series_results(rows, 'Rocky'), 'Rocky')
+        self.assertEqual([r['title'] for r in ordered], ['Rocky', 'Rocky Road'])
+
+    def test_plain_comic_search_leads_with_the_longest_named_series(self):
+        rows = [cm.normalize(dict(row, provider='GCD', source_url=row['title'] + row.get('issue_number', '')))
+                for row in ({'title': 'Bone #1', 'comic_entity': 'issue', 'issue_number': '1', 'series_title': 'Bone'},
+                            {'title': 'Bone', 'comic_entity': 'series', 'series_title': 'Bone', 'issue_count': 3,
+                             'series_start_year': '2004'},
+                            {'title': 'Bone', 'comic_entity': 'series', 'series_title': 'Bone', 'issue_count': 55,
+                             'series_start_year': '1991'},
+                            {'title': 'Bone Parish', 'comic_entity': 'series', 'series_title': 'Bone Parish'})]
+        ordered = cm.sort_comics(rows, 'Bone')
+        self.assertEqual([(r['title'], r.get('issue_count')) for r in ordered[:3]],
+                         [('Bone', 55), ('Bone', 3), ('Bone #1', None)])
+        self.assertEqual(cm.sort_comics(rows, 'Bone #1')[0]['comic_entity'], 'issue')
+        from media_intake.gui import MediaIntakeApp
+        self.assertEqual([MediaIntakeApp._result_creator_label(r) for r in ordered[:2]],
+                         ['Comic series · 1991 · 55 issues', 'Comic series · 2004 · 3 issues'])
+
+
 if __name__ == '__main__':
     unittest.main()

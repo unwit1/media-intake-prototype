@@ -14,6 +14,10 @@ def registry_for(config=None):
     if 'sitemap' not in registry.adapters:
         from .sitemap import SitemapAdapter
         registry.register(SitemapAdapter())
+    from .platforms import ADAPTERS as PLATFORM_ADAPTERS
+    for platform in PLATFORM_ADAPTERS:
+        if platform.id not in registry.adapters:
+            registry.register(platform())
     recipe = (config or {}).get('recipe')
     if recipe:
         adapter = HtmlAdapter(Recipe.from_dict(recipe))
@@ -30,8 +34,13 @@ def resolve(url, client, config=None, registry=None):
     else:
         # Public APIs that can resolve a URL without a page fetch.
         api = registry.adapters.get('xkcd')
+        platform = next((registry.adapters[key] for key in ('blogger', 'substack', 'tumblr')
+                         if key in registry.adapters and registry.adapters[key].probe(url)), None)
         if api and api.probe(url):
             adapter = api
+        elif platform and config.get('use_platform_api', True):
+            # Blog platforms: their JSON APIs reach the whole archive, unlike their RSS.
+            adapter = platform
         else:
             response = client.get(url)
             feed = registry.adapters.get('feed')

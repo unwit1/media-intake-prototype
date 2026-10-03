@@ -377,7 +377,7 @@ class WebtoonAdapter(HtmlAdapter):
         super().__init__(Recipe(id='webtoon', domains=['webtoons.com'],
             title_selector='h1,.subj', archive_selector='#_listUl a',
             image_selector='#_imageList img', order='reverse',
-            next_selector='.paginate a.next', max_pages=100))
+            next_selector='.paginate a.next,.paginate a.pg_next', max_pages=100))
 
     def canonicalize_url(self, url):
         parts = urllib.parse.urlsplit(canonicalize_url(url))
@@ -389,27 +389,110 @@ class WebtoonAdapter(HtmlAdapter):
         return urllib.parse.urlunsplit(('https', 'www.webtoons.com', path,
                                        urllib.parse.urlencode({'title_no': title}), ''))
 
-    def resolve_series(self, url, client, cursor=None, config=None):
-        # Initial bounded archive discovery; subsequent polls inspect the newest
-        # list page. No absent entry can be removed from this partial snapshot.
-        settings = dict(config or {})
-        recipe = {**self.recipe.__dict__, **settings.get('recipe', {})}
-        if cursor and cursor.get('latest_source_entry_id'):
-            recipe.update({'max_pages': 1, 'complete': False})
-        settings['recipe'] = recipe
-        snapshot = super().resolve_series(self.canonicalize_url(url), client, cursor, settings)
-        for entry in snapshot.entries:
-            params = urllib.parse.parse_qs(urllib.parse.urlsplit(entry.source_url).query)
-            episode = params.get('episode_no', [''])[0]
+    LOCK_MARKERS = re.compile(r'lock|daily_?pass|dailypass|paid|coin|fast_?pass', re.I)
+    INITIAL_PAGES, CATCHUP_PAGES = 100, 20
+
+    def _page_url(self, list_url, page):
+        parts = urllib.parse.urlsplit(list_url)
+        query = dict(urllib.parse.parse_qsl(parts.query))
+        if page > 1:
+            query['page'] = str(page)
+        return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+
+    @staticmethod
+    def _date(text):
+        for pattern in ('%b %d, %Y', '%B %d, %Y', '%Y.%m.%d', '%d %b %Y'):
+            try:
+                return dt.datetime.strptime(text.strip(), pattern).date().isoformat()
+            except ValueError:
+                continue
+        return None
+
+    def _parse_list(self, body, base):
+        document = Document(body)
+        items, has_next = [], bool(document.select('.paginate a.next') or document.select('.paginate a.pg_next'))
+        for item in document.select('#_listUl li') or []:
+            links = item.select('a')
+            if not links or not links[0].attrs.get('href'):
+                continue
+            target = canonicalize_url(urllib.parse.urljoin(base, links[0].attrs['href']))
+            episode = urllib.parse.parse_qs(urllib.parse.urlsplit(target).query).get('episode_no', [''])[0]
             if not episode.isdigit():
                 raise ExtractionError('WEBTOON entry is missing episode_no')
-            entry.source_id, entry.number, entry.ordinal = episode, episode, int(episode)
-            entry.provenance['layout'] = 'vertical_scroll'
-        snapshot.entries.sort(key=lambda entry: entry.ordinal)
-        snapshot.chapters = group_entries(snapshot.entries)
-        snapshot.complete = False
-        return snapshot
+            classes = ' '.join([item.attrs.get('class', '')] + [node.attrs.get('class', '') for node in item.select('*')])
+            subject = item.select('.subj')
+            dates = item.select('.date')
+            items.append({'episode': int(episode), 'url': target,
+                          'title': (subject[0].text() if subject else links[0].text()) or f'Episode {episode}',
+                          'date': self._date(dates[0].text()) if dates else None,
+                          'locked': bool(self.LOCK_MARKERS.search(classes))})
+        if not items:  # older markup: plain links in the list
+            for node in document.select('#_listUl a'):
+                href = node.attrs.get('href')
+                if href:
+                    target = canonicalize_url(urllib.parse.urljoin(base, href))
+                    episode = urllib.parse.parse_qs(urllib.parse.urlsplit(target).query).get('episode_no', [''])[0]
+                    if not episode.isdigit():
+                        raise ExtractionError('WEBTOON entry is missing episode_no')
+                    items.append({'episode': int(episode), 'url': target, 'title': node.text() or f'Episode {episode}',
+                                  'date': None, 'locked': False})
+        return document, items, has_next
 
+    def resolve_series(self, url, client, cursor=None, config=None):
+        """Initial checks read the whole list; later checks page back until they reach a known episode."""
+        cursor, config = dict(cursor or {}), dict(config or {})
+        list_url = self.canonicalize_url(url)
+        known = int(cursor.get('latest_source_entry_id') or 0) if str(cursor.get('latest_source_entry_id') or '').isdigit() else 0
+        limit = int(config.get('webtoon_catchup_pages', self.CATCHUP_PAGES) if known else
+                    config.get('webtoon_pages', self.INITIAL_PAGES))
+        found, warnings, first_document, overlap, pages = {}, [], None, False, 0
+        for page in range(1, limit + 1):
+            response = client.get(self._page_url(list_url, page))
+            document, items, has_next = self._parse_list(response.body, response.url)
+            pages += 1
+            first_document = first_document or document
+            for item in items:
+                found.setdefault(item['episode'], item)
+            if known and any(item['episode'] <= known for item in items):
+                overlap = True
+                break
+            if not items or not has_next:
+                break
+        else:
+            if known and not overlap:
+                warnings.append(f'More than {limit} list pages of new episodes since the last check; '
+                                'some episodes may be missing until the next check')
+        if known and not overlap and pages < limit and found and min(found) > known + 1:
+            warnings.append('The episode list did not reach the last known episode; possible gap')
+        titles = first_document.select('h1') + first_document.select('.subj') if first_document else []
+        title = next((node.text() for node in titles if node.text()), 'WEBTOON series')
+        series = new_series(list_url, title, self.id)
+        candidates = [MetadataCandidate('title', title, self.id, list_url)]
+        authors = [node.text() for node in (first_document.select('.author_area') + first_document.select('.author'))
+                   if node.text()] if first_document else []
+        if authors:
+            names = [name.strip() for name in re.split(r'\s*[,/]\s*', re.sub(r'(author info|info)$', '', authors[0], flags=re.I))
+                     if name.strip()]
+            candidates.append(MetadataCandidate('creators', [{'name': name, 'role': 'creator'} for name in names],
+                                                self.id, list_url, 0.9))
+        merge_metadata(series, candidates)
+        entries = []
+        for episode in sorted(found):
+            item = found[episode]
+            entry = WebcomicEntry(str(episode), item['url'], item['title'], ordinal=episode, number=str(episode),
+                                  published_at=item['date'],
+                                  provenance={'provider': self.id, 'layout': 'vertical_scroll', 'list_url': list_url,
+                                              **({'locked': True} if item['locked'] else {})})
+            entries.append(entry)
+        chapters = group_entries(entries)
+        for entry in entries:
+            if entry.provenance.get('locked'):
+                entry.content_type = 'locked'  # paid/Daily Pass: recorded, never downloaded
+        return Snapshot(series, entries, chapters, complete=False, warnings=warnings,
+                        cursor={'list_url': list_url},
+                        metrics={'entry_count': len(entries), 'pages': pages,
+                                 'locked': sum(bool(e.provenance.get('locked')) for e in entries),
+                                 'incremental': bool(known)})
 
 class AdapterRegistry:
     def __init__(self):

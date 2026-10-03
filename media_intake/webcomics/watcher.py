@@ -211,7 +211,8 @@ def queue_pending(db, source, limit=10, entry_ids=None):
     watch = dict(db.execute('SELECT * FROM watched_items WHERE id=?', (source['watch_id'],)).fetchone())
     config = json.loads(source['config'])
     queued = []
-    rows = db.execute("SELECT * FROM webcomic_entries WHERE source_id=? AND state='pending' AND removed=0 ORDER BY ordinal,id LIMIT ?",
+    rows = db.execute("""SELECT * FROM webcomic_entries WHERE source_id=? AND state='pending' AND removed=0
+        AND COALESCE(json_extract(metadata, '$.content_type'), '') != 'locked' ORDER BY ordinal,id LIMIT ?""",
                       (source['id'], max(1, min(limit, 100)) if entry_ids is None else 100000)).fetchall()
     if entry_ids is not None:
         wanted = set(entry_ids)

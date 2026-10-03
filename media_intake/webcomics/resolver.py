@@ -15,7 +15,8 @@ def registry_for(config=None):
         from .sitemap import SitemapAdapter
         registry.register(SitemapAdapter())
     from .platforms import ADAPTERS as PLATFORM_ADAPTERS
-    for platform in PLATFORM_ADAPTERS:
+    from .tapas import TapasAdapter
+    for platform in (*PLATFORM_ADAPTERS, TapasAdapter):
         if platform.id not in registry.adapters:
             registry.register(platform())
     recipe = (config or {}).get('recipe')
@@ -34,7 +35,7 @@ def resolve(url, client, config=None, registry=None):
     else:
         # Public APIs that can resolve a URL without a page fetch.
         api = registry.adapters.get('xkcd')
-        platform = next((registry.adapters[key] for key in ('blogger', 'substack', 'tumblr')
+        platform = next((registry.adapters[key] for key in ('blogger', 'substack', 'tumblr', 'tapas')
                          if key in registry.adapters and registry.adapters[key].probe(url)), None)
         if api and api.probe(url):
             adapter = api

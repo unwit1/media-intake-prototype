@@ -1,5 +1,6 @@
 """Webcomics library and evidence-preserving chapter browser for the existing GUI."""
 import json
+import time
 import tkinter as tk
 from tkinter import ttk, simpledialog, filedialog, messagebox
 from pathlib import Path
@@ -45,6 +46,7 @@ class WebcomicsPanel:
         ttk.Button(more, text='Retry failed entries', command=self.retry_failed).pack(side='left')
         ttk.Button(more, text='Open site', command=self.open_site).pack(side='left', padx=6)
         ttk.Button(more, text='Audit images', command=self.audit_images).pack(side='left')
+        ttk.Button(more, text='Health', command=self.health).pack(side='left', padx=6)
         ttk.Label(more, text='Filter').pack(side='left', padx=(18, 4))
         self.filter_text = tk.StringVar()
         ttk.Entry(more, textvariable=self.filter_text, width=24).pack(side='left')
@@ -173,6 +175,44 @@ class WebcomicsPanel:
             count = retry_failed_entries(self.app.db, source['id'])
             self.refresh()
             self.app._done(f'{count} failed entries will be retried')
+
+    def health(self):
+        from . import health
+        source = self.selected()
+        if not source:
+            return
+        info = health.summary(self.app.db, source['id'])
+        dialog = tk.Toplevel(self.app.root)
+        dialog.title(f"Health: {source['title']}")
+        dialog.geometry('820x520')
+        lines = [f"Status: {info['health']}  ·  adapter {info['adapter']} v{info['adapter_version']}  ·  "
+                 f"last success {info['last_success'] or 'never'}  ·  failures in a row {info['failures']}", '']
+        lines += ['Warnings:'] + [f'  • {text}' for text in info['warnings']] if info['warnings'] else ['No warnings.']
+        if info['history']:
+            lines += ['', 'Recent checks (entries listed · stored · images per entry):']
+            for sample in info['history'][-10:]:
+                lines.append(f"  {time.strftime('%Y-%m-%d %H:%M', time.localtime(sample['at']))}  "
+                             f"{sample.get('snapshot_entries')} · {sample.get('entries')} · {sample.get('images_per_entry')}")
+        lines += ['', 'Recent events:'] + [f"  {event['created_at']}  {event['event_type']}  {event['entry_key'] or ''}"
+                                           for event in info['events'][:25]]
+        text = tk.Text(dialog, wrap='word')
+        text.insert('1.0', '\n'.join(lines))
+        text.configure(state='disabled')
+        text.pack(fill='both', expand=True, padx=12, pady=12)
+        def reprocess():
+            data_root = self.app.data_root
+            def action():
+                db = connect(data_root)
+                try:
+                    return health.reprocess_metadata(db, source['id'])
+                finally:
+                    db.close()
+            self.app._worker('Reprocessing metadata…', action,
+                             lambda count: (self.refresh(), self.app._done(f'Refreshed metadata for {count} entries (no downloads)')))
+        bar = ttk.Frame(dialog)
+        bar.pack(fill='x', padx=12, pady=(0, 12))
+        ttk.Button(bar, text='Reprocess metadata (no downloads)', command=reprocess).pack(side='left')
+        ttk.Button(bar, text='Close', command=dialog.destroy).pack(side='right')
 
     def audit_images(self):
         from .audit import audit_source

@@ -201,6 +201,8 @@ def apply_snapshot(db, source_id, snapshot, baseline=False):
                (series_data['title'], ', '.join(dict.fromkeys(item['name'] for item in series_data['creators'])) or 'Unknown', source['watch_id']))
     db.execute('UPDATE webcomic_sources SET cursor=?,metrics=?,health=?,last_success=?,failures=0 WHERE id=?',
                (json.dumps(cursor), json.dumps(snapshot.metrics), 'OK', now(), source_id))
+    from .health import record_sample
+    record_sample(db, source_id, snapshot.metrics)
 
 
 def queue_pending(db, source, limit=10, entry_ids=None):

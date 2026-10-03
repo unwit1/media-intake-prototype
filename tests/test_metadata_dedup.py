@@ -292,6 +292,9 @@ class HundredSeriesTests(unittest.TestCase):
         self.assertEqual([(r['title'], r.get('issue_count')) for r in ordered[:3]],
                          [('Bone', 55), ('Bone', 3), ('Bone #1', None)])
         self.assertEqual(cm.sort_comics(rows, 'Bone #1')[0]['comic_entity'], 'issue')
+        from media_intake.gui import MediaIntakeApp
+        self.assertEqual([MediaIntakeApp._result_creator_label(r) for r in ordered[:2]],
+                         ['Comic series · 1991 · 55 issues', 'Comic series · 2004 · 3 issues'])
 
 
 if __name__ == '__main__':

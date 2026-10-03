@@ -60,7 +60,7 @@ def search_wikidata(query, limit=10):
             raise
         # Wikidata throttles bursts; Wikipedia's search gives the same items
         # (QID and short description) from a separately limited host.
-        return _search_via_wikipedia(query, limit)
+        return search_wikipedia_entities(query, limit)
     results = []
     for row in payload.get('search', []):
         qid = str(row.get('id') or '')
@@ -78,7 +78,7 @@ def search_wikidata(query, limit=10):
 WIKIPEDIA_API = 'https://en.wikipedia.org/w/api.php'
 
 
-def _search_via_wikipedia(query, limit=10):
+def search_wikipedia_entities(query, limit=10):
     """Wikidata-shaped search results from English Wikipedia (title, QID, short description)."""
     params = urllib.parse.urlencode({
         'action': 'query', 'generator': 'search', 'gsrsearch': query, 'gsrlimit': limit,

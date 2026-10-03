@@ -389,6 +389,24 @@ class ThirdSetTests(unittest.TestCase):
         from media_intake.discovery import _title_relevance
         self.assertEqual((_title_relevance('spider man', 'Spider-Man'), _title_relevance('Bone', 'Bones')), (0, 3))
 
+    def test_series_without_a_matching_label_is_found_through_wikipedia(self):
+        from media_intake import watched
+        queries = []
+        def label_search(query, limit=20):
+            queries.append(query)
+            return []
+        article = [{'qid': 'Q847022', 'title': 'Millennium', 'description': 'Crime novel series started by Stieg Larsson'},
+                   {'qid': 'Q276343', 'title': 'The Girl with the Dragon Tattoo', 'description': 'Film by Niels Arden Oplev'}]
+        with patch.object(watched, 'search_wikidata', side_effect=label_search), \
+                patch.object(watched, 'search_wikipedia_entities', return_value=article), \
+                patch.object(watched, '_wikidata_series_members', return_value=[]):
+            found = watched._search_wikidata_series('The Millennium Trilogy')
+        self.assertEqual([row['qid'] for row in found], ['Q847022'])
+        self.assertEqual(queries[-1], 'Millennium series')  # after the doubled-letter retry
+        from media_intake.discovery import _BOX_SET
+        self.assertTrue(_BOX_SET.search('The Magic Tree House Collection #1'))
+        self.assertFalse(_BOX_SET.search('The Complete Collection'))
+
 
 if __name__ == '__main__':
     unittest.main()

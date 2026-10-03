@@ -64,7 +64,7 @@ from .irc import enqueue_irc, has_configured_source, search_configured_sources
 from .serial import discover_feed, enqueue_serial
 from .sources import (resolve_detail, search_google_books_metadata,
                       search_openlibrary_metadata, search_site)
-from .wikidata import import_wikidata_entity, search_wikidata
+from .wikidata import import_wikidata_entity, search_wikidata, search_wikipedia_entities
 
 CHECK_INTERVAL = dt.timedelta(days=1)
 _BOOK_SERIES_DESCRIPTION = re.compile(
@@ -738,10 +738,19 @@ def _search_wikidata_series(query):
         # A common word ("Foundation") ranks a foundation, a film and a company
         # above Asimov's books, and a descriptive word ("Dune Chronicles", "The
         # Silo Series") hides the series' own label; ask for "<name> series".
-        base = _GENERIC_SERIES_TAIL.sub('', queries[0]).strip() or queries[0]
-        for entity in search_wikidata(base + ' series', limit=10):
+        base = re.sub(r'^(?:the|a|an)\s+', '', _GENERIC_SERIES_TAIL.sub('', queries[0]).strip(), flags=re.I)
+        for entity in search_wikidata((base or queries[0]) + ' series', limit=10):
             if _is_book_series(str(entity.get('description') or '')):
                 by_qid.setdefault(entity.get('qid'), (entity, queries[0]))
+    if not by_qid:
+        # Wikidata's search matches labels only; Wikipedia searches the articles,
+        # so "The Millennium Trilogy" finds the Millennium novel series.
+        try:
+            for entity in search_wikipedia_entities(queries[0], limit=10):
+                if _is_book_series(str(entity.get('description') or '')):
+                    by_qid.setdefault(entity.get('qid'), (entity, queries[0]))
+        except Exception as exc:
+            logger.info('Wikipedia series search failed for %r: %s', queries[0], exc)
     entities = list(by_qid.values())
     def score(entity):
         title_key = _series_words_removed(entity.get('title'))

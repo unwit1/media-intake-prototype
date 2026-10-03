@@ -358,8 +358,8 @@ def _cross_catalog_ids(item):
             and i.get('external_id')}
 
 
-_BOX_SET = re.compile(r'\bbox(?:ed)?[\s-]*set\b|\b(?:books?|vols?\.?|volumes?|#)\s*\d+\s*(?:-|\u2013|to|&)\s*\d+\b',
-                      re.I)
+_BOX_SET = re.compile(r'\bbox(?:ed)?[\s-]*set\b|\b(?:books?|vols?\.?|volumes?|#)\s*\d+\s*(?:-|\u2013|to|&)\s*\d+\b|'
+                      r'\bcollection\s*#\s*\d+\b', re.I)
 # Edition and listing noise on otherwise identical works: "Shift Deluxe Collector's
 # Edition", "The Girl with the Dragon Tattoo (Millennium Trilogy) by Stieg Larsson
 # (2008) Hardcover". Stripped only to decide whether two rows are one work.

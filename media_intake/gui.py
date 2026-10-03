@@ -186,6 +186,7 @@ class MediaIntakeApp:
             self.logger.warning('Saved Hardcover API token could not be unlocked; re-enter it in Settings.')
         self.hardcover_api_token = saved_hardcover_token
         self.hardcover_api_token_entry = tk.StringVar(value=saved_hardcover_token)
+        self.google_books_api_key_entry = tk.StringVar(value=self._load_google_books_key())
         self.metadata_credential_status = tk.StringVar(value='')
         self.watch_goodreads_profile = {}
         self.watch_libgen = tk.BooleanVar(value=get_setting(self.db, 'watch_libgen', '1') == '1')
@@ -425,6 +426,7 @@ class MediaIntakeApp:
             self.hardcover_api_token = ''
             self.logger.warning('Saved Hardcover API token could not be unlocked for the selected data folder.')
         self.hardcover_api_token_entry.set(self.hardcover_api_token)
+        self.google_books_api_key_entry.set(self._load_google_books_key())
         self._render_library_profiles()
         self._refresh_profile_selectors()
         self.library_folder.set(get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
@@ -1181,7 +1183,10 @@ class MediaIntakeApp:
             'Comic Vine and Metron add issue catalogs. Credentials stay in memory for this app session; '
             'set COMICVINE_API_KEY, METRON_API_TOKEN, TMDB_API_KEY, YOUTUBE_API_KEY, IGDB_CLIENT_ID, and '
             'IGDB_CLIENT_SECRET in the launch environment to reuse them after restart. Hardcover API tokens '
-            'are encrypted for this Windows account and used to refresh watched Hardcover lists.'),
+            'are encrypted for this Windows account and used to refresh watched Hardcover lists. Google Books '
+            'works without a key but shares a small public quota and often answers "429 Too Many Requests"; a '
+            'free Books API key from the Google Cloud console gives this app its own quota and is saved encrypted '
+            'for this Windows account.'),
             wraplength=850, justify='left').pack(anchor='w', pady=(4, 12))
         form = ttk.Frame(parent)
         form.pack(anchor='nw', fill='x')
@@ -1192,7 +1197,8 @@ class MediaIntakeApp:
                 ('IGDB Twitch client secret', self.igdb_client_secret_entry, True),
                 ('Comic Vine API key', self.comicvine_key_entry, True),
                 ('Metron API token', self.metron_token_entry, True),
-                ('Hardcover API token', self.hardcover_api_token_entry, True))):
+                ('Hardcover API token', self.hardcover_api_token_entry, True),
+                ('Google Books API key', self.google_books_api_key_entry, True))):
             ttk.Label(form, text=label).grid(row=index, column=0, sticky='w', padx=(0, 10), pady=5)
             ttk.Entry(form, textvariable=variable, width=64,
                       show='*' if secret else '').grid(row=index, column=1, sticky='ew', pady=5)
@@ -1218,8 +1224,34 @@ class MediaIntakeApp:
             self.metadata_credential_status.set(
                 f'Could not securely save Hardcover token: {exc}')
             return
+        google_books_key = self.google_books_api_key_entry.get().strip()
+        try:
+            set_local_secret(self.db, 'google_books_api_key', google_books_key)
+        except Exception as exc:
+            self.metadata_credential_status.set(f'Could not securely save the Google Books key: {exc}')
+            return
+        self._use_google_books_key(google_books_key)
         self._update_metadata_credential_status()
         self._update_search_category_info()
+
+    def _load_google_books_key(self):
+        """The saved key (encrypted for this Windows user), else GOOGLE_BOOKS_API_KEY from the environment."""
+        try:
+            saved = get_local_secret(self.db, 'google_books_api_key')
+        except Exception:
+            saved = ''
+            self.logger.warning('Saved Google Books key could not be unlocked; re-enter it in Settings.')
+        if saved:
+            self._use_google_books_key(saved)
+        return saved or os.environ.get('GOOGLE_BOOKS_API_KEY', '').strip()
+
+    @staticmethod
+    def _use_google_books_key(key):
+        # Book searches run in worker threads and read the key from the environment.
+        if key:
+            os.environ['GOOGLE_BOOKS_API_KEY'] = key
+        else:
+            os.environ.pop('GOOGLE_BOOKS_API_KEY', None)
 
     def clear_metadata_credentials(self):
         self.comicvine_api_key = ''
@@ -1240,6 +1272,12 @@ class MediaIntakeApp:
             set_local_secret(self.db, 'hardcover_api_token', '')
         except Exception:
             self.logger.warning('Could not clear the saved Hardcover token.')
+        self.google_books_api_key_entry.set('')
+        try:
+            set_local_secret(self.db, 'google_books_api_key', '')
+        except Exception:
+            self.logger.warning('Could not clear the saved Google Books key.')
+        self._use_google_books_key('')
         self._update_metadata_credential_status()
         self._update_search_category_info()
 
@@ -1257,6 +1295,8 @@ class MediaIntakeApp:
             configured.append('IGDB')
         if self.hardcover_api_token:
             configured.append('Hardcover')
+        if os.environ.get('GOOGLE_BOOKS_API_KEY'):
+            configured.append('Google Books')
         self.metadata_credential_status.set(
             'Configured for this session: ' + (', '.join(configured) if configured else 'none'))
 

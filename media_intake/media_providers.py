@@ -104,9 +104,14 @@ def search_tvmaze(query, limit=12):
             'official_site': show.get('officialSite'), 'status': status,
             'schedule': show.get('schedule') or {}, 'country': (show.get('network') or {}).get('country'),
         }
-        results.append(_normalized_video(show['name'], 'TVMaze', show['id'], source_url,
-                                         subtype, release_date=first_aired,
-                                         status=status, metadata=metadata))
+        row = _normalized_video(show['name'], 'TVMaze', show['id'], source_url,
+                                subtype, release_date=first_aired,
+                                status=status, metadata=metadata)
+        externals = show.get('externals') or {}
+        for provider, key in (('imdb', 'imdb'), ('thetvdb', 'thetvdb')):
+            if externals.get(key):
+                row['external_ids'].append({'provider': provider, 'external_id': str(externals[key])})
+        results.append(row)
     return results
 
 

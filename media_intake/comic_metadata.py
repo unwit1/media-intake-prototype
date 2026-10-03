@@ -21,7 +21,7 @@ import urllib.request
 
 from .webcomics.http import NoRedirect, retry_seconds
 
-COLLECTION = re.compile(r'\b(?:TPB|trade\s*paperback|hardcover|paperback|omnibus|collected\s+editions?|'
+COLLECTION = re.compile(r'\b(?:TPB|trade\s*paperback|hardcover|paperback|omnibus|collected\s+(?:editions?|series)|'
     r'complete\s+collection|deluxe\s+edition|absolute\s+edition|HC)\b', re.I)
 ISSUE = re.compile(r'(?:#|\bissue\s*(?:no\.?\s*)?)(\d+(?:\.\d+)?[a-z]?)\b', re.I)
 ISSUE_RANGE = re.compile(r'#\d+(?:\.\d+)?\s*(?:[-–—&]|to)\s*#?\d+|#\d+.*?\b(?:complete\s+series|full\s+run)\b', re.I)
@@ -73,7 +73,8 @@ def _memo(provider, identity, loader, interval=1):
         if cached and cached[0] > time.monotonic():
             return copy.deepcopy(cached[1])
         if state['blocked'] > time.monotonic():
-            raise ValueError(f'{provider} is rate limited; try again later')
+            minutes = max(1, round((state['blocked'] - time.monotonic()) / 60))
+            raise ValueError(f'{provider} is rate limited for about {minutes} more minute(s)')
         delay = state['last'] + interval - time.monotonic()
         if delay > 0:
             time.sleep(delay)
@@ -87,7 +88,10 @@ def _memo(provider, identity, loader, interval=1):
         except urllib.error.HTTPError as exc:
             code = exc.code
             if code == 429:
-                state['blocked'] = time.monotonic() + (retry_seconds((exc.headers or {}).get('Retry-After')) or 60)
+                wait = retry_seconds((exc.headers or {}).get('Retry-After')) or 60
+                state['blocked'] = time.monotonic() + wait
+                exc.close()
+                raise ValueError(f'{provider} is rate limited for about {max(1, round(wait / 60))} minute(s)') from None
             exc.close()
             # HTTPError embeds the full Comic Vine query URL, including API key.
             raise ValueError(f'{provider} returned HTTP {code}; check credentials or retry later') from None
@@ -249,6 +253,51 @@ def _bare_title(value):
     return re.sub(r'^(?:the|a|an)\s+', '', key(value))
 
 
+_SORT_ARTICLE = re.compile(r'^(?:the|a|an|la|le|les|l|el|los|las|die|der|das|het|il|lo|gli|o|os)\s+')
+
+
+def _gcd_sort_key(name):
+    """Approximate GCD's series sort name: no accents, case or leading article."""
+    text = unicodedata.normalize('NFKD', str(name or '').casefold())
+    text = ''.join(c for c in text if not unicodedata.combining(c)).replace("'", ' ')
+    return _SORT_ARTICLE.sub('', ' '.join(re.findall(r'[^\W_]+', text)))
+
+
+def _gcd_exact_series(series_url, wanted, max_requests=6):
+    """Binary-search GCD's name-ordered result pages for runs named exactly ``wanted``."""
+    first = _json('GCD', series_url, interval=2)
+    rows = first.get('results') if isinstance(first, dict) else None
+    if not rows or not first.get('next'):
+        return []
+    pages = -(-int(first.get('count') or 0) // len(rows))
+    target = _gcd_sort_key(wanted)
+    separator = '&' if '?' in series_url else '?'
+    def page(number):
+        data = _json('GCD', f'{series_url}{separator}page={number}', interval=2)
+        return [row for row in (data.get('results') or []) if isinstance(row, dict)]
+    low, high, requests, found = 2, pages, 0, None
+    while low <= high and requests < max_requests:
+        middle = (low + high) // 2
+        rows, requests = page(middle), requests + 1
+        if not rows:
+            high = middle - 1
+        elif target < _gcd_sort_key(rows[0].get('name')):
+            high = middle - 1
+        elif target > _gcd_sort_key(rows[-1].get('name')):
+            low = middle + 1
+        else:
+            found = middle
+            break
+    if found is None:
+        return []
+    matches = [row for row in rows if _bare_title(row.get('name')) == wanted]
+    # Same-named runs can straddle a page boundary.
+    for neighbour, edge in ((found - 1, rows[0]), (found + 1, rows[-1])):
+        if 2 <= neighbour <= pages and _bare_title(edge.get('name')) == wanted:
+            matches += [row for row in page(neighbour) if _bare_title(row.get('name')) == wanted]
+    return matches
+
+
 def search_gcd(query, limit=100):
     parsed = parse_query(query)
     # GCD files many runs without the article ("Sandman", 1989) and its name
@@ -257,6 +306,11 @@ def search_gcd(query, limit=100):
     base = 'https://www.comics.org/api/series/name/' + urllib.parse.quote(name, safe='') + '/'
     series_url = base + (f'year/{parsed.year}/' if parsed.year else '')
     series = _pages('GCD', series_url, limit=50, max_pages=1, interval=2)
+    wanted = _bare_title(parsed.title)
+    if wanted and not any(_bare_title(row.get('name')) == wanted for row in series):
+        # A short, common name ("Saga") matches hundreds of runs listed in name
+        # order, so the run itself is pages in. Find its page instead of giving up.
+        series = _gcd_exact_series(series_url, wanted) + series
     output = []
     for row in series:
         source = str(row.get('api_url') or '')

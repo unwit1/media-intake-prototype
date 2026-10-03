@@ -26,6 +26,11 @@ def main():
     air = sub.add_parser('add-irc-result'); air.add_argument('file', help='JSON output from search-irc'); air.add_argument('--index', type=int, default=0)
     sf = sub.add_parser('discover-feed'); sf.add_argument('url'); sf.add_argument('--kind', required=True, choices=sorted(KINDS)); sf.add_argument('--limit', type=int, default=100)
     ase = sub.add_parser('add-serial'); ase.add_argument('manifest', help='JSON series manifest with ordered chapter URLs')
+    wc = sub.add_parser('add-webcomic', help='Resolve a public comic URL and persist an incremental watch')
+    wc.add_argument('url'); wc.add_argument('--title'); wc.add_argument('--recipe', help='Declarative recipe JSON file')
+    wc.add_argument('--adapter'); wc.add_argument('--archive-existing', action='store_true')
+    sub.add_parser('list-webcomics')
+    wcp = sub.add_parser('poll-webcomics'); wcp.add_argument('--force', action='store_true'); wcp.add_argument('--library')
     b = sub.add_parser('add-json'); b.add_argument('file'); b.add_argument('--index', type=int, default=0)
     l = sub.add_parser('list'); l.add_argument('--state')
     d = sub.add_parser('download'); d.add_argument('id', type=int)
@@ -52,6 +57,24 @@ def main():
         elif args.action == 'add-irc': result = enqueue_irc(db, json.loads(open(args.config, encoding='utf-8').read()))
         elif args.action == 'add-irc-result': result = enqueue_irc(db, json.loads(open(args.file, encoding='utf-8').read())[args.index]['irc'])
         elif args.action == 'add-serial': result = enqueue_serial(db, json.loads(open(args.manifest, encoding='utf-8').read()))
+        elif args.action == 'add-webcomic':
+            from .webcomics.watcher import add_series
+            config = {'adapter': args.adapter} if args.adapter else {}
+            if args.recipe:
+                with open(args.recipe, encoding='utf-8') as stream:
+                    config['recipe'] = json.load(stream)
+            result = {'watch_id': add_series(db, args.url, title=args.title, config=config, archive_existing=args.archive_existing)}
+        elif args.action == 'list-webcomics':
+            from .webcomics.storage import library
+            result = library(db)
+        elif args.action == 'poll-webcomics':
+            from .webcomics.watcher import process_watch
+            from .watched import _now
+            rows = db.execute("SELECT * FROM watched_items WHERE kind='webcomic' AND json_extract(metadata,'$.webcomics') IS NOT NULL AND (? OR next_check_at<=?)",
+                              (args.force, _now().isoformat())).fetchall()
+            for row in rows:
+                process_watch(db, dict(row), args.library or str(__import__('pathlib').Path(args.root) / 'downloads'))
+            result = {'checked': len(rows)}
         elif args.action == 'add-json': result = enqueue(db, json.loads(open(args.file, encoding='utf-8').read())[args.index])
         elif args.action == 'list': result = list_items(db, args.state)
         elif args.action == 'download': result = download(db, args.id, args.root)

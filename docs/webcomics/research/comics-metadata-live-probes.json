@@ -1,0 +1,263 @@
+{
+  "checked_at": "2026-09-30T03:40:03.198649+00:00",
+  "query": "Monstress",
+  "providers": [
+    {
+      "provider": "Wikidata",
+      "seconds": 0.361,
+      "count": 2,
+      "errors": []
+    }
+  ],
+  "skipped_unconfigured": [],
+  "results": [
+    {
+      "provider": "Wikidata",
+      "qid": "Q21775821",
+      "kind": "comic",
+      "title": "Monstress",
+      "description": "comic book series by Marjorie Liu and Sana Takeda",
+      "source_url": "http://www.wikidata.org/entity/Q21775821",
+      "comic_entity": "series",
+      "catalog_metadata": {
+        "wikidata_qid": "Q21775821",
+        "description": "comic book series by Marjorie Liu and Sana Takeda",
+        "entity_type": "work",
+        "video_subtype": null,
+        "game_subtype": null,
+        "external_ids": [
+          {
+            "provider": "wikidata",
+            "external_id": "Q21775821",
+            "source_url": "http://www.wikidata.org/entity/Q21775821"
+          }
+        ]
+      },
+      "external_ids": [
+        {
+          "provider": "wikidata",
+          "external_id": "Q21775821",
+          "source_url": "http://www.wikidata.org/entity/Q21775821"
+        }
+      ],
+      "format": "catalog",
+      "source": "Wikidata",
+      "url": "http://www.wikidata.org/entity/Q21775821",
+      "discovery_only": true,
+      "category": "Comics",
+      "source_role": "metadata",
+      "downloadable": false,
+      "display_source": "Metadata · Wikidata",
+      "issue_number": "",
+      "series_title": "Monstress",
+      "series_start_year": "",
+      "publisher": "",
+      "language": "",
+      "series_external_ids": [],
+      "metadata_variants": [
+        {
+          "provider": "Wikidata",
+          "qid": "Q21775821",
+          "kind": "comic",
+          "title": "Monstress",
+          "description": "comic book series by Marjorie Liu and Sana Takeda",
+          "source_url": "http://www.wikidata.org/entity/Q21775821",
+          "comic_entity": "series",
+          "catalog_metadata": {
+            "wikidata_qid": "Q21775821",
+            "description": "comic book series by Marjorie Liu and Sana Takeda",
+            "entity_type": "work",
+            "video_subtype": null,
+            "game_subtype": null,
+            "external_ids": [
+              {
+                "provider": "wikidata",
+                "external_id": "Q21775821",
+                "source_url": "http://www.wikidata.org/entity/Q21775821"
+              }
+            ]
+          },
+          "external_ids": [
+            {
+              "provider": "wikidata",
+              "external_id": "Q21775821",
+              "source_url": "http://www.wikidata.org/entity/Q21775821"
+            }
+          ],
+          "format": "catalog",
+          "source": "Wikidata",
+          "url": "http://www.wikidata.org/entity/Q21775821",
+          "discovery_only": true,
+          "category": "Comics",
+          "source_role": "metadata",
+          "downloadable": false,
+          "display_source": "Metadata · Wikidata",
+          "issue_number": "",
+          "series_title": "Monstress",
+          "series_start_year": "",
+          "publisher": "",
+          "language": "",
+          "series_external_ids": []
+        }
+      ],
+      "download_variants": [],
+      "metadata_sources": [
+        "Wikidata"
+      ],
+      "available_formats": [],
+      "metadata_url": "http://www.wikidata.org/entity/Q21775821",
+      "metadata_provider": "Wikidata",
+      "comic_metadata_provenance": {
+        "series_title": [
+          {
+            "value": "Monstress",
+            "provider": "Wikidata",
+            "source_url": "http://www.wikidata.org/entity/Q21775821"
+          }
+        ],
+        "issue_number": [],
+        "series_start_year": [],
+        "publisher": [],
+        "language": [],
+        "release_date": [],
+        "cover": []
+      },
+      "edition_variants": [],
+      "comic_issue": {
+        "issue_number": "",
+        "issue_title": null,
+        "series_title": "Monstress",
+        "series_start_year": "",
+        "comicvine_id": null,
+        "comicvine_volume_id": null,
+        "gcd_issue_id": null,
+        "metron_issue_id": null,
+        "volume_id": null
+      }
+    },
+    {
+      "provider": "Wikidata",
+      "qid": "Q131376694",
+      "kind": "comic",
+      "title": "Monstress – Volume 1: Awakening",
+      "description": "first volume in the Monstress comic book series by Marjorie Liu and Sana Takeda",
+      "source_url": "http://www.wikidata.org/entity/Q131376694",
+      "comic_entity": "collection",
+      "catalog_metadata": {
+        "wikidata_qid": "Q131376694",
+        "description": "first volume in the Monstress comic book series by Marjorie Liu and Sana Takeda",
+        "entity_type": "work",
+        "video_subtype": null,
+        "game_subtype": null,
+        "external_ids": [
+          {
+            "provider": "wikidata",
+            "external_id": "Q131376694",
+            "source_url": "http://www.wikidata.org/entity/Q131376694"
+          }
+        ]
+      },
+      "external_ids": [
+        {
+          "provider": "wikidata",
+          "external_id": "Q131376694",
+          "source_url": "http://www.wikidata.org/entity/Q131376694"
+        }
+      ],
+      "format": "catalog",
+      "source": "Wikidata",
+      "url": "http://www.wikidata.org/entity/Q131376694",
+      "discovery_only": true,
+      "category": "Comics",
+      "source_role": "metadata",
+      "downloadable": false,
+      "display_source": "Metadata · Wikidata",
+      "issue_number": "",
+      "series_title": "Monstress – Volume 1: Awakening",
+      "series_start_year": "",
+      "publisher": "",
+      "language": "",
+      "series_external_ids": [],
+      "metadata_variants": [
+        {
+          "provider": "Wikidata",
+          "qid": "Q131376694",
+          "kind": "comic",
+          "title": "Monstress – Volume 1: Awakening",
+          "description": "first volume in the Monstress comic book series by Marjorie Liu and Sana Takeda",
+          "source_url": "http://www.wikidata.org/entity/Q131376694",
+          "comic_entity": "collection",
+          "catalog_metadata": {
+            "wikidata_qid": "Q131376694",
+            "description": "first volume in the Monstress comic book series by Marjorie Liu and Sana Takeda",
+            "entity_type": "work",
+            "video_subtype": null,
+            "game_subtype": null,
+            "external_ids": [
+              {
+                "provider": "wikidata",
+                "external_id": "Q131376694",
+                "source_url": "http://www.wikidata.org/entity/Q131376694"
+              }
+            ]
+          },
+          "external_ids": [
+            {
+              "provider": "wikidata",
+              "external_id": "Q131376694",
+              "source_url": "http://www.wikidata.org/entity/Q131376694"
+            }
+          ],
+          "format": "catalog",
+          "source": "Wikidata",
+          "url": "http://www.wikidata.org/entity/Q131376694",
+          "discovery_only": true,
+          "category": "Comics",
+          "source_role": "metadata",
+          "downloadable": false,
+          "display_source": "Metadata · Wikidata",
+          "issue_number": "",
+          "series_title": "Monstress – Volume 1: Awakening",
+          "series_start_year": "",
+          "publisher": "",
+          "language": "",
+          "series_external_ids": []
+        }
+      ],
+      "download_variants": [],
+      "metadata_sources": [
+        "Wikidata"
+      ],
+      "available_formats": [],
+      "metadata_url": "http://www.wikidata.org/entity/Q131376694",
+      "metadata_provider": "Wikidata",
+      "comic_metadata_provenance": {
+        "series_title": [
+          {
+            "value": "Monstress – Volume 1: Awakening",
+            "provider": "Wikidata",
+            "source_url": "http://www.wikidata.org/entity/Q131376694"
+          }
+        ],
+        "issue_number": [],
+        "series_start_year": [],
+        "publisher": [],
+        "language": [],
+        "release_date": [],
+        "cover": []
+      },
+      "edition_variants": [],
+      "comic_issue": {
+        "issue_number": "",
+        "issue_title": null,
+        "series_title": "Monstress – Volume 1: Awakening",
+        "series_start_year": "",
+        "comicvine_id": null,
+        "comicvine_volume_id": null,
+        "gcd_issue_id": null,
+        "metron_issue_id": null,
+        "volume_id": null
+      }
+    }
+  ]
+}

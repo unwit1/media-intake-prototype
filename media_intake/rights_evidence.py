@@ -15,11 +15,18 @@ DOWNLOAD_SOURCES = (
     'libgen', 'annas_archive', 'opds_feeds', 'json_catalogs', 'irc',
     'mangadex', 'taddy', 'comic_rss_atom', 'webfiction_rss_atom', 'fanficfare',
     'lnori.com', 'novelarchive.cc', 'getcomics.org',
-    'public_domain_comic_mirror', 'direct_file_url',
+    'public_domain_comic_mirror', 'direct_file_url', 'internet_archive',
+    'softarchive.download', 'meawfy.com',
+    'animetosho.org', 'tokyoinsider.com', 'animeout.com', 'noobsubs.com',
+    'chauthanh.info', 'sourceforge.net', 'github_foss',
+    'mediafiretrend.com', 'xdcc.eu', 'warezomen.com',
+    'myabandonware.com', 'oldgamesdownload.com', 'abandonwaregames.net',
+    'gog-rev.com', 'ankergames.net', 'jackett', 'podcast_rss',
 )
 METADATA_ONLY_SOURCES = frozenset({
     'openlibrary', 'open library', 'goodreads', 'comicvine', 'comic vine',
     'ranobedb', 'anilist', 'mangaupdates', 'manga updates', 'wikidata',
+    'fosshub.com', 'fosshub',
 })
 
 
@@ -55,6 +62,19 @@ def initial_document():
                     }
                 ],
                 'review_note': 'Evidence does not establish a site-wide public-domain license. Recheck if LNORI publishes an explicit rights statement.'
+            },
+            'podcast_rss': {
+                'approved_for_download': True,
+                'evidence': [
+                    {
+                        'url': 'https://www.rssboard.org/rss-specification#ltenclosuregtSubelementOfLtitemgt',
+                        'observed_at': '2026-10-02',
+                        'summary': 'An RSS enclosure is a media file the publisher attaches to an episode so that '
+                                   'subscribers can download it; podcast feeds exist to distribute these files.'
+                    }
+                ],
+                'review_note': 'Approved by default because followed podcast feeds publish their episodes for download. '
+                               'Set approved_for_download to false to stop podcast downloads.'
             },
             'novelarchive.cc': {
                 'approved_for_download': False,
@@ -118,6 +138,21 @@ def _separate_metadata_sources(document):
     return True
 
 
+def _add_missing_download_sources(document):
+    """Add newly supported download-source rows without changing user choices."""
+    sources = document.get('sources')
+    if not isinstance(sources, dict):
+        return False
+    defaults = initial_document()['sources']
+    changed = False
+    for name in DOWNLOAD_SOURCES:
+        if name in sources:
+            continue
+        sources[name] = json.loads(json.dumps(defaults[name], ensure_ascii=False))
+        changed = True
+    return changed
+
+
 def ensure_rights_evidence(path):
     """Create an initial local rights file without overwriting user edits."""
     path = Path(path)
@@ -131,9 +166,11 @@ def ensure_rights_evidence(path):
             return path
         if (isinstance(document, dict) and document.get('schema_version') == SCHEMA_VERSION
                 and isinstance(document.get('sources'), dict)
-                and isinstance(document.get('works'), dict)
-                and _separate_metadata_sources(document)):
-            _atomic_write(path, document)
+                and isinstance(document.get('works'), dict)):
+            changed = _separate_metadata_sources(document)
+            changed = _add_missing_download_sources(document) or changed
+            if changed:
+                _atomic_write(path, document)
     return path
 
 
@@ -198,6 +235,32 @@ def source_key_for_item(item):
     if scheme.startswith('serial+'):
         return item.get('source_key') or 'webfiction_rss_atom'
     host = (url.hostname or '').casefold()
+    if host in {'sourceforge.net', 'downloads.sourceforge.net'}:
+        return 'sourceforge.net'
+    if host == 'github.com' or host.endswith('.githubusercontent.com'):
+        return 'github_foss'
+    if host in {'fosshub.com', 'www.fosshub.com'}:
+        return 'fosshub.com'
+    if host in {'archive.org', 'www.archive.org'}:
+        return 'internet_archive'
+    if host in {'softarchive.download', 'www.softarchive.download'}:
+        return 'softarchive.download'
+    if host in {'meawfy.com', 'www.meawfy.com'}:
+        return 'meawfy.com'
+    for domain in (
+            'mediafiretrend.com', 'xdcc.eu', 'warezomen.com',
+            'myabandonware.com', 'oldgamesdownload.com', 'abandonwaregames.net',
+            'gog-rev.com', 'ankergames.net'):
+        if host == domain or host.endswith('.' + domain):
+            return domain
+    for domain, key in (
+            ('animetosho.org', 'animetosho.org'),
+            ('tokyoinsider.com', 'tokyoinsider.com'),
+            ('animeout.com', 'animeout.com'),
+            ('noobsubs.com', 'noobsubs.com'),
+            ('chauthanh.info', 'chauthanh.info')):
+        if host == domain or host.endswith('.' + domain):
+            return key
     if host in {'getcomics.info', 'www.getcomics.info', 'getcomics.org', 'www.getcomics.org'}:
         return 'getcomics.org'
     if host == 'lnori.com':

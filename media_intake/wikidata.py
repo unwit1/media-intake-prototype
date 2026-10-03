@@ -22,6 +22,7 @@ _RELATIONSHIP_PROPERTIES = {
     'P1365': 'supersedes',
     'P1366': 'superseded_by',
     'P144': 'adaptation_of',
+    'P4969': 'derivative_work',
     'P527': 'contains',
     'P50': 'created_by',
 }
@@ -86,10 +87,17 @@ def _qid_from_statement(statement):
     return qid if isinstance(qid, str) and _QID.fullmatch(qid) else None
 
 
+def _active_statement(statement):
+    """Ignore claims Wikidata has explicitly marked as deprecated."""
+    return str((statement or {}).get('rank') or 'normal').casefold() != 'deprecated'
+
+
 def _claim_ids(entity, properties):
     found = []
     for property_id in properties:
         for statement in (entity.get('claims') or {}).get(property_id, []):
+            if not _active_statement(statement):
+                continue
             qid = _qid_from_statement(statement)
             if qid:
                 found.append((property_id, statement, qid))
@@ -131,7 +139,9 @@ def _classify_entity(entity, related_payloads):
         entity_type = 'franchise'
     elif any(word in text for word in ('fictional universe', 'shared universe', 'universe')):
         entity_type = 'universe'
-    elif any(word in text for word in ('book series', 'novel series', 'literary series', 'television series',
+    elif any(word in text for word in ('book series', 'novel series', 'literary series',
+                                       'television series', 'tv series', 'web series',
+                                       'limited series', 'mini-series', 'miniseries',
                                        'film series', 'video game series', 'comic book series',
                                        'series of books')) or any(label == 'series' for label in labels):
         entity_type = 'series'
@@ -154,7 +164,8 @@ def _classify_entity(entity, related_payloads):
         media_type = 'manga'
     elif any(word in text for word in ('comic book', 'graphic novel')):
         media_type = 'comic'
-    elif any(word in text for word in ('film', 'movie', 'television', 'web series', 'episode', 'video')):
+    elif any(word in text for word in ('film', 'movie', 'television', 'web series', 'episode',
+                                       'video', 'animation', 'oad', 'ova')):
         media_type = 'video'
     elif any(word in text for word in ('book', 'novel', 'literary work', 'written work')):
         media_type = 'book'
@@ -163,10 +174,65 @@ def _classify_entity(entity, related_payloads):
     return entity_type, media_type
 
 
+def _classify_video_subtype(entity, related_payloads):
+    """Normalize only short-form types explicitly named by Wikidata evidence."""
+    labels = [value.casefold() for value in _type_labels(entity, related_payloads) if value]
+    text = ' '.join(labels + [_description(entity).casefold()])
+    return video_subtype_from_description(text)
+
+
+def video_subtype_from_description(description):
+    """Classify explicit Video subtypes named in a catalog description."""
+    text = str(description or '').casefold()
+    if re.search(r'\b(?:oad|original animation dvd|original animation disc)\b', text):
+        return 'anime_oad'
+    if re.search(r'\b(?:ova|original video animation)\b', text):
+        return 'anime_ova'
+    if re.search(r'\bindependent (?:animation|animated)\b', text):
+        return 'independent_animation'
+    if ('animated short' in text or 'animation short' in text):
+        return 'animated_short'
+    if any(word in text for word in ('short film', 'short movie')):
+        return 'short_film'
+    if any(word in text for word in ('animated film', 'animation film')):
+        return 'animated_film'
+    if re.search(r'\b(?:anime|japanese animated series|japanese animation series|'
+                 r'japanese animated (?:television|tv) series)\b', text):
+        return 'anime'
+    if re.search(r'\b(?:limited series|miniseries|mini-series)\b', text):
+        return 'miniseries'
+    if re.search(r'\bweb series\b', text):
+        return 'web_series'
+    if re.search(r'\b(?:television series|tv series)\b', text):
+        return 'tv_series'
+    return None
+
+
+def _derivative_variant_relationship(description):
+    """Normalize only explicit variant wording on a Wikidata derivative description."""
+    text = str(description or '').casefold()
+    if re.search(r'\b(?:reboot|reimagining)\b', text):
+        return 'reboot_of'
+    if re.search(r'\b(?:remake|remade|re-made)\b', text):
+        return 'remake_of'
+    if re.search(r"\b(?:director'?s|extended|alternate|alternative|unrated|final)\s+cut\b",
+                 text):
+        return 'alternate_cut_of'
+    if re.search(r'\b(?:alternate|alternative) version\b', text):
+        return 'alternate_version_of'
+    if re.search(r'\b(?:revival|revived)\b', text):
+        return 'revival_of'
+    if re.search(r'\bspin[ -]?off\b', text):
+        return 'spin_off_of'
+    return None
+
+
 def _wikidata_release_date(entity):
     partial = (None, None, None)
     for property_id in ('P577', 'P571', 'P580'):
         for statement in (entity.get('claims') or {}).get(property_id, []):
+            if not _active_statement(statement):
+                continue
             try:
                 value = statement['mainsnak']['datavalue']['value']
                 raw = value.get('time', '')
@@ -200,11 +266,14 @@ def _make_entity_record(qid, payload, related_payloads):
     payload = payload or {}
     label = _label(payload) or qid
     entity_type, media_type = _classify_entity(payload, related_payloads)
+    video_subtype = (_classify_video_subtype(payload, related_payloads)
+                     if media_type == 'video' else None)
     release_date, release_property, release_statement = _wikidata_release_date(payload)
     return {
         'qid': qid, 'title': label, 'description': _description(payload),
         'aliases': _aliases(payload), 'entity_type': entity_type,
-        'media_type': media_type, 'release_date': release_date,
+        'media_type': media_type, 'video_subtype': video_subtype,
+        'release_date': release_date,
         'release_property': release_property, 'release_statement': release_statement,
         'source_url': f'https://www.wikidata.org/entity/{qid}',
     }
@@ -246,6 +315,9 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
                                        dedupe_key=f'wikidata-unresolved:{qid}:{target}')
 
     root_record = _make_entity_record(qid, root_payload, target_payloads)
+    root_graph_metadata = {'wikidata_description': root_record['description'], 'wikidata_qid': qid}
+    if root_record.get('video_subtype'):
+        root_graph_metadata['video_subtype'] = root_record['video_subtype']
     external_id = {'provider': 'wikidata', 'external_id': qid,
                    'source_url': root_record['source_url']}
     if watch_entity_id is not None:
@@ -262,38 +334,54 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
                                {'watched_entity_id': int(watch_entity_id), 'wikidata_entity_id': other_id,
                                 'qid': qid}, entity_id=int(watch_entity_id),
                                dedupe_key=f'wikidata-watch-duplicate:{watch_entity_id}:{qid}')
-            add_media_relationship(db, int(watch_entity_id), other_id, 'possible_duplicate_of',
-                                   confidence=0.5, inferred=True, status='candidate',
-                                   provider='Wikidata', provider_entity_id=qid,
-                                   raw_relationship_type='identity-match',
-                                   source_url=root_record['source_url'],
-                                   evidence={'qid': qid, 'reason': 'external ID already linked'},
-                                   is_explicit=False)
+            relationship_id = add_media_relationship(
+                db, int(watch_entity_id), other_id, 'possible_duplicate_of',
+                confidence=0.5, inferred=True, status='candidate',
+                provider='Wikidata', provider_entity_id=qid,
+                raw_relationship_type='identity-match',
+                source_url=root_record['source_url'],
+                evidence={'qid': qid, 'reason': 'external ID already linked'},
+                is_explicit=False)
+            return {'root_entity_id': int(watch_entity_id), 'qid': qid,
+                    'title': current['title'], 'entity_type': 'work',
+                    'media_type': current['media_type'], 'source_url': root_record['source_url'],
+                    'video_subtype': root_record.get('video_subtype'),
+                    'relationships': [{'id': relationship_id,
+                                       'relationship_type': 'possible_duplicate_of',
+                                       'target_entity_id': other_id,
+                                       'target_title': root_record['title'],
+                                       'target_type': root_record['entity_type'],
+                                       'confidence': 0.5, 'source_url': root_record['source_url']}],
+                    'related_entities': 1, 'unresolved_entities': 0}
         else:
             root_id = upsert_media_entity(
                 db, root_record['entity_type'], root_record['title'],
                 media_type=root_record['media_type'] if root_record['media_type'] != 'unknown' else current['media_type'],
                 canonical_url=root_record['source_url'], release_date=root_record['release_date'],
-                metadata={'wikidata_description': root_record['description'], 'wikidata_qid': qid},
+                metadata=root_graph_metadata,
                 aliases=root_record['aliases'], external_ids=[external_id],
                 entity_id=int(watch_entity_id), provider='Wikidata')
     else:
         root_id = upsert_media_entity(
             db, root_record['entity_type'], root_record['title'], root_record['media_type'],
             root_record['source_url'], root_record['release_date'],
-            metadata={'wikidata_description': root_record['description'], 'wikidata_qid': qid},
+            metadata=root_graph_metadata,
             aliases=root_record['aliases'], external_ids=[external_id], provider='Wikidata')
 
     entity_ids = {qid: root_id}
     for target_id in related_ids:
         record = _make_entity_record(target_id, target_payloads.get(target_id) or {}, target_payloads)
+        target_graph_metadata = {'wikidata_description': record['description'],
+                                 'wikidata_qid': target_id,
+                                 'unresolved': target_payloads.get(target_id) is None}
+        if record.get('video_subtype'):
+            target_graph_metadata['video_subtype'] = record['video_subtype']
         target_external_id = {'provider': 'wikidata', 'external_id': target_id,
                               'source_url': record['source_url']}
         entity_ids[target_id] = upsert_media_entity(
             db, record['entity_type'], record['title'], record['media_type'],
             record['source_url'], record['release_date'],
-            metadata={'wikidata_description': record['description'], 'wikidata_qid': target_id,
-                      'unresolved': target_payloads.get(target_id) is None},
+            metadata=target_graph_metadata,
             aliases=record['aliases'], external_ids=[target_external_id], provider='Wikidata')
 
     relationships = []
@@ -307,17 +395,30 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
             continue
         seen_claims.add(claim_identity)
         related_record = _make_entity_record(target_qid, target_payloads.get(target_qid) or {}, target_payloads)
+        source_entity_id, target_entity_id = root_id, entity_ids[target_qid]
+        normalized_variant = (_derivative_variant_relationship(related_record['description'])
+                              if property_id == 'P4969' else None)
+        if normalized_variant:
+            # P4969 on the original points to its derivative. The normalized edge
+            # names the derivative's relationship back to the original.
+            relation_type = normalized_variant
+            source_entity_id, target_entity_id = target_entity_id, source_entity_id
         evidence = {'property_id': property_id,
                     'property_label': {
                         'P179': 'part of series', 'P361': 'part of', 'P155': 'follows',
                         'P156': 'followed by', 'P1365': 'replaces', 'P1366': 'replaced by',
-                        'P144': 'based on', 'P527': 'has part', 'P50': 'author',
+                        'P144': 'based on', 'P4969': 'derivative work',
+                        'P527': 'has part', 'P50': 'author',
                     }.get(property_id, property_id)}
+        evidence['claim_rank'] = str(statement.get('rank') or 'normal')
         series_position = _series_position(statement)
         if series_position is not None:
             evidence['series_position'] = series_position
+        if normalized_variant:
+            evidence['normalization_reason'] = 'explicit variant wording in Wikidata description'
+            evidence['variant_description'] = related_record['description'][:500]
         relation_id = add_media_relationship(
-            db, root_id, entity_ids[target_qid], relation_type, confidence=0.9,
+            db, source_entity_id, target_entity_id, relation_type, confidence=0.9,
             inferred=False, status='accepted', provider='Wikidata',
             provider_entity_id=target_qid, raw_relationship_type=property_id,
             source_url=root_record['source_url'], evidence=evidence,
@@ -328,6 +429,9 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
             'target_qid': target_qid, 'target_entity_id': entity_ids[target_qid],
             'target_title': related_record['title'],
             'target_type': related_record['entity_type'],
+            'target_media_type': related_record['media_type'],
+            'target_video_subtype': related_record.get('video_subtype'),
+            'target_source_url': related_record['source_url'],
             'confidence': 0.9, 'source_url': root_record['source_url'],
             'series_position': series_position,
             'target_release_date': related_record['release_date'],
@@ -346,13 +450,15 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
                 observed_at=excluded.observed_at,metadata_json=excluded.metadata_json''',
                    (root_id, root_record['release_date'], provider_release_id,
                     root_record['source_url'], datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                    json.dumps({'property_id': root_record['release_property'],
+            json.dumps({'property_id': root_record['release_property'],
+                                'claim_rank': str(statement.get('rank') or 'normal'),
                                 'raw_time': statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('time'),
                                 'precision': statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('precision')},
                                sort_keys=True)))
 
     return {'root_entity_id': root_id, 'qid': qid, 'title': root_record['title'],
             'entity_type': root_record['entity_type'], 'media_type': root_record['media_type'],
+            'video_subtype': root_record.get('video_subtype'),
             'source_url': root_record['source_url'], 'relationships': relationships,
             'related_entities': len(entity_ids) - 1,
             'unresolved_entities': sum(target_payloads.get(value) is None for value in related_ids)}

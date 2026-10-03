@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from media_intake.comics import (list_comicvine_issues, list_mangadex_chapters,
+from media_intake.comics import (anilist_video_subtype, list_comicvine_issues, list_mangadex_chapters,
                                  search_anilist, search_comicvine, search_mangadex,
                                  search_taddy)
 from media_intake.core import connect, list_items
@@ -189,8 +189,19 @@ class ComicCatalogTest(unittest.TestCase):
         query = json.loads(request.call_args.args[0].data.decode('utf-8'))['query']
         self.assertIn('type: ANIME', query)
         self.assertEqual(results[0]['kind'], 'anime')
+        self.assertEqual(results[0]['entity_type'], 'series')
+        self.assertEqual(results[0]['video_subtype'], 'anime_series')
         with self.assertRaises(ValueError):
             search_anilist('Example', media_type='BOOK')
+
+    def test_anilist_anime_formats_map_to_shared_video_subtypes(self):
+        self.assertEqual({value: anilist_video_subtype(value) for value in (
+            'TV', 'TV_SHORT', 'ONA', 'MOVIE', 'SPECIAL', 'OVA', 'MUSIC')}, {
+                'TV': 'anime_series', 'TV_SHORT': 'anime_short_series',
+                'ONA': 'anime_web_series', 'MOVIE': 'anime_movie',
+                'SPECIAL': 'anime_special', 'OVA': 'anime_ova',
+                'MUSIC': 'anime_music_video',
+            })
 
 
 class WatchedComicDownloadTest(unittest.TestCase):

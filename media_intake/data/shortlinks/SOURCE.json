@@ -1,0 +1,11 @@
+{
+  "repository": "https://codeberg.org/gongchandang49/bypass-all-shortlinks-debloated",
+  "commit": "7381983bdc4965ae7ebea486403a3591af0d67f7",
+  "userscript_version": "96.5-patch0.2.3",
+  "license": "Unlicense (public domain)",
+  "sha256": {
+    "Bypass_All_Shortlinks.user.js": "b4ee2263285b57fdc1594647acb26efde8d9f6d5553f1d1fd29863c9fec0ccf6",
+    "LICENSE": "147a3761456127bcb8ada2c34728a301d01acd316946aad7d605c3a9ce37e6f2",
+    "MonkeyConfig-Mod.js": "86bed5d551fbbe40c7d204a45b107dfa00a74568e36849348afa54f2b101b915"
+  }
+}

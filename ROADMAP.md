@@ -42,10 +42,11 @@ Default policy target:
 - Track separately: adaptations, remakes, reboots, alternate continuities, editions.
 - Ignore by default: unrelated works that merely share a creator.
 
-When the user selects a series from search, keep that series as one Watched item.
-Record its books and related works in the graph; do not turn the series lookup into
-a list of per-book watches. The series title is searched as a series through the
-connected sources.
+When the user selects a series from Search and add, keep one parent Watched item
+for the series and create one child watch/queue request for each unique logical
+book in the series. Show member books with series names and positions in series
+order. Search connected download sources for each child work; editions, split
+volumes, and collections must not create duplicate child books.
 
 ### Provenance over silent guesses
 
@@ -742,6 +743,10 @@ Possible reasons:
 
 Build fixture-driven tests for each resolver/provider.
 
+All catalog HTTP requests share a transport helper that closes HTTP error response
+streams while re-raising the original status for provider-specific fallback and review
+handling. A regression test covers this cleanup path.
+
 At minimum test:
 
 - duplicate collapse
@@ -770,19 +775,92 @@ Live providers should not be required for the normal unit test suite.
 - [x] Review queue primitives with deduplication and resolution states
 - [x] Migration path linking existing watches without merging uncertain identities
 - [x] Wikidata search/import path surfaced from the Watched tab
+- [x] Provider-neutral, graph-only refresh for Wikidata, AniList, TMDB, TVMaze, IGDB, Steam, Goodreads, Google Books, Open Library, and RanobeDB catalog IDs
+- [x] Record Goodreads and Open Library author bibliography entries as explicit work-to-creator graph edges
+- [x] Manually refresh Goodreads and Open Library author bibliographies into the graph without creating watches or download searches
+- [x] Refresh provider relationships across the bounded continuity neighborhood without creating watches or download searches
+- [x] Continuity window action to refresh linked catalog relationships and show partial-provider failures
 
-Wikidata discovery stores linked entities and source claims in the graph. A selected
-series remains one Watched row; direct book membership is graph metadata. The series
-title is searched through connected book sources, and Goodreads list refreshes update
-the graph without creating per-book watches.
+Wikidata discovery stores linked entities and source claims in the graph. Search and
+add keeps one parent series watch while creating a child book watch and queue request
+for each unique direct member. The series title and member relationships remain in the
+graph; each released child is searched through its connected book sources.
 
 ## Milestone 2 — Book franchise proof of concept
 
-Status: In progress. Wikidata and Goodreads can populate a watched series' explicit
-`contains` relationships. Series selection creates one Watched item, and the series
-title is searched through connected book sources. Goodreads refreshes update the graph
-without creating child watches. Sequel-series traversal and provider disagreement
-handling remain open.
+Status: In progress. Books search federates Goodreads, Open Library, Google Books,
+Wikidata, NovelArchive, LNORI, and RanobeDB. Series results merge provider memberships and
+sequence evidence, create one parent watch, and queue every unique member book for
+automatic per-work source searches. Explicit Wikidata parent-series and sequel links
+can expand standalone book watches. Broader validation of related sequel-series
+matches and non-equivalent title variants remains open; checksummed ISBNs, inverted
+articles, punctuation, and common format labels support conservative work matching.
+Uncertain title/creator conflicts remain in Needs Review. Provider disagreements for
+dates, lifecycle status, and series positions remain in Needs Review and have explicit
+canonical-choice actions that apply to the watched record and preserve the competing
+observations.
+
+- [x] Refresh Open Library series-member relationships with explicit catalog IDs and sequence positions
+- [x] Search Google Books as a metadata-only catalog and retain explicit series positions, volume IDs, ISBNs, and publication dates
+- [x] Refresh explicit Google Books series membership on scheduled scans and automatically queue newly listed works once
+- [x] Collapse Books search rows with a shared validated ISBN and compatible author while retaining each catalog record; keep author conflicts separate
+- [x] Give direct prequel works and direct prequel series separate configurable auto-add policies
+- [x] Refresh RanobeDB volume memberships and English release observations in the graph without creating download watches
+- [x] Merge provider records with a checksum-valid shared ISBN-10/13 and retain both catalog identities and title evidence
+- [x] Reuse shared checksum-valid ISBN identities during graph refresh only when book title and known author agree; send conflicts to Needs Review
+- [x] Collapse explicit common-format title suffixes without a shared ISBN when the author matches; retain each catalog record as provenance
+- [x] Normalize catalog-inverted English articles (for example, “Hobbit, The”) for title matching while preserving edition labels
+- [x] Reuse the normalized Books work-title key when linking possible graph duplicates; keep matches in Needs Review
+- [x] Route different titles with the same known author and series position to Needs Review instead of auto-queueing both candidates
+- [x] Resolve new catalog IDs through existing child watches before syncing series edges, preventing a second graph entity for a matched format variant
+- [x] Let Needs Review choose a canonical book release date, lifecycle status, or series position and apply it to the graph and watched record
+- [x] Limit the Books Wikidata series fallback to descriptions that identify books, novels, novellas, or short-story collections instead of returning arbitrary TV/video series
+- [x] Keep explicit non-book Wikidata series members out of book watches; hold unclassified members for review and retain their type evidence
+
+Adding a standalone Wikidata-linked book now follows its explicit Wikidata parent
+series, creates the series watch, attaches the original book, and imports other
+numbered or dated members once. A directly linked sequel or prequel series is also
+expanded immediately so its member books enter the watch and search queues without
+waiting for the next scheduled refresh. Traversal follows up to three linked book
+series and stops when it encounters a series already in the current path. Stable
+catalog IDs are used to avoid duplicate graph nodes when a member already appears in
+another catalog. Refreshes still depend on provider availability and series
+membership quality; deprecated Wikidata statements are excluded from type, sequel,
+series-membership, and release-date resolution, with claim rank retained in graph
+evidence. Broader sequel-series validation remains open.
+When multiple book catalogs describe the same series member, the merged row keeps
+each provider's title, author, release date, series position, source URL, and catalog
+ID. Those variants and all catalog IDs are retained on the child watch and linked into
+the graph; release-date and series-position disagreements appear in Needs Review.
+Cross-provider release-date and lifecycle-status disagreements on graph entities also
+enter Needs Review with the competing values, providers, source URLs, and observation
+times; refreshing an unchanged conflict does not duplicate the review item. The review
+window can select a canonical date, status, or series position. Date choices update the
+watch schedule and visible queue request; position choices update the child watch and
+series edge and persist through catalog refreshes. Completed downloads and manually set
+release dates are preserved.
+Goodreads, Open Library, and Google Books ISBN values are normalized and checksum-validated; ISBN-10
+and its equivalent ISBN-13 resolve to one logical series member and child watch even
+when the catalog titles differ. Both catalogs' IDs, titles, and metadata stay attached
+as provenance. Search results use the same ISBN identity rule while keeping known
+author conflicts separate. Catalog variants without a shared ISBN or stable work
+identifier collapse when the author is compatible and the only title difference is a
+final explicit common format label (for example, “Paperback” or “Kindle Edition”);
+all source titles and IDs remain in the provenance variants. Less predictable title
+changes still rely on exact title/author matching or enter the existing packaging
+review path. When two different titles have the same known author and explicit series
+position, the second stays out of the automatic queue and is shown in Needs Review
+with the first catalog record attached for comparison. Accepting the candidate adds it
+as a separate book; rejecting it leaves the original member in place. Labels such as
+“Revised Edition” are preserved because they can describe meaningful content changes.
+During Goodreads series refresh, child-watch matching now runs before graph membership
+sync; the new catalog ID is linked to the existing work first, and the catalog's
+membership evidence is added to its current graph edge without creating a second
+entity or an inverse duplicate edge.
+Google Books remains metadata-only in both Search and add and Settings priority; the
+catalog's year-only publication dates are retained as evidence without being turned
+into exact release dates. Its series expands automatically only when multiple returned
+records explicitly share a named series reference.
 
 Use the existing book stack to prove the architecture.
 
@@ -799,64 +877,194 @@ Prove:
 - related-continuity discovery
 - future installment refresh
 
-Current behavior deliberately keeps discovered members in the graph rather than
-creating one Watched row per book when a series is selected.
+The member list retains provider IDs and position evidence. Explicit provider
+numbers take precedence; publication-date placement for unnumbered novellas is
+marked as an estimate. Collection and split-edition hits are filtered when a
+provider supplies the series' direct member list. Wikidata-linked members with
+neither an explicit series position nor a publication date are held out of the
+automatic queue and saved as uncertain candidates in the local review queue.
+Provider gaps can be filled by evidence-backed continuity supplements. For
+Stormlight this adds the released Elsecaller / King Lopen double book and the
+announced Horneater novella at 4.5. Horneater's Goodreads 2026 estimate is
+overridden by the author's newer unscheduled status; its watched entry waits
+for a confirmed or manually entered release date before searching download
+sources. The series plan records that Book Six is planned but untitled and
+undated, while the author describes a ten-novel plan overall.
+
+Series rows whose titles look like split packaging (for example, a series title
+followed by “Part One”), volume labels, or common format suffixes such as paperback
+or Kindle edition stay out of the automatic book queue and appear in Needs Review.
+Accepting that review creates the child watch and queue request; resolving the same
+provider row later does not reopen the decision. A book whose title exactly matches
+its series name is still allowed, since many series use that convention.
 
 ## Milestone 3 — Unified GUI workflow
 
-Status: In progress. The Search and add dashboard now routes category searches to
-all available providers for Books, Comics, Manga, Anime, Videos, Games, Light novels,
-Web serials, and Fanfiction URL lookup. Per-category full watch support and future
-release connectors remain incomplete.
+Status: Core workflow implemented. Search and add supports category-scoped searches
+and Auto-detect across Books, Comics, Manga, Anime, Videos, Games, Light novels,
+Web serials, and Fanfiction URLs. Import preview, continuity view, relationship
+review, and per-media watch policies are available. Remaining work is improving
+cross-provider classification and provider coverage.
 
 - [x] Category-based Add Anything search routing
-- [ ] Add Anything automatic media-type/provider routing
-- automatic media-type/provider routing
-- import summary
-- continuity/related panel
-- watch-policy editor
-- Needs Review
+- [x] Route GUI category and Auto-detect searches through the provider-neutral resolver entry point
+- [x] Add Anything automatic media-type/provider routing
+- [x] Import summary
+- [x] Continuity / related panel
+- [x] Watch-policy editor
+- [x] Needs Review
 
 ## Milestone 4 — Games
 
-- IGDB/Wikidata adapters
-- game-specific relationship normalization
-- release/DLC monitoring
+Status: Core watch path implemented; additional publisher-specific store/API coverage remains open.
+
+- [x] IGDB, Steam, and Wikidata metadata adapters
+- [x] Game-specific relationship normalization
+- [x] IGDB release, DLC, expansion, remake, remaster, and port tracking
+- [x] Preserve IGDB release dates separately by platform and region
+- [x] Compare matching IGDB and Steam region/platform releases and queue disagreements with evidence
+- [x] Let review select a canonical platform/region observation and schedule the watched game's release-day check
+- [x] Steam release and policy-controlled DLC tracking
+- [x] Schedule Steam searches only on exact release days; preserve month/year text without inventing a day
+- [x] Normalize IGDB remake, remaster, and port edges with the correct original-to-variant direction
+- [x] Retain raw IGDB relationship fields and TMDB collection membership fields in relationship evidence
+- [x] User-configured publisher/developer RSS/Atom feeds baseline existing posts and send new announcements to Needs Review
+- [x] Extract typed renewal, cancellation, hiatus, premiere, availability, and date-change candidates from announcement titles, categories, and summaries; preserve text/date provenance and acceptance stores graph events
+- [x] Preserve explicitly announced date precision; accepted exact game launch dates schedule the watch
+- [x] Native structured release schedules from IGDB and Steam store APIs, with platform/region observations and exact-day scheduling rules
 
 ## Milestone 5 — Video foundation
 
-- unified Video media family and subtype model
-- shared TMDB/Wikidata provider normalization
-- cross-format continuity relationships
-- common Video release/status watcher
+Status: Shared Video watch path implemented; provider breadth and continuity coverage
+remain open.
+
+- [x] Unified Video media family and subtype model
+- [x] Shared TMDB, TVMaze, AniList, and Wikidata normalization
+- [x] Cross-format continuity relationships when catalog evidence is available
+- [x] Common Video release/status watcher and change history
+- [x] User-configured studio/network/streamer RSS/Atom announcement feeds with provenance and review candidates
+- [x] Accept configured structured JSON media-schedule feeds with typed events, date, source URL, location, and native IDs
+- [x] Read structured iCalendar event feeds; preserve event IDs, summaries, exact start dates, and review future schedule entries even on the first scan
+- [x] Accepting a calendar episode candidate creates a child episode watch and queues its release-day search
+- [x] Use iCalendar event start dates, not calendar update timestamps, for episode release scheduling
+- [x] Extract typed renewal, cancellation, hiatus, premiere, availability, and date-change candidates from announcement titles, categories, and summaries; preserve text/date provenance and acceptance stores graph events
+- [x] Preserve explicit premiere and availability date precision; accepted exact premiere dates schedule the watch
+- [x] Configured first-party JSON, Schema.org JSON-LD Event/ItemList, and iCalendar schedules with typed premiere, renewal, availability, and episode dates
 
 ## Milestone 6 — Movie subtype
 
-- collections/franchises
-- sequel/prequel/spin-off discovery
-- reboot/remake/alternate-cut handling
-- theatrical/streaming/home-media release tracking
+Status: Partial. TMDB collections and Wikidata continuations are represented; release
+windows and distinct remake/reboot classification need broader source coverage.
+
+- [x] TMDB collection/franchise links
+- [x] Wikidata sequel/prequel discovery and policy handling
+- [x] Preserve explicit Wikidata derivative-work links in the graph without auto-adding variants
+- [x] Normalize explicitly described Wikidata spin-offs, remakes, reboots, revivals, alternate versions, and alternate cuts with variant-to-original edge direction; keep variants metadata-only and apply the selected spin-off watch policy
+- [x] TMDB movie premiere, theatrical, digital, physical, and television windows by country
+- [x] Normalize explicit spin-off, remake, and alternate-continuity edges from Wikidata and AniList; normalize IGDB remake edges
+- [ ] Normalize reboot and alternate-cut edges from additional provider relationship fields when those catalogs expose them
+- [x] Compare conflicting premiere, theatrical, digital, physical, and television windows by region and review source disagreements
+- [x] Track review-approved streaming dates by named platform from configured studio/streamer feeds
+
+Provider-field inventory for the remaining reboot/alternate-cut edge: the integrated
+movie paths currently expose TMDB collection membership, AniList `REMAKE` and
+`ALTERNATIVE` relations, and Wikidata derivative-work claims with explicit description
+classification. None of those current response paths supplies another typed reboot
+or alternate-cut relationship field. Close this item when an additional catalog
+adapter exposes that field and a provider fixture verifies edge direction and raw
+provenance.
 
 ## Milestone 7 — TV / episodic subtype
 
-- TMDB/TVmaze/Wikidata
-- seasons/episodes/specials/cours
-- renewal/cancellation/schedule monitoring
-- cross-format movie/special relationships
+Status: Partial. TVMaze and TMDB season/episode records, AniList schedules, and
+upcoming queue entries are supported. TVMaze and TMDB episodes with the same
+series entity and season/episode position now merge into one watched item while
+retaining both providers' IDs and release observations. Cross-format identity and
+relationship coverage still need broader fixtures.
+
+- [x] TMDB, TVMaze, AniList, and Wikidata metadata paths
+- [x] TVMaze seasons, specials, episodes, and next-airing records
+- [x] TMDB seasons and episodes with provider-neutral season/episode identity
+- [x] Merge same-position TVMaze/TMDB episode watches when both catalogs link to one series entity
+- [x] Policy-controlled episode watches and upcoming search placeholders
+- [x] On release day, episode watches search configured Video IRC sources and download matching video files
+- [x] Preserve ongoing, completed, cancelled, hiatus, and unscheduled catalog states as temporal claims
+- [x] Reconcile same-position TVMaze/TMDB episode-date conflicts and schedule the reviewed date
+- [x] Let review choose a provider's canonical lifecycle status while retaining all competing claims
+- [x] Apply accepted renewal, cancellation, and hiatus announcements to canonical series status with event evidence
+- [x] Automatically reconcile a strict majority lifecycle status from at least three independent catalog providers; ties remain in Needs Review
+- [x] Keep AniList movie sequels and TVMaze/TMDB specials inside the shared Video graph; preserve AniList sequel/prequel/spin-off edge direction and raw relation types
+- [x] Apply separate sequel/prequel watch policies to AniList and Wikidata work versus series targets; reserve the future-installment policy for explicitly future-dated sequel works
+- [x] Model seasons, regular episodes, and specials with `season_of`, `episode_of`, and `special_of` edges while retaining provider membership evidence
+- [x] Give Video specials an independent watch-policy setting; when no special override exists, catalog and feed watches inherit the existing episode behavior
+- [x] Cross-catalog movie, special, and episodic relationships through TMDB collections/seasons, TVMaze specials, AniList sequels/prequels/spin-offs, and shared Video membership edges
 
 ## Milestone 8 — Web-series subtype
 
-- extend existing feed/web-serial infrastructure
-- playlist/feed membership
-- episode classification
-- web-series continuity relationships
+Status: Partial. RSS/Atom, JSON Feed, Schema.org JSON-LD, iCalendar, and YouTube feed
+watches baseline stable IDs and structured episode dates/positions. Dedicated series
+feeds can add new episodes; YouTube channel uploads stay as review candidates unless
+the user explicitly enables episode auto-add. Sites without one of these formats or
+a connected public API still need source-specific adapters.
+
+YouTube playlist watches can optionally use the YouTube Data API key configured in
+Settings to retain native playlist-item, video, channel, and position metadata. A
+complete paginated snapshot records removed items as graph events and Needs Review
+entries; the snapshot is capped at 5,000 items, and incomplete/API-failed scans never
+infer removals. The API also checks the first 100 playlist entries for scheduled
+premiere timestamps; a failed schedule lookup does not invalidate a complete playlist
+snapshot. It also retains YouTube's ISO 8601 video duration and live broadcast status,
+plus scheduled, actual-start, and actual-end timestamps where available. RSS remains the
+fallback when the key is unavailable.
+
+- [x] RSS/Atom feed refresh and episode release records
+- [x] Discover advertised RSS, Atom, JSON Feed, and iCalendar links from creator homepages
+- [x] JSON Feed creator-site refresh with stable item IDs, tags, summaries, dates, episode positions, and enclosure metadata
+- [x] Use RSS GUID and Atom entry IDs to preserve feed-native episode identity
+- [x] Use JSON schedule event types and start dates to review or schedule creator releases
+- [x] Read Schema.org JSON-LD Event/ItemList feeds, including ScreeningEvent, PublicationEvent, and TVEpisode dates and positions
+- [x] Expand nested Schema.org TVSeries/TVSeason episode lists and retain video duration, content URL, and thumbnail metadata
+- [x] Baseline existing entries and add later episodes for dedicated series feeds
+- [x] Normalize YouTube playlist page URLs to playlist RSS feeds
+- [x] Preserve the episode baseline, seen IDs, and timestamps when a feed watch is re-added
+- [x] Keep mixed YouTube channel uploads in review by default
+- [x] Native playlist item metadata and removed-entry tracking for complete YouTube Data API snapshots
+- [x] Use public YouTube Data API premiere timestamps to schedule upcoming playlist episodes
+- [x] Merge explicitly numbered feed episodes (`S01E02`, `1x02`, or `Season 1 Episode 2`) into provider-neutral episode identity
+- [x] Classify explicit trailer, teaser, bonus, behind-the-scenes, and announcement markers from feed types, titles, categories, and summaries before auto-adding feed entries
+- [x] Accepting a creator-channel episode review creates and queues the corresponding episode watch
+- [x] Preserve iCalendar event IDs and accept categorized, dated creator episode events into scheduled child watches
+- [x] Classify explicit episode, trailer, teaser, bonus, announcement, and structured schedule-event markers across supported feed formats
+- [x] Preserve nested creator-series, season, episode, and video identity/metadata from Schema.org feeds
+- [ ] Add source-specific creator-platform adapters where a site exposes no compatible feed or shared API
+
+Creator-page URLs now autodiscover advertised RSS, Atom, JSON Feed, and iCalendar
+links. The remaining external dependency is a named platform whose pages cannot be
+represented by those feeds or the existing YouTube API path; its public page/API
+shape and representative response fixture are needed to build and verify a specific
+adapter.
 
 ## Milestone 9 — Additional Video subtypes
 
-- shorts/specials/OVAs/OADs
-- independent animation
-- documentary/performance/video-podcast series where structured
-- subtype-specific adapters only when shared Video primitives are insufficient
+Status: Partial. AniList anime formats normalize as anime movies, series, short
+series, ONAs, specials, OVAs, and music videos. Wikidata search and watch refresh now
+classify general short films, OAD/OVA, and independent animation. Podcast and YouTube
+adapters retain their subtype-specific episode data. Site-specific short-form sources
+and richer catalog metadata remain open.
+
+- [x] AniList anime movie, series, short-series, ONA, special, OVA, and music-video types
+- [x] RSS/Atom video-podcast, documentary, and performance series watches with distinct subtypes
+- [x] Podcast RSS season/episode positions, categories, artwork, summaries, durations, and enclosure metadata
+- [x] Normalize explicit Wikidata short-film, OAD, OVA, and independent-animation types
+- [x] General short films, OADs, and independent animation discovery and watch normalization through Wikidata
+- [x] Normalize Wikidata limited series, web series, television series, and anime subtypes while preserving their series entity type
+- [x] Retain subtype-specific podcast and YouTube episode positions, schedules, durations, enclosures, and native IDs
+- [ ] Subtype-specific adapters where shared Video metadata is insufficient
+
+The remaining subtype adapter requires a concrete subtype and the fields or release
+events that its current TMDB, TVMaze, AniList, Wikidata, feed, and YouTube paths do
+not provide. Until that target is identified, shared feed and catalog normalization
+covers the currently represented video subtypes without inventing source semantics.
 
 ---
 
@@ -2817,3 +3025,15 @@ This phase is successful when:
 - native torrent and Usenet implementations can be improved incrementally without changing higher-level orchestration.
 - no source credentials or secrets are committed to Git.
 - existing rights/provenance gates continue to control whether a discovered candidate may actually be acquired.
+
+---
+
+## Webcomics ingestion and source search milestone (2026-09-29)
+
+Comics metadata search now combines Comic Vine individual issues, Grand Comics Database, optional Metron, filtered Wikidata and existing Taddy. Matching catalog records retain alternate editions/field provenance; reboot runs and trades remain distinct, and individual issues sort first. Selected issues use existing Watched and shared approved download-source searches. The [Comics metadata report](docs/webcomics/COMICS_METADATA_SEARCH.md) records research, API limits, test coverage, live verification and a structured expansion backlog for details, pagination, provider-neutral series watchers and identity review.
+
+Implemented a Webcomics tab, additive normalized source/series/entry/chapter/asset persistence, adapter and metadata registries, public feed/static/platform extraction, evidence-based chapters, durable incremental watches, polite conditional HTTP, parser-collapse protection, original-byte CBZ manifests, and manual chapter overrides. Existing watches, queues, rights settings and UI workers remain the integration points.
+
+Bulk book-series additions now preview multiple selected series, preserve duplicate/future-book behavior, bound outstanding book work, and avoid full queue JSON scans. Approved download sources search concurrently through a shared pool and rank exact matches before preferences; public file-host resolution is shared by GetComics and generic detail connectors.
+
+The [Webcomics roadmap](docs/webcomics/WEB_COMICS_ROADMAP.md) records dependencies, implementation files, research and acceptance criteria for every remaining phase. The [handoff](docs/webcomics/WEB_COMICS_HANDOFF.md) and [connector validation](docs/webcomics/DOWNLOAD_CONNECTORS_VALIDATION.md) distinguish completed tests from live availability and unimplemented/session-dependent capabilities.

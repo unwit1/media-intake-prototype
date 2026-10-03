@@ -1,0 +1,323 @@
+{
+  "checked_at": "2026-09-30T02:31:45.189768+00:00",
+  "mode": "public discovery and HEAD/metadata only; zero comic release-file downloads",
+  "results": [
+    {
+      "source": "abandonwaregames.net",
+      "status": "browser_only",
+      "count": 1,
+      "sample": [
+        {
+          "title": "Open AbandonwareGames search for public domain",
+          "format": "link",
+          "provider": "AbandonwareGames",
+          "source": "https://abandonwaregames.net",
+          "discovery_only": true,
+          "access_note": null
+        }
+      ],
+      "seconds": 0.72
+    },
+    {
+      "source": "animeout.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 0.48
+    },
+    {
+      "source": "animetosho.org",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 0.65
+    },
+    {
+      "source": "ankergames.net",
+      "status": "failed",
+      "error": "HTTP Error 404: Not Found",
+      "http_status": 404,
+      "seconds": 0.61
+    },
+    {
+      "source": "annas_archive",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden",
+      "http_status": 403,
+      "seconds": 1.46
+    },
+    {
+      "source": "chauthanh.info",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 2.78
+    },
+    {
+      "source": "fosshub.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 0.41
+    },
+    {
+      "source": "getcomics.org",
+      "status": "metadata_results",
+      "count": 3,
+      "sample": [
+        {
+          "title": "Public Domain Vol. 2 \u2013 Build Something New (TPB) (2025)",
+          "format": "link",
+          "provider": "GetComics",
+          "source": "https://getcomics.org/other-comics/public-domain-vol-2-build-something-new-tpb-2025/",
+          "discovery_only": true,
+          "access_note": null
+        },
+        {
+          "title": "Public Domain #10 (2024)",
+          "format": "link",
+          "provider": "GetComics",
+          "source": "https://getcomics.org/other-comics/public-domain-10-2024/",
+          "discovery_only": true,
+          "access_note": null
+        },
+        {
+          "title": "Public Domain #9 (2024)",
+          "format": "link",
+          "provider": "GetComics",
+          "source": "https://getcomics.org/other-comics/public-domain-9-2024/",
+          "discovery_only": true,
+          "access_note": null
+        }
+      ],
+      "post_link_inventory": [
+        {
+          "source": "https://getcomics.org/other-comics/public-domain-vol-2-build-something-new-tpb-2025/",
+          "file_host_link_counts": {
+            "1024terabox.com": 1
+          }
+        },
+        {
+          "source": "https://getcomics.org/other-comics/public-domain-10-2024/",
+          "file_host_link_counts": {
+            "terabox.com": 1
+          }
+        }
+      ],
+      "seconds": 5.08
+    },
+    {
+      "source": "github_foss",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 2.03
+    },
+    {
+      "source": "gog-rev.com",
+      "status": "browser_only",
+      "count": 1,
+      "sample": [
+        {
+          "title": "Open GOG Revived search for public domain",
+          "format": "link",
+          "provider": "GOG Revived",
+          "source": "https://gog-rev.com",
+          "discovery_only": true,
+          "access_note": null
+        }
+      ],
+      "seconds": 0.0
+    },
+    {
+      "source": "internet_archive",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.75
+    },
+    {
+      "source": "libgen",
+      "status": "results",
+      "count": 14,
+      "sample": [
+        {
+          "title": "Trapped in Wonderland First edition paperback",
+          "format": ".epub",
+          "provider": null,
+          "source": "https://libgen.gl/index.php?req=Alice+in+Wonderland",
+          "discovery_only": null,
+          "access_note": null
+        },
+        {
+          "title": "Trapped in Wonderland First edition paperback",
+          "format": ".epub",
+          "provider": null,
+          "source": "https://libgen.gl/index.php?req=Alice+in+Wonderland",
+          "discovery_only": null,
+          "access_note": null
+        },
+        {
+          "title": "Trapped in Wonderland First edition paperback",
+          "format": ".azw3",
+          "provider": null,
+          "source": "https://libgen.gl/index.php?req=Alice+in+Wonderland",
+          "discovery_only": null,
+          "access_note": null
+        }
+      ],
+      "seconds": 3.27
+    },
+    {
+      "source": "lnori.com",
+      "status": "metadata_results",
+      "count": 1,
+      "sample": [
+        {
+          "title": "Outbreak Company",
+          "format": "link",
+          "provider": "LNORI",
+          "source": "https://lnori.com/series/2142/outbreak-company",
+          "discovery_only": true,
+          "access_note": null
+        }
+      ],
+      "seconds": 1.25
+    },
+    {
+      "source": "meawfy.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.37
+    },
+    {
+      "source": "mediafiretrend.com",
+      "status": "browser_only",
+      "count": 1,
+      "sample": [
+        {
+          "title": "Open MediaFireTrend search for public domain",
+          "format": "link",
+          "provider": "MediaFireTrend",
+          "source": "https://mediafiretrend.com",
+          "discovery_only": true,
+          "access_note": null
+        }
+      ],
+      "seconds": 0.28
+    },
+    {
+      "source": "myabandonware.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.59
+    },
+    {
+      "source": "noobsubs.com",
+      "status": "failed",
+      "error": "HTTP Error 522: <none>",
+      "http_status": 522,
+      "seconds": 20.0
+    },
+    {
+      "source": "novelarchive.cc",
+      "status": "metadata_results",
+      "count": 1,
+      "sample": [
+        {
+          "title": "Public Enemy On Online Games",
+          "format": "link",
+          "provider": "NovelArchive",
+          "source": "https://novelarchive.cc/novel?id=6a6f4ff286ed3bff5b6d6109",
+          "discovery_only": true,
+          "access_note": null
+        }
+      ],
+      "seconds": 1.08
+    },
+    {
+      "source": "oldgamesdownload.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.2
+    },
+    {
+      "source": "softarchive.download",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.03
+    },
+    {
+      "source": "sourceforge.net",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden",
+      "http_status": 403,
+      "seconds": 0.46
+    },
+    {
+      "source": "tokyoinsider.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.35
+    },
+    {
+      "source": "warezomen.com",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 1.04
+    },
+    {
+      "source": "xdcc.eu",
+      "status": "no_results",
+      "count": 0,
+      "sample": [],
+      "seconds": 2.46
+    }
+  ],
+  "getcomics_main_server": {
+    "page": "https://getcomics.org/other-comics/public-domain-10-2024/",
+    "links": [
+      {
+        "label": "DOWNLOAD NOW",
+        "host": "getcomics.org"
+      },
+      {
+        "label": "TERABOX",
+        "host": "terabox.com"
+      },
+      {
+        "label": "MEGA",
+        "host": "getcomics.org"
+      },
+      {
+        "label": "PIXELDRAIN",
+        "host": "getcomics.org"
+      }
+    ],
+    "head_probe": {
+      "status": "failed",
+      "error": "Source HTTP 403: https://fs2.comicfiles.ru/2024.11.06/Public%20Domain%20010%20%282024%29%20%28Digital%29%20%28Zone-Empire%29.cbr"
+    }
+  },
+  "getcomics_pixeldrain": {
+    "mode": "metadata and HEAD only; no comic asset bytes",
+    "source": "https://getcomics.org/other-comics/public-domain-10-2024/",
+    "target_host": "pixeldrain.com",
+    "status": "public_file_metadata_resolved",
+    "files": [
+      {
+        "host": "pixeldrain",
+        "format": ".cbr",
+        "filename": "Public Domain 010 (2024) (Digital) (Zone-Empire).cbr",
+        "size": 78162318,
+        "sha256_available": true
+      }
+    ]
+  }
+}

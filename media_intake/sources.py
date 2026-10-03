@@ -1,4 +1,5 @@
 """Source discovery adapters. A result page is metadata until a file URL is resolved."""
+import datetime as dt
 import json
 import re
 import urllib.parse
@@ -7,6 +8,7 @@ import urllib.error
 import html as html_module
 from html.parser import HTMLParser
 from pathlib import Path
+from .book_identifiers import collect_isbns
 from .core import EXTENSIONS, http_get, validate_item
 
 SITE_PROFILES = {
@@ -192,8 +194,10 @@ def search_forum_threads(query, base_url=SNAHP_FORUM, html_path=None):
                 final_url = response.geturl()
                 page = response.read(5_000_001).decode('utf-8', errors='replace')
         except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                raise ValueError(f'Forum search returned HTTP {exc.code}; use a normal browser and load a saved results page') from exc
+            status = exc.code
+            exc.close()
+            if status in (401, 403):
+                raise ValueError(f'Forum search returned HTTP {status}; use a normal browser and load a saved results page') from exc
             raise
         if len(page) > 5_000_000:
             raise ValueError('Forum search response exceeds 5 MB')
@@ -262,7 +266,7 @@ def search_openlibrary(query, limit=10):
 
 
 def search_openlibrary_metadata(query, limit=20):
-    """Search Open Library metadata for book and author suggestions."""
+    """Search Open Library for authors, books, and series with member works."""
     query = str(query or '').strip()
     if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
         raise ValueError('Enter a search up to 150 characters')
@@ -293,27 +297,97 @@ def search_openlibrary_metadata(query, limit=20):
         errors.append(f'author search: {exc}')
 
     params = urllib.parse.urlencode({
-        'q': query, 'fields': 'key,title,author_name,first_publish_year,edition_count',
-        'limit': min(limit, 20),
+        'q': query, 'fields': 'key,title,author_name,first_publish_year,edition_count,series,isbn',
+        'limit': 100,
     })
     try:
         raw, final = http_get('https://openlibrary.org/search.json?' + params,
                               max_bytes=4_000_000)
         if urllib.parse.urlsplit(final).hostname != 'openlibrary.org':
             raise ValueError('Open Library book search redirected away from its own site')
-        for row in json.loads(raw.decode('utf-8')).get('docs', []):
+        docs = json.loads(raw.decode('utf-8')).get('docs', [])
+        series_groups = {}
+        normalized_query = ' '.join(re.findall(r'[a-z0-9]+', query.casefold()))
+        normalized_query = re.sub(r'^(?:the|a|an)\s+', '', normalized_query)
+        for row in docs:
             key = str(row.get('key') or '')
             title = str(row.get('title') or '').strip()
             if not title or not re.fullmatch(r'/works/OL\d+W', key):
                 continue
             authors = row.get('author_name') or []
+            source_url = 'https://openlibrary.org' + key
+            author = ', '.join(str(name) for name in authors[:3]) or 'Unknown'
+            series_values = row.get('series') or []
+            if isinstance(series_values, str):
+                series_values = [series_values]
+            parsed_series = []
+            for raw_series in series_values:
+                series_name = str(raw_series or '').strip()
+                series_position = None
+                position_match = re.search(
+                    r'\s+(?:#|book\s+|volume\s+)(\d+(?:\.\d+)?)\s*$',
+                    series_name, flags=re.I)
+                if position_match:
+                    parsed_position = float(position_match.group(1))
+                    series_position = (int(parsed_position) if parsed_position.is_integer()
+                                       else parsed_position)
+                    series_name = series_name[:position_match.start()].strip()
+                clean_series = re.sub(r'\s*\((?:book\s+)?series\)\s*$', '', series_name,
+                                      flags=re.I).strip()
+                if clean_series:
+                    parsed_series.append({'name': clean_series,
+                                          'series_index': series_position})
+                normalized_series = ' '.join(re.findall(r'[a-z0-9]+', clean_series.casefold()))
+                normalized_series = re.sub(r'^(?:the|a|an)\s+', '', normalized_series)
+                if clean_series and normalized_series == normalized_query:
+                    try:
+                        year = int(row.get('first_publish_year'))
+                        release_date = f'{year:04d}-01-01' if 1000 <= year <= 9999 else None
+                    except (TypeError, ValueError):
+                        release_date = None
+                    member = {'title': title, 'author': author,
+                              'source_url': source_url,
+                              'release_date': release_date,
+                              'series': clean_series,
+                              'series_index': series_position,
+                              'series_position_source': ('Open Library series field'
+                                                         if series_position is not None else None),
+                              'catalog_metadata': {'catalog_id': key,
+                                                   'first_publish_year': row.get('first_publish_year'),
+                                                   'edition_count': row.get('edition_count'),
+                                                   'isbns': collect_isbns(row.get('isbn'))}}
+                    series_groups.setdefault(clean_series, {})[source_url] = member
+            catalog_metadata = {'catalog_id': key,
+                                'first_publish_year': row.get('first_publish_year'),
+                                'edition_count': row.get('edition_count'),
+                                'series': series_values,
+                                'normalized_series': parsed_series}
+            isbns = collect_isbns(row.get('isbn'))
+            if isbns:
+                catalog_metadata['isbns'] = isbns
             results.append({
                 'provider': 'Open Library', 'kind': 'book', 'title': title,
-                'author': ', '.join(str(name) for name in authors[:3]) or 'Unknown',
-                'source_url': 'https://openlibrary.org' + key,
-                'catalog_metadata': {'catalog_id': key,
-                                     'first_publish_year': row.get('first_publish_year'),
-                                     'edition_count': row.get('edition_count')},
+                'author': author, 'source_url': source_url,
+                'series': parsed_series[0]['name'] if len(parsed_series) == 1 else None,
+                'series_index': (parsed_series[0]['series_index']
+                                 if len(parsed_series) == 1 else None),
+                'series_position_source': ('Open Library series field'
+                                           if len(parsed_series) == 1 and
+                                           parsed_series[0]['series_index'] is not None else None),
+                'catalog_metadata': catalog_metadata,
+            })
+        for series_name, members in series_groups.items():
+            if len(members) < 2:
+                continue
+            series_url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode(
+                {'series': series_name})
+            results.append({
+                'provider': 'Open Library', 'kind': 'series', 'title': series_name,
+                'author': 'Unknown', 'source_url': series_url,
+                'books': list(members.values()),
+                'catalog_metadata': {'catalog_id': 'series:' + series_name,
+                                     'series_name': series_name,
+                                     'member_count': len(members)},
             })
     except Exception as exc:
         errors.append(f'book search: {exc}')
@@ -321,7 +395,132 @@ def search_openlibrary_metadata(query, limit=20):
     deduplicated = {}
     for result in results:
         deduplicated[(result['kind'], result['source_url'])] = result
-    found = list(deduplicated.values())[:limit]
+    found = list(deduplicated.values())
+    found.sort(key=lambda item: 0 if item.get('kind') == 'series' else 1)
+    found = found[:limit]
     if not found and errors:
         raise ValueError('Open Library metadata search failed: ' + '; '.join(errors))
     return found
+
+
+def search_google_books_metadata(query, limit=20):
+    """Search Google Books for book records and explicit series metadata.
+
+    Google Books is treated as a metadata catalog only. It never returns a
+    downloadable file candidate.
+    """
+    query = str(query or '').strip()
+    if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
+        raise ValueError('Enter a search up to 150 characters')
+    limit = max(1, min(int(limit), 40))
+    params = urllib.parse.urlencode({
+        'q': query, 'maxResults': limit, 'projection': 'full', 'printType': 'books',
+    })
+    raw, final = http_get('https://www.googleapis.com/books/v1/volumes?' + params,
+                          max_bytes=5_000_000)
+    if urllib.parse.urlsplit(final).hostname != 'www.googleapis.com':
+        raise ValueError('Google Books search redirected away from its API host')
+    payload = json.loads(raw.decode('utf-8'))
+    if not isinstance(payload, dict):
+        raise ValueError('Google Books returned an invalid search response')
+    results, series_groups = [], {}
+    for volume in payload.get('items') or []:
+        if not isinstance(volume, dict):
+            continue
+        volume_id = str(volume.get('id') or '').strip()
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', volume_id):
+            continue
+        info = volume.get('volumeInfo') or {}
+        if not isinstance(info, dict):
+            continue
+        title = str(info.get('title') or '').strip()
+        if not title:
+            continue
+        authors = info.get('authors') or []
+        if not isinstance(authors, list):
+            authors = []
+        author = ', '.join(str(value).strip() for value in authors[:5]
+                           if str(value).strip()) or 'Unknown'
+        source_url = 'https://books.google.com/books?' + urllib.parse.urlencode(
+            {'id': volume_id})
+        identifiers = [str(value.get('identifier') or '')
+                       for value in info.get('industryIdentifiers') or []
+                       if isinstance(value, dict) and
+                       str(value.get('type') or '').upper() in {'ISBN_10', 'ISBN_13'}]
+        isbns = collect_isbns(identifiers)
+        published = str(info.get('publishedDate') or '').strip()
+        release_date = None
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', published):
+            try:
+                release_date = dt.date.fromisoformat(published).isoformat()
+            except ValueError:
+                pass
+        series_info = info.get('seriesInfo') or {}
+        if not isinstance(series_info, dict):
+            series_info = {}
+        display_number = str(series_info.get('bookDisplayNumber') or '').strip()
+        position_match = re.search(r'(?<!\d)(\d+(?:\.\d+)?)(?!\d)', display_number)
+        series_position = None
+        if position_match:
+            value = float(position_match.group(1))
+            series_position = int(value) if value.is_integer() else value
+        volume_series = series_info.get('volumeSeries') or []
+        if isinstance(volume_series, dict):
+            volume_series = [volume_series]
+        series_references = []
+        for reference in volume_series:
+            if not isinstance(reference, dict):
+                continue
+            series_name = str(reference.get('seriesTitle') or reference.get('title') or
+                               info.get('seriesTitle') or '').strip()
+            series_id = str(reference.get('seriesId') or '').strip()
+            order = reference.get('orderNumber') or reference.get('volumeSeriesOrder')
+            if series_position is None and order is not None:
+                order_match = re.search(r'\d+(?:\.\d+)?', str(order))
+                if order_match:
+                    value = float(order_match.group(0))
+                    series_position = int(value) if value.is_integer() else value
+            if series_name or series_id:
+                series_references.append({'name': series_name, 'series_id': series_id,
+                                          'series_index': series_position})
+        series_name = next((item['name'] for item in series_references if item['name']), '')
+        catalog_metadata = {
+            'catalog_id': volume_id, 'google_books_id': volume_id,
+            'published_date': published, 'page_count': info.get('pageCount'),
+            'language': info.get('language'), 'series_references': series_references,
+        }
+        if isbns:
+            catalog_metadata['isbns'] = isbns
+        if series_name:
+            catalog_metadata['series'] = [
+                f'{series_name} #{series_position}' if series_position is not None
+                else series_name]
+        member = {
+            'title': title, 'author': author, 'source_url': source_url,
+            'release_date': release_date, 'series': series_name or None,
+            'series_index': series_position,
+            'series_position_source': ('Google Books seriesInfo'
+                                       if series_position is not None else None),
+            'provider': 'Google Books', 'catalog_metadata': catalog_metadata,
+        }
+        results.append({**member, 'kind': 'book'})
+        if series_name:
+            group_key = next((item['series_id'] for item in series_references
+                              if item['name'] == series_name and item['series_id']),
+                             'name:' + ' '.join(series_name.casefold().split()))
+            group = series_groups.setdefault(group_key, {'title': series_name, 'books': {}})
+            group['books'][volume_id] = member
+
+    for group_key, group in series_groups.items():
+        if len(group['books']) < 2:
+            continue
+        results.append({
+            'provider': 'Google Books', 'kind': 'series', 'title': group['title'],
+            'author': 'Unknown',
+            'source_url': 'https://books.google.com/books?' +
+                          urllib.parse.urlencode({'q': 'series:' + group['title']}),
+            'books': list(group['books'].values()),
+            'catalog_metadata': {'catalog_id': group_key, 'series_id': group_key,
+                                 'member_count': len(group['books'])},
+        })
+    return results

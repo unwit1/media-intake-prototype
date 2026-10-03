@@ -1,0 +1,2 @@
+# PDF text extraction used when creating local EPUB copies.
+pypdf>=6.19.0,<7

@@ -1,0 +1,3 @@
+# Optional native BitTorrent engine for magnet and .torrent queue items
+# (Jackett results). Without it, torrents can still be sent to Gopeed.
+libtorrent>=2.0.11,<3

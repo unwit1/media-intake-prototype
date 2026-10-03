@@ -104,6 +104,25 @@ class GcdTests(unittest.TestCase):
                          [('Sandman', '1989'), ('The Sandman', '1974')])
         self.assertNotIn('pt', {r.get('language') for r in series_rows})
 
+    def test_collected_edition_runs_list_volumes_not_duplicate_issues(self):
+        def pages(provider, url, **kwargs):
+            if '/name/' in url:
+                return [{'api_url': 'https://www.comics.org/api/series/1/', 'name': 'Invincible', 'year_began': 2003,
+                         'language': 'en', 'active_issues': [1] * 170, 'publishing_format': 'was ongoing series'},
+                        {'api_url': 'https://www.comics.org/api/series/2/', 'name': 'Invincible', 'year_began': 2003,
+                         'language': 'en', 'active_issues': [1] * 34,
+                         'publishing_format': 'Collected Editions; Was Ongoing Series'}]
+            series_id = url.rstrip('/').split('/')[-2]
+            return [{'issue_id': f'{series_id}0{n}', 'number': str(n),
+                     'series': f'https://www.comics.org/api/series/{series_id}/'} for n in (1, 2)]
+        with patch.object(cm, '_pages', side_effect=pages):
+            rows, _errors = cm.search_gcd('Invincible')
+        from media_intake.discovery import _merge_same_title
+        merged = _merge_same_title([dict(r, source_role='metadata') for r in rows], 'Comics', [])
+        titles = sorted(r['title'] for r in merged if r.get('comic_entity') != 'series')
+        self.assertEqual(titles, ['Invincible', 'Invincible (2003) #1', 'Invincible (2003) #2',
+                                  'Invincible Vol. 1', 'Invincible Vol. 2'])  # 'Invincible': the trade run itself
+
 
 class RetryTests(unittest.TestCase):
     def test_rate_limited_catalog_request_is_retried(self):

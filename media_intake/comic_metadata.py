@@ -21,7 +21,7 @@ import urllib.request
 
 from .webcomics.http import NoRedirect, retry_seconds
 
-COLLECTION = re.compile(r'\b(?:TPB|trade\s*paperback|hardcover|paperback|omnibus|collected\s+edition|'
+COLLECTION = re.compile(r'\b(?:TPB|trade\s*paperback|hardcover|paperback|omnibus|collected\s+editions?|'
     r'complete\s+collection|deluxe\s+edition|absolute\s+edition|HC)\b', re.I)
 ISSUE = re.compile(r'(?:#|\bissue\s*(?:no\.?\s*)?)(\d+(?:\.\d+)?[a-z]?)\b', re.I)
 ISSUE_RANGE = re.compile(r'#\d+(?:\.\d+)?\s*(?:[-–—&]|to)\s*#?\d+|#\d+.*?\b(?:complete\s+series|full\s+run)\b', re.I)
@@ -267,6 +267,7 @@ def search_gcd(query, limit=100):
         output.append(_catalog('GCD', row['name'], source, kind='comic', comic_entity='series',
             series_title=row['name'], series_start_year=str(row.get('year_began') or ''),
             publisher=_name(row.get('publisher')), language=row.get('language'),
+            series_type=str(row.get('publishing_format') or ''),
             external_ids=[_id('gcd_series', match.group(1), source)], gcd_series_id=match.group(1),
             catalog_metadata={'license': 'CC-BY-SA-4.0', 'attribution': 'Grand Comics Database',
                               'cover_rights': 'Cover images retain their respective copyright', 'source_url': source}))
@@ -278,9 +279,10 @@ def search_gcd(query, limit=100):
     wanted = _bare_title(parsed.title)
     output.sort(key=lambda row: (-difflib.SequenceMatcher(None, wanted, _bare_title(row['title'])).ratio(),
                                  key(row.get('language')) not in ('', 'en'), -issue_counts.get(row['source_url'], 0)))
-    # Translated reprints of a run already listed in English are extra editions, not new series.
-    english = {_bare_title(row['title']) for row in output if key(row.get('language')) in ('', 'en')}
-    output = [row for row in output if key(row.get('language')) in ('', 'en') or _bare_title(row['title']) not in english]
+    # Foreign-language runs are mostly translated reprints ("Biblioteca Sandman",
+    # "Den absoluta Sandman"); show them only when nothing in English matched.
+    english = [row for row in output if key(row.get('language')) in ('', 'en')]
+    output = english or output
     issue_rows, errors = [], []
     if parsed.number:
         # GCD issue year filter means issue publication year. Match run year
@@ -315,7 +317,12 @@ def search_gcd(query, limit=100):
         if not issue_id or not name or not number:
             continue
         source = f'https://www.comics.org/issue/{issue_id}/'
-        output.append(_catalog('GCD', f'{name} #{number}', source, kind='comic_issue', comic_entity='issue',
+        # A "collected editions" run numbers its trade volumes 1, 2, 3...; they are
+        # books collecting the issues, not a second copy of issues #1, #2, #3.
+        collected = bool(COLLECTION.search((parent or {}).get('series_type') or ''))
+        output.append(_catalog('GCD', f'{name} Vol. {number}' if collected else f'{name} #{number}', source,
+            kind='comic_issue', comic_entity='collection' if collected else 'issue',
+            series_type=(parent or {}).get('series_type') or '', volume_number=number if collected else None,
             series_title=name, issue_number=number, series_start_year=(parent or row).get('series_start_year'),
             publisher=(parent or row).get('publisher'), language=(parent or row).get('language'),
             gcd_issue_id=issue_id, variant_of=row.get('variant_of'),

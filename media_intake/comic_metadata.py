@@ -245,11 +245,18 @@ def search_metron(query, token, limit=100):
     return output, []
 
 
+def _bare_title(value):
+    return re.sub(r'^(?:the|a|an)\s+', '', key(value))
+
+
 def search_gcd(query, limit=100):
     parsed = parse_query(query)
-    base = 'https://www.comics.org/api/series/name/' + urllib.parse.quote(parsed.title, safe='') + '/'
+    # GCD files many runs without the article ("Sandman", 1989) and its name
+    # search matches "The Sandman" from "Sandman" too, so search without it.
+    name = re.sub(r'^(?:the|a|an)\s+', '', parsed.title, flags=re.I) or parsed.title
+    base = 'https://www.comics.org/api/series/name/' + urllib.parse.quote(name, safe='') + '/'
     series_url = base + (f'year/{parsed.year}/' if parsed.year else '')
-    series = _pages('GCD', series_url, limit=20, max_pages=1, interval=2)
+    series = _pages('GCD', series_url, limit=50, max_pages=1, interval=2)
     output = []
     for row in series:
         source = str(row.get('api_url') or '')
@@ -263,8 +270,17 @@ def search_gcd(query, limit=100):
             external_ids=[_id('gcd_series', match.group(1), source)], gcd_series_id=match.group(1),
             catalog_metadata={'license': 'CC-BY-SA-4.0', 'attribution': 'Grand Comics Database',
                               'cover_rights': 'Cover images retain their respective copyright', 'source_url': source}))
-    # Prefer the queried series over substring matches when expanding archives.
-    output.sort(key=lambda row: -difflib.SequenceMatcher(None, key(parsed.title), key(row['title'])).ratio())
+    # Prefer the queried series over substring matches when expanding archives,
+    # then English runs, then the longest run (Gaiman's 75-issue Sandman over
+    # the 7-issue 1974 one).
+    issue_counts = {f"https://www.comics.org/series/{m.group(1)}/": len(r.get('active_issues') or [])
+                    for r in series for m in [re.search(r'/series/(\d+)/?', str(r.get('api_url') or ''))] if m}
+    wanted = _bare_title(parsed.title)
+    output.sort(key=lambda row: (-difflib.SequenceMatcher(None, wanted, _bare_title(row['title'])).ratio(),
+                                 key(row.get('language')) not in ('', 'en'), -issue_counts.get(row['source_url'], 0)))
+    # Translated reprints of a run already listed in English are extra editions, not new series.
+    english = {_bare_title(row['title']) for row in output if key(row.get('language')) in ('', 'en')}
+    output = [row for row in output if key(row.get('language')) in ('', 'en') or _bare_title(row['title']) not in english]
     issue_rows, errors = [], []
     if parsed.number:
         # GCD issue year filter means issue publication year. Match run year

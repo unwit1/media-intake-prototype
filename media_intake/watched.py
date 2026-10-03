@@ -70,7 +70,8 @@ CHECK_INTERVAL = dt.timedelta(days=1)
 _BOOK_SERIES_DESCRIPTION = re.compile(
     r'\b(?:books?|novels?|novellas?|short stories|literary works?)\s+'
     r'(?:series|saga|cycle|trilogy|sequence)\b|'
-    r'\b(?:series|saga|cycle|trilogy|sequence)\s+of\b.{0,80}'
+    r'\b(?:series|saga|cycle|duology|trilogy|tetralogy|pentalogy|hexalogy|heptalogy|'
+    r'quartet|quintet|sequence)\s+of\b.{0,80}'
     r'\b(?:books?|novels?|novellas?|short stories|literary works?)\b|'
     r"\b(?:children's|young adult|fantasy|science fiction|adventure|mystery|"
     r'romance|horror|historical fiction)\b.{0,60}\b(?:series|saga|cycle|trilogy)\b', re.I)
@@ -597,13 +598,17 @@ def search_goodreads_with_fallback(query, limit=80):
     return []
 
 
+_BARE_QID = re.compile(r'Q[1-9]\d{0,11}')
+_EDITION_MEMBER = re.compile(r'\b(?:translation|edition|reprint|omnibus|box(?:ed)? set)\s+of\b|^(?:version, edition|edition|translation)\b', re.I)
+
+
 def _wikidata_series_members(qid, limit=5000):
     """Read explicitly linked member works from Wikidata for a series fallback."""
     qid = str(qid or '').strip().upper()
     if not re.fullmatch(r'Q[1-9]\d{0,11}', qid):
         raise ValueError('Invalid Wikidata series ID')
     limit = max(1, min(int(limit), 5000))
-    query = f'''SELECT ?work ?workLabel ?workDescription ?authorLabel ?date ?seriesNumber
+    query = f'''SELECT ?work ?workLabel ?englishTitle ?workDescription ?authorLabel ?date ?seriesNumber
       ?workTypeLabel WHERE {{
       {{ ?work p:P179 ?membership.
          ?membership ps:P179 wd:{qid}.
@@ -616,10 +621,11 @@ def _wikidata_series_members(qid, limit=5000):
          ?partOf wikibase:rank ?rank.
          FILTER(?rank != wikibase:DeprecatedRank)
          OPTIONAL {{ ?partOf pq:P1545 ?seriesNumber. }} }}
+      OPTIONAL {{ ?work rdfs:label ?englishTitle. FILTER(LANG(?englishTitle) = "en") }}
       OPTIONAL {{ ?work wdt:P50 ?author. }}
       OPTIONAL {{ ?work wdt:P577 ?date. }}
       OPTIONAL {{ ?work wdt:P31 ?workType. }}
-      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,mul". }}
     }} ORDER BY ?seriesNumber ?date ?workLabel LIMIT {limit}'''
     url = 'https://query.wikidata.org/sparql?' + urllib.parse.urlencode(
         {'query': query, 'format': 'json'})
@@ -632,8 +638,10 @@ def _wikidata_series_members(qid, limit=5000):
     for binding in (payload.get('results') or {}).get('bindings', []):
         work_url = str((binding.get('work') or {}).get('value') or '')
         match = re.fullmatch(r'https?://www\.wikidata\.org/entity/(Q[1-9]\d{0,11})', work_url)
-        title = str((binding.get('workLabel') or {}).get('value') or '').strip()
-        if not match or not title:
+        # Prefer the English label: the multilingual fallback can name a work in
+        # another language, and a bare QID means the work has no usable label.
+        title = str((binding.get('englishTitle') or binding.get('workLabel') or {}).get('value') or '').strip()
+        if not match or not title or _BARE_QID.fullmatch(title):
             continue
         work_id = match.group(1)
         release = _date((binding.get('date') or {}).get('value'))
@@ -659,7 +667,7 @@ def _wikidata_series_members(qid, limit=5000):
             book['series_position_source'] = 'Wikidata P1545'
             book['catalog_metadata']['series_position'] = position_text
         author = str((binding.get('authorLabel') or {}).get('value') or '').strip()
-        if author and book['author'] == 'Unknown':
+        if author and not _BARE_QID.fullmatch(author) and book['author'] == 'Unknown':
             book['author'] = author
         if release and (not book.get('release_date') or release < book['release_date']):
             book['release_date'] = release
@@ -669,6 +677,8 @@ def _wikidata_series_members(qid, limit=5000):
         type_text = ' '.join(book.get('work_type_labels') or [])
         description = str(book.get('description') or '')
         book['catalog_metadata']['work_type_labels'] = sorted(book['work_type_labels'])
+        if _EDITION_MEMBER.search(description) or _EDITION_MEMBER.search(type_text):
+            continue  # a translation or edition of a member, not another book
         if _NON_BOOK_MEMBER_TYPE.search(type_text):
             # Keep adaptations and other media in the graph via the entity
             # relationship importer, but don't present them as book members.

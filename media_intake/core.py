@@ -5,6 +5,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -288,8 +289,27 @@ def open_url(request, timeout=30):
         raise
 
 
-def http_get(url, max_bytes=10_000_000):
+HTTP_GET_RETRY_STATUSES = {429, 503}
+
+
+def http_get(url, max_bytes=10_000_000, retries=2):
     request = urllib.request.Request(url, headers={'User-Agent': 'MediaIntakePrototype/0.1 (personal library intake)'})
+    for attempt in range(retries + 1):
+        try:
+            return _http_get_once(request, max_bytes)
+        except urllib.error.HTTPError as exc:
+            # Rate limits from catalogs (Wikidata, Google Books) are usually brief:
+            # wait as asked (capped) and try again rather than dropping the source.
+            if exc.code not in HTTP_GET_RETRY_STATUSES or attempt == retries:
+                raise
+            try:
+                delay = float(exc.headers.get('Retry-After') or 0)
+            except (TypeError, ValueError, AttributeError):
+                delay = 0
+            time.sleep(min(max(delay, 1.0 * (attempt + 1)), 5.0))
+
+
+def _http_get_once(request, max_bytes):
     with open_url(request, timeout=30) as response:
         size = response.headers.get('Content-Length')
         if size and int(size) > max_bytes:

@@ -504,6 +504,34 @@ def fetch_igdb_game(game_id, client_id, client_secret):
     return payload[0]
 
 
+_STEAM_EXTRA = re.compile(
+    r'\b(?:soundtrack|ost|artbook|art book|wallpapers?|season pass|expansion pass|dlc|'
+    r'(?:recruit|costume|skin|weapon|booster|starter|supporter|bonus|content|item|outfit|upgrade)\s+pack|'
+    r'pack\s*\d*$)\b', re.I)
+_STEAM_EDITION = re.compile(
+    r'\s*(?:[-:\u2013]\s*)?(?:\(\d{4}\)\s*)?(?:(?:(?:N7\s+)?digital\s+)?(?:deluxe|enhanced|complete|'
+    r'definitive|ultimate|gold|premium|standard|special|collector\'?s|anniversary|windows|'
+    r'game of the year|goty|royal|legendary)?\s*edition(?:\s+director\'?s\s+cut)?|'
+    r'director\'?s\s+cut)\s*(?:\(\d{4}\))?\s*$', re.I)
+
+
+def steam_base_title(title):
+    """Return ``(base title, edition label)`` for a Steam store name.
+
+    Store names carry trademark marks, release years and edition suffixes
+    ("Mass Effect\u2122 2 (2010) Edition", "The Witcher: Enhanced Edition") that
+    would otherwise show up as extra games beside the catalog's own entry.
+    """
+    text = re.sub(r'[\u2122\u00ae\u00a9]', '', str(title or '')).strip()
+    edition = None
+    match = _STEAM_EDITION.search(text)
+    if match and match.start() > 0:
+        edition = match.group(0).strip(' -:\u2013') or None
+        text = text[:match.start()]
+    text = re.sub(r'\s*\(\d{4}\)\s*$', '', text)
+    return re.sub(r'\s+', ' ', text).strip(' -:\u2013') or str(title or '').strip(), edition
+
+
 def search_steam_games(query, limit=15):
     """Search public Steam catalog as a credential-free game metadata source."""
     query = str(query or '').strip()
@@ -516,13 +544,17 @@ def search_steam_games(query, limit=15):
     for row in payload.get('items', [])[:max(1, min(int(limit), 30))]:
         if not row.get('id') or not row.get('name'):
             continue
+        if _STEAM_EXTRA.search(row['name']):
+            continue  # soundtracks, packs and other add-ons are not separate games
         app_id = str(row['id'])
         source_url = f'https://store.steampowered.com/app/{app_id}/'
+        title, edition = steam_base_title(row['name'])
         metadata = {'steam_app_id': app_id, 'game_subtype': 'base_game',
                     'tiny_image': row.get('tiny_image'), 'price': row.get('price'),
-                    'platforms': row.get('platforms') or {}}
+                    'platforms': row.get('platforms') or {}, 'store_title': row['name'],
+                    **({'edition': edition} if edition else {})}
         results.append({
-            'title': row['name'], 'author': 'Unknown', 'kind': 'game',
+            'title': title, 'author': 'Unknown', 'kind': 'game',
             'entity_type': 'work', 'game_subtype': 'base_game', 'provider': 'Steam',
             'source_url': source_url, 'release_date': None, 'format': 'catalog',
             'catalog_metadata': metadata, 'metadata': metadata,

@@ -29,7 +29,7 @@ from .fanfiction import story_url_key
 from .media_catalogs import (resolve_catalog_file_links, search_lnori,
                              search_mangaupdates, search_novelarchive,
                              search_ranobedb)
-from .media_providers import (search_igdb_games, search_steam_games,
+from .media_providers import (search_igdb_games, search_steam_games, steam_base_title,
                               search_tmdb, search_tvmaze)
 from .sources import search_google_books_metadata, search_openlibrary_metadata
 from .series_continuity import enrich_series_members, series_member_review_reason
@@ -391,6 +391,10 @@ def _merge_same_title(results, category, download_priority):
                     'anime_short_series': 'tv_series',
                     'anime_web_series': 'web_series',
                 }.get(subtype, subtype)
+                # Catalogs disagree on whether a streaming show is a "web" or "TV"
+                # series (TVMaze files Netflix shows as web series); it is one show.
+                if subtype in {'web_series', 'miniseries'}:
+                    subtype = 'tv_series'
                 date_value = str(item.get('release_date') or metadata.get('premiere_date') or '')
                 year = date_value[:4]
                 key = (title, subtype, year)
@@ -407,7 +411,8 @@ def _merge_same_title(results, category, download_priority):
             elif category == 'Games':
                 metadata = item.get('catalog_metadata') or item.get('metadata') or {}
                 subtype = str(item.get('game_subtype') or metadata.get('game_subtype') or '').casefold()
-                key = (title, subtype)
+                # "X: Enhanced Edition" or "X Legendary Edition" is the same game as X.
+                key = (_title_key(steam_base_title(item.get('title'))[0]) or title, subtype)
             else:
                 key = title
             groups.setdefault(key, []).append(item)
@@ -505,6 +510,25 @@ def _series_match_score(query, title):
     query_words, title_words = set(query_key.split()), set(title_key.split())
     overlap = len(query_words & title_words) / max(1, len(query_words | title_words))
     return max(ratio, overlap * 0.9)
+
+
+def _title_relevance(query, title):
+    """0 exact, 1 prefix, 2 every query word present, 3 fuzzy-only match."""
+    query_key, title_key = _series_name_key(query), _series_name_key(title)
+    if not query_key or not title_key:
+        return 3
+    if title_key == query_key:
+        return 0
+    if title_key.startswith(query_key + ' '):
+        return 1
+    if set(query_key.split()) <= set(title_key.split()):
+        return 2
+    return 3
+
+
+def _sort_by_title_relevance(results, query):
+    """Stable sort so catalogs' fuzzy matches ("Cane" for "Arcane") follow real hits."""
+    return sorted(results or [], key=lambda row: _title_relevance(query, row.get('title')))
 
 
 def _promote_matching_series_results(results, query):
@@ -835,8 +859,8 @@ def _query_wikidata(query, category=None):
             item.update(kind='video', entity_type=entity_type, video_subtype=subtype)
         elif category == 'Games':
             game_terms = ('video game', 'computer game', 'game franchise', 'video game series')
-            if not any(term in description for term in game_terms):
-                continue
+            if not any(term in description for term in game_terms) or 'compilation' in description:
+                continue  # compilations bundle games already listed on their own
             entity_type = ('franchise' if 'franchise' in description or 'series' in description
                            else 'work')
             item.update(kind='game', entity_type=entity_type,
@@ -1236,6 +1260,8 @@ def search_media_category(query, category, source_options=None, credentials=None
                 logger.warning('%s category search failed for %r: %s', provider, query, exc)
                 errors.append(f'{provider}: {exc}')
     unique_titles = _merge_same_title(results, category, priority)
+    if category in {'Videos', 'Anime', 'Games'}:
+        unique_titles = _sort_by_title_relevance(unique_titles, query)
     if category == 'Comics':
         unique_titles = sort_comics(unique_titles, query)
     result_limit = 500 if category == 'Comics' else 150

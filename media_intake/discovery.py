@@ -320,6 +320,9 @@ def _title_key(item):
     value = item.get('title') if isinstance(item, dict) else item
     text = unicodedata.normalize('NFKD', str(value or '').casefold())
     text = ''.join(char for char in text if not unicodedata.combining(char))
+    # Join words split by an apostrophe or hyphen, so catalogs' spellings agree:
+    # "Ren'ai" / "Renai", "Tensai-tachi" / "Tensaitachi", "Spider-Man" / "Spiderman".
+    text = re.sub(r"(?<=[a-z0-9])['’`-](?=[a-z0-9])", '', text)
     return ' '.join(re.findall(r'[a-z0-9]+', text))
 
 
@@ -336,7 +339,15 @@ def _download_sort_key(item, category, priority):
     return (rank, format_rank, item.get('title', '').casefold(), item.get('url', '').casefold())
 
 
-_CROSS_CATALOG_IDS = {'imdb', 'tvmaze', 'tmdb_movie', 'tmdb_tv', 'thetvdb'}
+_CROSS_CATALOG_IDS = {'imdb', 'tvmaze', 'tmdb_movie', 'tmdb_tv', 'thetvdb', 'anilist', 'mal_anime', 'mal_manga',
+                      'mangadex'}
+_ID_MERGED_CATEGORIES = {'Videos', 'Anime', 'Manga', 'Light novels'}
+# "Kaguya-sama: Love is War - Doujin Edition", "Gundam Seed Special Edition",
+# "Kaguya-sama (Official Colored)": the same work in another edition.
+_WORK_EDITION_SUFFIX = re.compile(
+    r"[\s:\u2013-]*(?:\((?:official\s+|fan\s+)?(?:colou?red|full[\s-]colou?r)\)|"
+    r"(?:special|deluxe|doujin|collector'?s|anniversary|perfect|full[\s-]colou?r|remastered|kanzenban)\s+edition)\s*$",
+    re.I)
 
 
 def _cross_catalog_ids(item):
@@ -347,6 +358,17 @@ def _cross_catalog_ids(item):
             and i.get('external_id')}
 
 
+_BOX_SET = re.compile(r'\bbox(?:ed)?[\s-]*set\b|\b(?:books?|vols?\.?|volumes?|#)\s*\d+\s*(?:-|\u2013|to|&)\s*\d+\b|'
+                      r'\bcollection\s*#\s*\d+\b', re.I)
+# Edition and listing noise on otherwise identical works: "Shift Deluxe Collector's
+# Edition", "The Girl with the Dragon Tattoo (Millennium Trilogy) by Stieg Larsson
+# (2008) Hardcover". Stripped only to decide whether two rows are one work.
+_EDITION_LABEL = re.compile(
+    r"\s*(?:\((?:[^()]*\b(?:edition|trilogy|series|saga|book\s*\d+)\b[^()]*)\)|"
+    r"\b(?:deluxe|collector'?s|special|anniversary|illustrated|limited|signed|gift)\b[\w\s']*\bedition\s*$|"
+    r"\bby\s+[A-Z][\w.' -]+\s*\(\d{4}\).*$)", re.I)
+
+
 def _merge_same_title(results, category, download_priority):
     groups = {}
     if category == 'Comics':
@@ -355,7 +377,9 @@ def _merge_same_title(results, category, download_priority):
         book_groups = []
         for item in results:
             kind = str(item.get('kind') or 'book').casefold()
-            title = ((book_work_title_key(item.get('title')) if kind == 'book'
+            if kind == 'book' and _BOX_SET.search(str(item.get('title') or '')):
+                continue  # a box set packages books already listed on their own
+            title = ((book_work_title_key(_EDITION_LABEL.sub('', str(item.get('title') or ''))) if kind == 'book'
                       else _title_key(item)) or
                      str(item.get('url') or item.get('source_url') or item.get('provider') or ''))
             author = _title_key(item.get('author')) or 'unknown'
@@ -392,11 +416,31 @@ def _merge_same_title(results, category, download_priority):
     else:
         # Videos: rows sharing an IMDb/TVMaze/TMDB ID are one work whatever their
         # titles ("Arcane" on Wikidata is "Arcane: League of Legends" on TVMaze).
-        group_by_id = {}
+        group_by_id, title_by_alias = {}, {}
         for item in results:
             title = _title_key(item) or str(item.get('url') or item.get('source_url') or item.get('provider') or '')
+            if category in {'Manga', 'Anime', 'Light novels'}:
+                title = _title_key(_WORK_EDITION_SUFFIX.sub('', str(item.get('title') or ''))) or title
+            if category in {'Manga', 'Light novels'}:
+                # MangaDex lists "Kaguya-sama wa Kokurasetai" where AniList says
+                # "Kaguya-sama: Love is War" and gives the romaji as another name.
+                names = [_title_key(_WORK_EDITION_SUFFIX.sub('', str(name)))
+                         for name in item.get('alternative_titles') or []]
+                names = [title] + names
+                known = list(dict.fromkeys(title_by_alias[name] for name in names
+                                           if name in title_by_alias and title_by_alias[name] in groups))
+                if known:
+                    title = known[0]
+                    for other in known[1:]:
+                        # This row names two groups (English and romaji): they are one work.
+                        groups[title].extend(groups.pop(other))
+                        title_by_alias.update({a: title for a, k in title_by_alias.items() if k == other})
+                        group_by_id.update({i: title for i, k in group_by_id.items() if k == other})
+                for name in [title] + names:  # its own title too, for rows that follow
+                    if name:
+                        title_by_alias.setdefault(name, title)
             shared = None
-            if category in {'Videos', 'Anime'}:
+            if category in _ID_MERGED_CATEGORIES:
                 item_ids = _cross_catalog_ids(item)
                 shared = next((group_by_id[i] for i in item_ids if group_by_id.get(i) in groups), None)
             if shared is not None:
@@ -440,7 +484,7 @@ def _merge_same_title(results, category, download_priority):
                 key = title
             if not any(existing is item for existing in groups.get(key, ())):
                 groups.setdefault(key, []).append(item)
-            if category in {'Videos', 'Anime'}:
+            if category in _ID_MERGED_CATEGORIES:
                 group_by_id.update({i: key for i in item_ids})
 
     merged = []
@@ -465,6 +509,9 @@ def _merge_same_title(results, category, download_priority):
                     metadata.append(item)
 
         downloads.sort(key=lambda item: _download_sort_key(item, category, download_priority))
+        if category == 'Books' and len(metadata) > 1:
+            # Show the plain title ("Shift") rather than an edition's listing.
+            metadata.sort(key=lambda item: len(str(item.get('title') or '')))
         chosen = dict(downloads[0] if downloads else metadata[0])
         metadata_sources = list(dict.fromkeys(item.get('provider') for item in metadata if item.get('provider')))
         chosen['metadata_variants'] = [dict(item) for item in metadata]
@@ -518,10 +565,21 @@ def _merge_same_title(results, category, download_priority):
     return sort_comics(merged) if category == 'Comics' else merged
 
 
+_GENERIC_SERIES_WORDS = {'series', 'saga', 'cycle', 'trilogy', 'duology', 'quartet', 'chronicles', 'sequence',
+                         'books', 'novels', 'collection'}
+
+
 def _series_name_key(value):
+    """Compare series names without articles or a generic trailing word.
+
+    Catalogs and people disagree on "Magic Tree House" vs "Magic Tree House
+    series", or "Dune" vs "Dune Chronicles"; they name one series.
+    """
     words = _title_key({'title': value}).split()
     if words and words[0] in {'a', 'an', 'the'}:
         words = words[1:]
+    while len(words) > 1 and words[-1] in _GENERIC_SERIES_WORDS:
+        words = words[:-1]
     return ' '.join(words)
 
 
@@ -543,18 +601,40 @@ def _title_relevance(query, title):
     query_key, title_key = _series_name_key(query), _series_name_key(title)
     if not query_key or not title_key:
         return 3
-    if title_key == query_key:
+    # Spacing differs between how people type and how catalogs hyphenate
+    # ("spider man" / "Spider-Man"), so also compare with the spaces removed.
+    query_squashed, title_squashed = query_key.replace(' ', ''), title_key.replace(' ', '')
+    if title_key == query_key or title_squashed == query_squashed:
         return 0
-    if title_key.startswith(query_key + ' '):
+    if title_key.startswith(query_key + ' ') or (title_squashed.startswith(query_squashed) and
+                                                 len(query_squashed) >= 6):
         return 1
-    if set(query_key.split()) <= set(title_key.split()):
+    if set(query_key.split()) <= set(title_key.split()) or (len(query_squashed) >= 6 and
+                                                            query_squashed in title_squashed):
         return 2
     return 3
 
 
+_RELEVANCE_SORTED = {'Videos', 'Anime', 'Games', 'Manga', 'Light novels'}
+
+
 def _sort_by_title_relevance(results, query):
-    """Stable sort so catalogs' fuzzy matches ("Cane" for "Arcane") follow real hits."""
-    return sorted(results or [], key=lambda row: _title_relevance(query, row.get('title')))
+    """Stable sort so catalogs' fuzzy matches ("Cane" for "Arcane") follow real hits.
+
+    A row matches as well as its best-matching name, so the main JoJo manga,
+    listed under its romaji title, still counts as an exact hit for the English one.
+    """
+    def best(row):
+        names = [row.get('title')] + list(row.get('alternative_titles') or [])
+        for variant in row.get('metadata_variants') or []:
+            names += [variant.get('title')] + list(variant.get('alternative_titles') or [])
+        tier = min(_title_relevance(query, name) for name in names if name) if any(names) else 3
+        # Equally good title matches ("Code Geass: ...") go most-followed first, so
+        # the main series precedes its specials and spin-offs.
+        popularity = max([int(row.get('popularity') or 0)] + [int(v.get('popularity') or 0)
+                                                               for v in row.get('metadata_variants') or []])
+        return tier, -popularity
+    return sorted(results or [], key=best)
 
 
 def _promote_matching_series_results(results, query):
@@ -720,6 +800,9 @@ def _merge_series_member(members, incoming, default_provider, review_members=Non
             ids.append(catalog_id)
 
 
+THIN_SERIES_MEMBERS = 3
+
+
 def _expand_book_series_results(results, query):
     """Put all strong matching series first, followed by their ordered member rows."""
     series_rows = [row for row in results
@@ -840,6 +923,11 @@ def _expand_book_series_results(results, query):
         if alternate_rows:
             rows.extend(alternate_rows)
             bundle['matching_series_count'] += 1
+    if len(bundle.get('books') or []) < THIN_SERIES_MEMBERS:
+        # Wikidata links only some series' books (Magic Tree House: one). Keep the
+        # other catalogs' rows too instead of showing an almost empty series.
+        shown = {_title_key(row) for row in rows}
+        rows.extend(row for row in results if row.get('kind') != 'series' and _title_key(row) not in shown)
     return rows, bundle
 
 
@@ -1306,8 +1394,11 @@ def search_media_category(query, category, source_options=None, credentials=None
             except Exception as exc:
                 logger.warning('%s category search failed for %r: %s', provider, query, exc)
                 errors.append(f'{provider}: {exc}')
+    if category in {'Manga', 'Light novels'} and not re.search(r'doujin', query, re.I):
+        # Fan-made doujinshi share the work's name but are not the work.
+        results = [row for row in results if not re.search(r'\bdoujin(?:shi)?\b', str(row.get('title') or ''), re.I)]
     unique_titles = _merge_same_title(results, category, priority)
-    if category in {'Videos', 'Anime', 'Games'}:
+    if category in _RELEVANCE_SORTED:
         unique_titles = _sort_by_title_relevance(unique_titles, query)
     if category == 'Comics':
         unique_titles = sort_comics(unique_titles, query)
@@ -1348,7 +1439,7 @@ def search_media_category(query, category, source_options=None, credentials=None
                 if retry.get('results'):
                     response['query_correction'] = {'from': query, 'to': corrected}
     response['results'] = _promote_matching_series_results(response.get('results'), query)
-    if category in {'Videos', 'Anime', 'Games'}:
+    if category in _RELEVANCE_SORTED:
         # A promoted series still follows closer title matches: "Rocky Road" (a
         # show) must not jump ahead of the film "Rocky".
         response['results'] = _sort_by_title_relevance(response['results'], query)

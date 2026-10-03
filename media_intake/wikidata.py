@@ -60,7 +60,7 @@ def search_wikidata(query, limit=10):
             raise
         # Wikidata throttles bursts; Wikipedia's search gives the same items
         # (QID and short description) from a separately limited host.
-        return _search_via_wikipedia(query, limit)
+        return search_wikipedia_entities(query, limit)
     results = []
     for row in payload.get('search', []):
         qid = str(row.get('id') or '')
@@ -78,7 +78,7 @@ def search_wikidata(query, limit=10):
 WIKIPEDIA_API = 'https://en.wikipedia.org/w/api.php'
 
 
-def _search_via_wikipedia(query, limit=10):
+def search_wikipedia_entities(query, limit=10):
     """Wikidata-shaped search results from English Wikipedia (title, QID, short description)."""
     params = urllib.parse.urlencode({
         'action': 'query', 'generator': 'search', 'gsrsearch': query, 'gsrlimit': limit,
@@ -501,7 +501,8 @@ def import_wikidata_entity(db, qid, watch_entity_id=None, entity_payload=None,
             'unresolved_entities': sum(target_payloads.get(value) is None for value in related_ids)}
 
 
-_ID_PROPERTIES = {'P345': 'imdb', 'P8600': 'tvmaze', 'P4947': 'tmdb_movie', 'P4983': 'tmdb_tv', 'P4835': 'thetvdb'}
+_ID_PROPERTIES = {'P345': 'imdb', 'P8600': 'tvmaze', 'P4947': 'tmdb_movie', 'P4983': 'tmdb_tv', 'P4835': 'thetvdb',
+                  'P8729': 'anilist', 'P8731': 'anilist', 'P4086': 'mal_anime', 'P4087': 'mal_manga'}
 
 
 def wikidata_external_ids(qids):

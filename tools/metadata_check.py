@@ -1,6 +1,6 @@
 """Live metadata search check: run the app's category search for well-known series and flag problems.
 
-Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more]
+Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more | --third]
 
 For each query it records the top results and flags: the expected title missing
 from the top 5, duplicate rows for one work (same normalized title and creator
@@ -45,7 +45,7 @@ QUERIES = [
     ('Games', 'The Witcher', 'witcher'), ('Games', 'Persona', 'persona'),
     ('Light novels', 'Re:Zero', 're zero'), ('Light novels', 'Overlord', 'overlord'), ('Light novels', 'Spice and Wolf', 'spice and wolf'),
 ]
-COMICS_PAUSE = 30
+COMICS_PAUSE = 60
 # A second, wider set: older and newer works, non-English originals, punctuation,
 # numbers, subtitles, one-word and very common titles.
 MORE_QUERIES = [
@@ -90,6 +90,56 @@ MORE_QUERIES = [
     ('Light novels', 'Sword Art Online', 'sword art online'), ('Light novels', 'Mushoku Tensei', 'mushoku tensei'),
     ('Light novels', 'The Apothecary Diaries', 'apothecary diaries'), ('Light novels', 'Ascendance of a Bookworm', 'bookworm'),
     ('Light novels', 'Konosuba', 'konosuba'), ('Light novels', 'That Time I Got Reincarnated as a Slime', 'slime'),
+]
+# Third set: numerals and Roman numerals, apostrophes and ampersands, non-English
+# originals, series better known by another name, children's and older classics,
+# reboots that reuse a title.
+THIRD_QUERIES = [
+    ('Books', 'A Series of Unfortunate Events', 'unfortunate events'), ('Books', 'The Expanse', 'expanse'),
+    ('Books', 'Artemis Fowl', 'artemis fowl'), ('Books', 'Goosebumps', 'goosebumps'),
+    ('Books', 'The Baby-Sitters Club', 'baby sitters club'), ('Books', 'Nancy Drew', 'nancy drew'),
+    ('Books', 'The Hardy Boys', 'hardy boys'), ('Books', 'Diary of a Wimpy Kid', 'wimpy kid'),
+    ('Books', 'Magic Tree House', 'magic tree house'), ('Books', 'Anne of Green Gables', 'green gables'),
+    ('Books', 'Little House on the Prairie', 'little house'), ('Books', 'Redwall', 'redwall'),
+    ('Books', 'Dragonriders of Pern', 'pern'), ('Books', 'The Culture', 'culture'), ('Books', 'Dune Chronicles', 'dune'),
+    ('Books', 'Ender\'s Game', 'ender'), ('Books', 'The Silo Series', 'silo'), ('Books', 'Mistborn Era Two', 'mistborn'),
+    ('Books', 'The Millennium Trilogy', 'millennium'), ('Books', 'Harry Hole', 'harry hole'),
+    ('Books', 'Inspector Rebus', 'rebus'), ('Books', 'Alex Cross', 'alex cross'), ('Books', 'Bridgerton', 'bridgerton'),
+    ('Books', 'A Court of Thorns and Roses', 'thorns and roses'), ('Books', 'The Wandering Inn', 'wandering inn'),
+    ('Videos', 'Star Trek', 'star trek'), ('Videos', 'Battlestar Galactica', 'battlestar galactica'),
+    ('Videos', 'Doctor Who Confidential', 'confidential'), ('Videos', 'Law & Order', 'law and order'),
+    ('Videos', 'Grey\'s Anatomy', 'grey s anatomy'), ('Videos', 'It\'s Always Sunny in Philadelphia', 'always sunny'),
+    ('Videos', 'Avatar: The Last Airbender', 'last airbender'), ('Videos', 'Rick and Morty', 'rick and morty'),
+    ('Videos', 'BoJack Horseman', 'bojack'), ('Videos', 'The X-Files', 'x files'), ('Videos', '24', '24'),
+    ('Videos', 'Lost', 'lost'), ('Videos', 'House of the Dragon', 'house of the dragon'), ('Videos', 'Dark', 'dark'),
+    ('Videos', 'Money Heist', 'money heist'), ('Videos', 'Squid Game', 'squid game'),
+    ('Videos', 'The Hunger Games', 'hunger games'), ('Videos', 'Fast & Furious', 'fast'),
+    ('Videos', 'Ocean\'s Eleven', 'ocean'), ('Videos', 'Planet of the Apes', 'planet of the apes'),
+    ('Videos', 'James Bond', 'bond'), ('Videos', 'Despicable Me', 'despicable me'),
+    ('Videos', 'How to Train Your Dragon', 'train your dragon'), ('Videos', 'Rambo', 'rambo'),
+    ('Videos', 'Godzilla', 'godzilla'),
+    ('Comics', 'Hellblazer', 'hellblazer'), ('Comics', 'Swamp Thing', 'swamp thing'), ('Comics', 'Ghost World', 'ghost world'),
+    ('Comics', 'Love and Rockets', 'love and rockets'), ('Comics', '2000 AD', '2000 ad'), ('Comics', 'Astro City', 'astro city'),
+    ('Comics', 'Black Hammer', 'black hammer'), ('Comics', 'Something is Killing the Children', 'killing the children'),
+    ('Comics', 'Tintin', 'tintin'), ('Comics', 'Asterix', 'asterix'),
+    ('Manga', 'Fullmetal Alchemist', 'fullmetal alchemist'), ('Manga', 'Bleach', 'bleach'),
+    ('Manga', 'JoJo\'s Bizarre Adventure', 'jojo'), ('Manga', 'Slam Dunk', 'slam dunk'), ('Manga', 'Nana', 'nana'),
+    ('Manga', 'Sailor Moon', 'sailor moon'), ('Manga', 'Kingdom', 'kingdom'), ('Manga', 'Tokyo Ghoul', 'tokyo ghoul'),
+    ('Manga', 'Ranma 1/2', 'ranma'), ('Manga', 'Kaguya-sama: Love Is War', 'kaguya'), ('Manga', '20th Century Boys', '20th century boys'),
+    ('Manga', 'Witch Hat Atelier', 'witch hat atelier'),
+    ('Anime', 'Code Geass', 'code geass'), ('Anime', 'Samurai Champloo', 'samurai champloo'),
+    ('Anime', 'Made in Abyss', 'made in abyss'), ('Anime', 'Violet Evergarden', 'violet evergarden'),
+    ('Anime', 'One Punch Man', 'one punch man'), ('Anime', 'Sailor Moon', 'sailor moon'),
+    ('Anime', 'Mobile Suit Gundam', 'gundam'), ('Anime', 'Your Lie in April', 'your lie in april'),
+    ('Anime', 'Cyberpunk: Edgerunners', 'edgerunners'), ('Anime', 'Spirited Away', 'spirited away'),
+    ('Games', 'Final Fantasy VII', 'final fantasy vii'), ('Games', 'Grand Theft Auto', 'grand theft auto'),
+    ('Games', 'The Sims', 'sims'), ('Games', 'Civilization', 'civilization'), ('Games', 'Street Fighter', 'street fighter'),
+    ('Games', 'Mortal Kombat', 'mortal kombat'), ('Games', 'Assassin\'s Creed', 'assassin s creed'),
+    ('Games', 'Call of Duty', 'call of duty'), ('Games', 'Metal Gear', 'metal gear'), ('Games', 'Tomb Raider', 'tomb raider'),
+    ('Games', 'Diablo', 'diablo'), ('Games', 'Baldur\'s Gate', 'baldur s gate'),
+    ('Light novels', 'Spice and Wolf', 'spice and wolf'), ('Light novels', 'Haruhi Suzumiya', 'haruhi'),
+    ('Light novels', 'Overlord', 'overlord'), ('Light novels', 'Classroom of the Elite', 'classroom of the elite'),
+    ('Light novels', 'The Rising of the Shield Hero', 'shield hero'), ('Light novels', 'No Game No Life', 'no game no life'),
 ]
 EDITION = re.compile(r'\b(paperback|hardcover|hardback|kindle edition|mass market|box(ed)? set|boxset|collector\'?s|'
                      r'omnibus|deluxe edition|anniversary edition|special edition|illustrated edition|audiobook|'
@@ -137,7 +187,8 @@ def main():
     with tempfile.TemporaryDirectory() as root:
         options = {'rights_evidence_path': str(ensure_rights_evidence(Path(root) / 'rights-evidence.json'))}
         report = []
-        for category, query, expect in (MORE_QUERIES if '--more' in sys.argv else QUERIES):
+        chosen = THIRD_QUERIES if '--third' in sys.argv else MORE_QUERIES if '--more' in sys.argv else QUERIES
+        for category, query, expect in chosen:
             if only and category != only:
                 continue
             if category == 'Comics' and report and report[-1]['category'] == 'Comics':

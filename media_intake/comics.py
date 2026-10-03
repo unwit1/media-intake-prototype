@@ -71,7 +71,7 @@ def search_anilist(query, limit=20, media_type='MANGA'):
     gql = '''query ($search: String!, $limit: Int!) {
       Page(page: 1, perPage: $limit) {
         media(search: $search, type: MEDIA_TYPE, isAdult: false) {
-          id siteUrl format status chapters volumes countryOfOrigin genres
+          id idMal siteUrl format status chapters volumes countryOfOrigin genres synonyms popularity
           title { english romaji native }
           description(asHtml: false)
           startDate { year month day }
@@ -126,6 +126,13 @@ def search_anilist(query, limit=20, media_type='MANGA'):
         if mangadex_id:
             external_ids.append({'provider': 'mangadex', 'external_id': str(mangadex_id),
                                  'source_url': f'https://mangadex.org/title/{mangadex_id}'})
+        if media.get('idMal'):
+            external_ids.append({'provider': 'mal_' + media_type.lower(), 'external_id': str(media['idMal'])})
+        # Every name the work goes by: the English title, romaji, native and
+        # synonyms, so "JoJo's Bizarre Adventure" matches "JoJo no Kimyou na Bouken".
+        alternative_titles = [name for name in dict.fromkeys(
+            [titles.get('english'), titles.get('romaji'), titles.get('native'), *(media.get('synonyms') or [])])
+            if name and name != title]
         anime_format = str(media.get('format') or '').upper() if media_type == 'ANIME' else ''
         anime_series = anime_format in {'TV', 'TV_SHORT', 'ONA'}
         anime_subtype = anilist_video_subtype(anime_format) if media_type == 'ANIME' else None
@@ -144,7 +151,7 @@ def search_anilist(query, limit=20, media_type='MANGA'):
                      'webtoon' if str(media.get('format') or '').upper() == 'WEBTOON' else 'manga'),
             'entity_type': 'series' if anime_series else 'work',
             'video_subtype': anime_subtype,
-            'title': title,
+            'title': title, 'alternative_titles': alternative_titles, 'popularity': media.get('popularity') or 0,
             'author': ', '.join(creators) or 'Unknown',
             'release_date': _anilist_release_date(media.get('startDate')),
             'source_url': media.get('siteUrl') or

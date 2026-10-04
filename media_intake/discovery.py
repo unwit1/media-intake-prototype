@@ -293,6 +293,9 @@ def _catalog_rows(items, category, provider=None):
         if not isinstance(raw, dict):
             continue
         item = dict(raw)
+        if isinstance(item.get('title'), str):
+            # Scraped titles can carry line breaks and padding ("Magic Bites\r\n   Kate Daniels").
+            item['title'] = ' '.join(item['title'].split())
         item['provider'] = _provider_label(item, provider)
         item['source'] = str(item.get('source') or item['provider'])
         item['url'] = item.get('url') or item.get('source_url') or ''
@@ -652,6 +655,33 @@ def _sort_by_title_relevance(results, query):
         # match they follow the official catalogs' entries.
         return tier, fan_archive, -popularity
     return sorted(results or [], key=best)
+
+
+_NON_LATIN = re.compile(r'[^\W\d_a-zA-Z\u00c0-\u024f]')
+
+
+def _book_names(row):
+    """A book's title, its series, and a series named in brackets ("Paddington Abroad (Paddington)")."""
+    names = [row.get('title'), row.get('series')]
+    for inner in re.findall(r'\(([^()]+)\)', str(row.get('title') or '')):
+        names.append(re.sub(r'(?:,\s*|\s+)(?:book|#|no\.?|vol\.?|volume)\s*\d+.*$', '', inner, flags=re.I))
+    return [name for name in names if name]
+
+
+def _sort_books_by_relevance(results, query):
+    """Order book rows by how well their title or series matches; keep series and authors in place.
+
+    "Paddington" put Agatha Christie's "4:50 from Paddington" before the
+    Paddington books, whose series names it exactly. At an equal match, a title
+    in the reader's script comes before an original-script edition (Cairo Trilogy).
+    """
+    def key(row):
+        if row.get('kind') != 'book':
+            return (-1, False)  # series and author rows keep their place ahead of books
+        tier = min(_title_relevance(query, name) for name in _book_names(row))
+        original_script = bool(_NON_LATIN.search(str(row.get('title') or ''))) and not _NON_LATIN.search(query)
+        return (tier, original_script)
+    return sorted(results or [], key=key)
 
 
 def _promote_matching_series_results(results, query):
@@ -1440,6 +1470,7 @@ def search_media_category(query, category, source_options=None, credentials=None
         def stray_author(row):
             return row.get('kind') == 'author' and _series_match_score(query, row.get('title')) < AUTHOR_NAME_MATCH
         unique_titles.sort(key=stray_author)
+        response['results'] = _sort_books_by_relevance(response['results'], query)
         response['results'].sort(key=stray_author)
         series_rows, series_bundle = _expand_book_series_results(unique_titles, query)
         if series_bundle:

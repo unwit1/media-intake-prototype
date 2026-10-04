@@ -60,7 +60,13 @@ def search_wikidata(query, limit=10):
             raise
         # Wikidata throttles bursts; Wikipedia's search gives the same items
         # (QID and short description) from a separately limited host.
-        return search_wikipedia_entities(query, limit)
+        try:
+            return search_wikipedia_entities(query, limit)
+        except urllib.error.HTTPError as fallback_error:
+            if fallback_error.code in (429, 503):
+                raise ValueError('Wikidata and Wikipedia are both rate-limiting searches; '
+                                 'try again in a minute') from None
+            raise
     results = []
     for row in payload.get('search', []):
         qid = str(row.get('id') or '')

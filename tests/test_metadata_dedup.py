@@ -462,5 +462,37 @@ class FourthSetTests(unittest.TestCase):
             self.assertEqual(found['results'][0]['title'], 'Hieronymus Bosch')
 
 
+class FifthSetTests(unittest.TestCase):
+    """General problems found by the fifth (200-series) check."""
+
+    def test_books_ordered_by_title_or_series_match_and_reader_script(self):
+        from media_intake.discovery import _sort_books_by_relevance
+        rows = [{'kind': 'book', 'title': '4:50 from Paddington'},
+                {'kind': 'series', 'title': 'Paddington'},
+                {'kind': 'book', 'title': 'A Bear Called Paddington', 'series': 'Paddington'},
+                {'kind': 'book', 'title': 'Paddington Abroad (Paddington)'}]
+        self.assertEqual([r['title'] for r in _sort_books_by_relevance(rows, 'Paddington')],
+                         ['Paddington', 'A Bear Called Paddington', 'Paddington Abroad (Paddington)',
+                          '4:50 from Paddington'])
+        rows = [{'kind': 'book', 'title': '\u0627\u0644\u0633\u0643\u0631\u064a\u0629'},
+                {'kind': 'book', 'title': 'Palace of Desire (The Cairo Trilogy, #2)'}]
+        self.assertEqual(_sort_books_by_relevance(rows, 'The Cairo Trilogy')[0]['title'],
+                         'Palace of Desire (The Cairo Trilogy, #2)')
+
+    def test_scraped_titles_lose_line_breaks_and_padding(self):
+        from media_intake.discovery import _catalog_rows
+        rows = _catalog_rows([{'title': 'Magic Bites\r\n            \r\n   Kate Daniels', 'source_url': 'x'}],
+                             'Books', 'Goodreads')
+        self.assertEqual(rows[0]['title'], 'Magic Bites Kate Daniels')
+
+    def test_both_wikimedia_hosts_busy_gives_a_clear_message(self):
+        from media_intake import wikidata
+        def busy(url, max_bytes=None):
+            raise urllib.error.HTTPError(url, 429, 'Too Many Requests', {}, None)
+        with patch.object(wikidata, 'http_get', side_effect=busy):
+            with self.assertRaisesRegex(ValueError, 'both rate-limiting'):
+                wikidata.search_wikidata('Blackadder')
+
+
 if __name__ == '__main__':
     unittest.main()

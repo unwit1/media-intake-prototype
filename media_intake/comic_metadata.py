@@ -22,7 +22,8 @@ import urllib.request
 from .webcomics.http import NoRedirect, retry_seconds
 
 COLLECTION = re.compile(r'\b(?:TPB|trade\s*paperback|hardcover|paperback|omnibus|collected\s+(?:editions?|series)|'
-    r'complete\s+collection|deluxe\s+edition|absolute\s+edition|HC)\b', re.I)
+    r'complete\s+collection|(?:deluxe|absolute|library|complete|treasury|gallery|artist|compendium)\s+edition|'
+    r'compendium|HC)\b', re.I)
 ISSUE = re.compile(r'(?:#|\bissue\s*(?:no\.?\s*)?)(\d+(?:\.\d+)?[a-z]?)\b', re.I)
 ISSUE_RANGE = re.compile(r'#\d+(?:\.\d+)?\s*(?:[-–—&]|to)\s*#?\d+|#\d+.*?\b(?:complete\s+series|full\s+run)\b', re.I)
 YEAR = re.compile(r'\((18\d{2}|19\d{2}|20\d{2})\)')

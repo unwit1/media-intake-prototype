@@ -1,6 +1,6 @@
 # Metadata search quality: checks and fixes
 
-Four live checks, 350 series in total, were run against the app's own category
+Five live checks, 550 series in total, were run against the app's own category
 search (`Search all connected sources`) across Books, Videos (TV and film),
 Comics, Manga, Anime, Games and Light novels. Each check looked for:
 
@@ -18,6 +18,7 @@ the one that showed it. This page catalogues those fixes.
 | 2 | 100 | `--more` | Wikidata throttling, organisations as authors, comic series buried under issues |
 | 3 | 100 | `--third` | descriptive series names, box sets, romaji vs English titles, doujinshi |
 | 4 | 100 | `--fourth` | nicknames, fan fiction, foreign organisations, omnibuses, giveaways |
+| 5 | 200 | `--fifth` | book relevance, Japanese titles, unreliable top hits, game compilations, editions |
 
 Between checks 1 and 2, its leftovers (Saga, Arcane, rate limits) were fixed
 and re-checked: deep comic runs, video ID merging and catalog pacing.
@@ -56,6 +57,9 @@ Results are written to `build/*.json`. `--only CATEGORY` limits a run and
 | Unrelated people ahead of the books | "Hieronymus Bosch" first for the Bosch novels | An author leads only when the search is that author's name | `discovery.AUTHOR_NAME_MATCH` |
 | Box sets and multi-book volumes listed as books | "Graphix #1-4 Box Set", "Anne McCaffrey Boxed Set", "The Magic Tree House Collection #1", "The second Inspector Morse omnibus", "The City Watch Trilogy", "Legends II [11 works]" | Dropped from book results | `discovery._BOX_SET` |
 | Edition listings as separate books | "Shift Deluxe Collector's Edition", "The Girl with the Dragon Tattoo (Millennium Trilogy) by Stieg Larsson (2008) Hardcover" | Edition labels are ignored when deciding whether two rows are the same work; the plainest title is shown | `discovery._EDITION_LABEL` |
+| Book results not ordered by relevance | Agatha Christie's "4:50 from Paddington" before the Paddington books | Books are ordered by how well their title or series (including one named in brackets) matches; series and author rows stay on top | `discovery._sort_books_by_relevance` |
+| Original-script titles ahead of English ones | Arabic titles first for The Cairo Trilogy | At an equal match, a title in the reader's script comes first | `discovery._NON_LATIN` |
+| Scraped titles with line breaks | "Magic Bites\r\n   Kate Daniels" | Whitespace in titles is collapsed | `discovery._catalog_rows` |
 | Google Books always "429 Too Many Requests" | Every book search | Optional free API key in Settings → Metadata APIs (saved encrypted) or `GOOGLE_BOOKS_API_KEY` | `sources.search_google_books_metadata` |
 
 ## TV and film
@@ -79,6 +83,8 @@ Results are written to `build/*.json`. `--only CATEGORY` limits a run and
 | Translated reprints | "Biblioteca Sandman", "Den absoluta Sandman" | Foreign-language runs show only when no English run matched | `comic_metadata.search_gcd` |
 | Series buried under dozens of issues | Bone, Preacher, Y: The Last Man | A plain series-name search leads with that series, longest run first; "Bone #3" still leads with the issue | `comic_metadata.sort_comics` |
 | Same-named runs indistinguishable | Bone 1991, 1995 and 1997 across publishers | Results show "Comic series · 1991 · 45 issues" | `gui._result_creator_label` |
+| Collected formats classified as series | "The Umbrella Academy Library Edition", "Sex Criminals: The Complete Edition", compendiums | Library, Complete, Treasury, Gallery and Artist editions and compendiums are collections | `comic_metadata.COLLECTION` |
+| An edition classified as a series | Absolute Watchmen | Short "Absolute" runs (3 issues or fewer) are DC's oversized editions; the newer ongoing Absolute lines stay series | `comic_metadata.normalize` |
 | Promotional samplers | "Free Scott Pilgrim Free Comic Book Day Edition" | Free Comic Book Day editions are left out unless searched for | `discovery.search_media_category` |
 | Rate limit message unhelpful | "try again later" | Says how many minutes GCD's limit lasts | `comic_metadata._memo` |
 | Quota used up quickly | ~6 comic searches in a row | Issues load for the best run only | `comic_metadata.search_gcd` |
@@ -89,11 +95,14 @@ Results are written to `build/*.json`. `--only CATEGORY` limits a run and
 |---|---|---|---|
 | English and romaji titles as separate works | "Kaguya-sama: Love is War" and "Kaguya-sama wa Kokurasetai" | AniList returns every name (English, romaji, native, synonyms); manga and light-novel rows merge when one's title is another's alternate name, joining groups a row links | `comics.search_anilist`, `discovery._merge_same_title` |
 | Same work across catalogs not merged | *Mobile Suit Gundam* on AniList and Wikidata | AniList, MyAnimeList and MangaDex IDs link rows, including Wikidata's AniList/MAL properties | `discovery._CROSS_CATALOG_IDS` |
-| Edition variants as separate works | "Doujin Edition", "Special Edition", "(Official Colored)", "(Fan Colored)" | Folded into the work | `discovery._WORK_EDITION_SUFFIX` |
+| Edition variants as separate works | "Doujin Edition", "Special Edition", "(Official Colored)", "(Fan Colored)", "Digital color edition" | Folded into the work | `discovery._WORK_EDITION_SUFFIX` |
 | Fan-made doujinshi among official works | "Kaguya-sama: Love is Destruction (Doujinshi)" | Left out unless the search asks for doujinshi | `discovery.search_media_category` |
 | Spin-offs ahead of the main series | Code Geass specials before *Lelouch of the Rebellion* | Equal title matches go most-followed first (AniList popularity) | `discovery._sort_by_title_relevance` |
 | Main entry missed under its romaji title | JoJo, Gin Tama | Relevance uses every name a work goes by | `discovery._sort_by_title_relevance` |
 | Nicknames found nothing official | "DanMachi", "Oregairu" led by fan fiction | The top hit of AniList, RanobeDB or MangaUpdates (which resolve nicknames) counts as a strong match; MangaDex and LNORI are excluded because their top hit is often unrelated | `discovery._ALIAS_MATCHING_CATALOGS` |
+| Japanese-only titles from RanobeDB | "灼眼のシャナ" | RanobeDB's romaji title is shown when its main title is Japanese; every name is kept as an alternate | `media_catalogs.search_ranobedb` |
+| A catalog's top hit trusted when it was a loose match | "Hyouka" matched works whose Japanese title reads *hyouka*; "Kino's Journey" got Frieren | RanobeDB's top hit counts only when it is an exact match or the single alias match (its own similarity score) | `media_catalogs.search_ranobedb` (`alias_match`) |
+| MangaUpdates doujinshi | "Dorohedoro dj - Crazy Beast" | The "dj" marker counts as doujinshi | `discovery.search_media_category` |
 | Fan fiction ahead of the official work | "Danmachi: RNG System" | Fan-fiction archive rows follow official entries at an equal match | `discovery._FAN_FICTION_ARCHIVES` |
 
 ## Games
@@ -102,7 +111,8 @@ Results are written to `build/*.json`. `--only CATEGORY` limits a run and
 |---|---|---|---|
 | Store editions as separate games | "Mass Effect™ Legendary Edition", "The Witcher: Enhanced Edition Director's Cut", "Mass Effect 2 (2010) Edition" | Trademark marks, years and edition suffixes are removed so editions merge with the catalog's game | `media_providers.steam_base_title` |
 | Add-ons as games | Soundtracks, recruit packs, "Digital Deluxe Edition Upgrade", "Collaboration Set" | Dropped from game results | `media_providers._STEAM_EXTRA` |
-| Compilations as games | "Mass Effect Trilogy" | Wikidata compilations are skipped | `discovery._query_wikidata` |
+| Compilations as games | "Mass Effect Trilogy", "Castlevania Dominus Collection", "Mega Man Legacy Collection 2" | Wikidata compilations are skipped; Steam collections, anthologies, trilogies and bundles too | `discovery._query_wikidata`, `media_providers._STEAM_COMPILATION` |
+| Named editions as games | "Minecraft: Legacy Console Edition", "Borderlands: Game of the Year Edition" | An edition of up to two words after a separator folds into the game ("Far Cry 3: Blood Dragon" stays its own game); a merged row shows the plain title | `media_providers._STEAM_NAMED_EDITION` |
 
 ## All categories
 
@@ -119,6 +129,8 @@ Results are written to `build/*.json`. `--only CATEGORY` limits a run and
 | Bursts to Wikidata, Wikipedia and Google Books | One request at a time per host with a short gap; identical requests answered from memory for 5 minutes | `core.PACED_HOSTS` |
 | Wikidata label search throttled | Falls back to Wikipedia's search | `wikidata.search_wikidata` |
 | GCD quota | Exact-run page search is bounded, issues load for one run, and the wait is reported | `comic_metadata` |
+| Book searches sent many Wikimedia requests | Books are looked up for the best 3 candidate series, not 5 | `watched._search_wikidata_series` |
+| Bare "HTTP Error 429" when both Wikimedia hosts were busy | Says Wikidata and Wikipedia are both rate-limiting and to try again in a minute | `wikidata.search_wikidata` |
 
 Two fixes outside search came from the same work:
 - A download checkpoint save could fail on Windows with "Access is denied" while the progress display read it. It now retries briefly (`transfer._save_state`).

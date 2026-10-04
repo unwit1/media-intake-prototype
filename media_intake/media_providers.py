@@ -514,6 +514,12 @@ _STEAM_EXTRA = re.compile(
     r'(?:recruit|costume|skin|weapon|booster|starter|supporter|bonus|content|item|outfit|upgrade|collaboration)'
     r'\s+(?:pack|set)|edition\s+upgrade|upgrade\s+(?:pack|bundle)?\s*$|'
     r'pack\s*\d*$)\b', re.I)
+# Re-releases bundling games listed on their own ("Castlevania Dominus Collection",
+# "Mega Man X Legacy Collection").
+_STEAM_COMPILATION = re.compile(r'\b(?:collection|anthology|trilogy|bundle|compilation)\s*(?:\d+)?\s*$', re.I)
+# Any named edition after a separator: "Minecraft: Legacy Console Edition",
+# "Far Cry 3: Blood Dragon Classic Edition".
+_STEAM_NAMED_EDITION = re.compile(r'\s*[:\u2013-]\s*(?:[\w\'\u2019]+\s+){0,2}edition\s*$', re.I)
 _STEAM_EDITION = re.compile(
     r'\s*(?:[-:\u2013]\s*)?(?:\(\d{4}\)\s*)?(?:(?:(?:N7\s+)?digital\s+)?(?:deluxe|enhanced|complete|'
     r'definitive|ultimate|gold|premium|standard|special|collector\'?s|anniversary|windows|'
@@ -530,6 +536,9 @@ def steam_base_title(title):
     """
     text = re.sub(r'[\u2122\u00ae\u00a9]', '', str(title or '')).strip()
     edition = None
+    named = _STEAM_NAMED_EDITION.search(text)
+    if named and named.start() > 0:
+        edition, text = named.group(0).strip(' -:\u2013'), text[:named.start()]
     match = _STEAM_EDITION.search(text)
     if match and match.start() > 0:
         edition = match.group(0).strip(' -:\u2013') or None
@@ -550,8 +559,8 @@ def search_steam_games(query, limit=15):
     for row in payload.get('items', [])[:max(1, min(int(limit), 30))]:
         if not row.get('id') or not row.get('name'):
             continue
-        if _STEAM_EXTRA.search(row['name']):
-            continue  # soundtracks, packs and other add-ons are not separate games
+        if _STEAM_EXTRA.search(row['name']) or _STEAM_COMPILATION.search(row['name']):
+            continue  # soundtracks, packs, add-ons and compilations are not separate games
         app_id = str(row['id'])
         source_url = f'https://store.steampowered.com/app/{app_id}/'
         title, edition = steam_base_title(row['name'])

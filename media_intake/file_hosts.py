@@ -5,7 +5,9 @@ Resolve only links the host exposes through its public API/HTML. Shortlinks in
 front of a host are followed only where they expose the destination (shortlinks.py).
 Source approval continues to belong to the caller and is checked again by core.download.
 """
+import base64
 from dataclasses import dataclass
+import html
 from html.parser import HTMLParser
 import json
 from pathlib import PurePosixPath
@@ -144,7 +146,73 @@ class Dropbox:
             query=urllib.parse.urlencode(query), fragment='')), ext, self.id, name, share_url=url)]
 
 
-FILE_HOSTS = {domain: adapter for adapter in (Pixeldrain(), MediaFire(), Dropbox())
+class GoogleDrive:
+    """Publicly shared Google Drive files ("Anyone with the link").
+
+    The name comes from the public file page; the download is Drive's own
+    download host, with the large-file "can't scan for viruses" notice
+    acknowledged as the Download anyway button does. Private or sign-in-only
+    files and folders are left to the user.
+    """
+    id = 'google-drive'
+    domains = frozenset({'drive.google.com', 'docs.google.com'})
+
+    def resolve(self, url, allowed):
+        parts = safe_url(url)
+        if '/folders/' in parts.path or parts.path.startswith('/drive/'):
+            raise ManualDownloadRequired('Google Drive folder requires choosing a file; open the source link')
+        match = (re.search(r'/file/d/([A-Za-z0-9_-]{10,})', parts.path) or
+                 re.fullmatch(r'([A-Za-z0-9_-]{10,})', dict(urllib.parse.parse_qsl(parts.query)).get('id', '')))
+        if not match:
+            raise ManualDownloadRequired('Not a single shared Google Drive file')
+        file_id = match.group(1)
+        raw, final = public_get(f'https://drive.google.com/file/d/{file_id}/view')
+        final_host = safe_url(final).hostname
+        if final_host == 'accounts.google.com':
+            raise ManualDownloadRequired('This Google Drive file is not shared publicly; ask for a public link')
+        if final_host not in self.domains:
+            raise ValueError('Google Drive page redirected outside Google Drive')
+        page = raw.decode('utf-8', 'replace')
+        title = re.search(r'<title>(.*?)\s*-\s*Google Drive</title>', page, re.S)
+        if not title:
+            raise ManualDownloadRequired('Google Drive did not show a public file; open the source link')
+        name = html.unescape(title.group(1)).strip()
+        ext = extension(name, allowed)
+        if not ext:
+            return []
+        query = urllib.parse.urlencode({'id': file_id, 'export': 'download', 'confirm': 't'})
+        return [HostedFile(f'https://drive.usercontent.google.com/download?{query}', ext, self.id, name,
+                           share_url=url)]
+
+
+class OneDrive:
+    """Publicly shared OneDrive files, through Microsoft's documented shares API."""
+    id = 'onedrive'
+    domains = frozenset({'1drv.ms', 'onedrive.live.com'})
+
+    def resolve(self, url, allowed):
+        safe_url(url)
+        token = 'u!' + base64.urlsafe_b64encode(url.encode('utf-8')).decode('ascii').rstrip('=')
+        api = f'https://api.onedrive.com/v1.0/shares/{token}/root'
+        try:
+            raw, final = public_get(api + '?select=name,size,file,folder')
+        except Exception as exc:
+            raise ManualDownloadRequired(f'OneDrive did not share this file publicly ({exc})') from None
+        if safe_url(final).hostname != 'api.onedrive.com':
+            raise ValueError('OneDrive API redirected outside its host')
+        data = json.loads(raw)
+        if not isinstance(data, dict) or 'folder' in data:  # present (even empty) on folders
+            raise ManualDownloadRequired('OneDrive folder requires choosing a file; open the source link')
+        name = str(data.get('name') or '')
+        ext = extension(name, allowed)
+        if not ext:
+            return []
+        size = data.get('size')
+        return [HostedFile(api + '/content', ext, self.id, name, size if isinstance(size, int) else None,
+                           share_url=url)]
+
+
+FILE_HOSTS = {domain: adapter for adapter in (Pixeldrain(), MediaFire(), Dropbox(), GoogleDrive(), OneDrive())
               for domain in adapter.domains}
 MANUAL_HOSTS = {
     'mega.nz': 'MEGA requires a legitimate client/session and download-limit handling',
@@ -155,7 +223,6 @@ MANUAL_HOSTS = {
     'terabox.com': 'Terabox requires a legitimate authenticated/session connector',
     '1024terabox.com': 'Terabox requires a legitimate authenticated/session connector',
     '1fichier.com': '1fichier requires host wait/session handling',
-    'drive.google.com': 'Google Drive requires a legitimate sharing/session connector',
 }
 
 

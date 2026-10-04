@@ -349,7 +349,8 @@ _ID_MERGED_CATEGORIES = {'Videos', 'Anime', 'Manga', 'Light novels'}
 # "Kaguya-sama (Official Colored)": the same work in another edition.
 _WORK_EDITION_SUFFIX = re.compile(
     r"[\s:\u2013-]*(?:\((?:official\s+|fan\s+)?(?:colou?red|full[\s-]colou?r)\)|"
-    r"(?:special|deluxe|doujin|collector'?s|anniversary|perfect|full[\s-]colou?r|remastered|kanzenban)\s+edition)\s*$",
+    r"(?:special|deluxe|doujin|collector'?s|anniversary|perfect|full[\s-]colou?r|(?:digital\s+)?colou?r|remastered|"
+    r"kanzenban)\s+edition)\s*$",
     re.I)
 
 
@@ -516,7 +517,7 @@ def _merge_same_title(results, category, download_priority):
                     metadata.append(item)
 
         downloads.sort(key=lambda item: _download_sort_key(item, category, download_priority))
-        if category == 'Books' and len(metadata) > 1:
+        if category in {'Books', 'Games'} and len(metadata) > 1:
             # Show the plain title ("Shift") rather than an edition's listing.
             metadata.sort(key=lambda item: len(str(item.get('title') or '')))
         chosen = dict(downloads[0] if downloads else metadata[0])
@@ -641,7 +642,8 @@ def _sort_by_title_relevance(results, query):
             names += [variant.get('title')] + list(variant.get('alternative_titles') or [])
         tier = min(_title_relevance(query, name) for name in names if name) if any(names) else 3
         rows = [row] + list(row.get('metadata_variants') or [])
-        if any(_provider_label(r).casefold() in _ALIAS_MATCHING_CATALOGS and r.get('catalog_rank') == 0
+        if any(r.get('alias_match') or (r.get('alias_match') is None and r.get('catalog_rank') == 0 and
+                                        _provider_label(r).casefold() in _ALIAS_MATCHING_CATALOGS)
                for r in rows):
             # Official catalogs match nicknames ("DanMachi", "Oregairu") to works
             # listed under their full English title; their top hit is a real match.
@@ -1449,7 +1451,8 @@ def search_media_category(query, category, source_options=None, credentials=None
                                                             str(row.get('title') or ''), re.I)]
     if category in {'Manga', 'Light novels'} and not re.search(r'doujin', query, re.I):
         # Fan-made doujinshi share the work's name but are not the work.
-        results = [row for row in results if not re.search(r'\bdoujin(?:shi)?\b', str(row.get('title') or ''), re.I)]
+        # MangaUpdates marks them "dj" ("Dorohedoro dj - Crazy Beast").
+        results = [row for row in results if not re.search(r'\bdoujin(?:shi)?\b|\bdj\b', str(row.get('title') or ''), re.I)]
     unique_titles = _merge_same_title(results, category, priority)
     if category in _RELEVANCE_SORTED:
         unique_titles = _sort_by_title_relevance(unique_titles, query)

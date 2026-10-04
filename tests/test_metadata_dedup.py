@@ -493,6 +493,43 @@ class FifthSetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'both rate-limiting'):
                 wikidata.search_wikidata('Blackadder')
 
+    def test_ranobedb_romaji_titles_and_cautious_nickname_trust(self):
+        from media_intake import media_catalogs
+        def fake(path, params):
+            return {'series': {
+                'Shakugan no Shana': [{'id': 1, 'title': '\u7076\u773c\u306e\u30b7\u30e3\u30ca',
+                                       'romaji': 'Shakugan no Shana', 'sim_score': 2}],
+                'DanMachi': [{'id': 2, 'title': 'Is It Wrong to Try to Pick Up Girls in a Dungeon?', 'sim_score': 1}],
+                'Hyouka': [{'id': 3, 'title': 'A', 'romaji': 'Game de Hyouka Sareru', 'sim_score': 1},
+                           {'id': 4, 'title': 'B', 'romaji': 'Kitai to Hyouka', 'sim_score': 1}],
+            }[params['q']]}
+        with patch.object(media_catalogs, '_ranobedb_get', side_effect=fake):
+            shana = media_catalogs.search_ranobedb('Shakugan no Shana')[0]
+            danmachi = media_catalogs.search_ranobedb('DanMachi')[0]
+            hyouka = media_catalogs.search_ranobedb('Hyouka')
+        self.assertEqual(shana['title'], 'Shakugan no Shana')
+        self.assertIn('\u7076\u773c\u306e\u30b7\u30e3\u30ca', shana['alternative_titles'])
+        self.assertTrue(danmachi['alias_match'])
+        self.assertFalse(any(row['alias_match'] for row in hyouka))
+
+    def test_game_compilations_dropped_and_named_editions_fold(self):
+        from media_intake.media_providers import _STEAM_COMPILATION, steam_base_title
+        self.assertTrue(_STEAM_COMPILATION.search('Castlevania Dominus Collection'))
+        self.assertTrue(_STEAM_COMPILATION.search('Mega Man Legacy Collection 2'))
+        self.assertFalse(_STEAM_COMPILATION.search('Hollow Knight'))
+        self.assertEqual(steam_base_title('Minecraft: Legacy Console Edition')[0], 'Minecraft')
+        self.assertNotEqual(steam_base_title('Far Cry 3: Blood Dragon Classic Edition')[0], 'Far Cry 3')
+
+    def test_absolute_editions_and_mangaupdates_doujinshi(self):
+        self.assertEqual(cm.normalize({'title': 'Absolute Watchmen', 'provider': 'GCD', 'source_url': 'a',
+                                       'issue_count': 1})['comic_entity'], 'collection')
+        self.assertEqual(cm.normalize({'title': 'Absolute Batman', 'provider': 'GCD', 'source_url': 'b',
+                                       'issue_count': 14})['comic_entity'], 'series')
+        self.assertEqual(cm.normalize({'title': 'The Umbrella Academy Library Edition', 'provider': 'GCD',
+                                       'source_url': 'c'})['comic_entity'], 'collection')
+        from media_intake.discovery import _WORK_EDITION_SUFFIX
+        self.assertEqual(_WORK_EDITION_SUFFIX.sub('', 'Doraemon Digital color edition'), 'Doraemon')
+
 
 if __name__ == '__main__':
     unittest.main()

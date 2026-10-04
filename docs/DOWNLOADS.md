@@ -65,8 +65,14 @@ downloads try equally good matches from a failing source last. History is capped
 ## Shortlinks and file hosts, automatically
 
 When a queued link is a shortlink or a file-host share page (Pixeldrain, MediaFire,
-Dropbox), the download step resolves it to the real file first. Nothing needs
-to be done by hand.
+Dropbox, Google Drive, OneDrive), the download step resolves it to the real file
+first. Nothing needs to be done by hand.
+
+- Google Drive and OneDrive work for files shared publicly ("Anyone with the
+  link"). Google Drive downloads come from Drive's own download host, with the
+  large-file "can't scan for viruses" notice accepted as *Download anyway* would.
+  OneDrive uses Microsoft's shares API. Private files and folders are left for
+  you to open.
 
 - Shorteners are recognised from the `@include`/`@match` rules of the vendored
   [Bypass All Shortlinks Debloated](https://codeberg.org/gongchandang49/bypass-all-shortlinks-debloated)

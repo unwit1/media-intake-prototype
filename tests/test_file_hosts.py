@@ -149,6 +149,35 @@ class FileHostTests(unittest.TestCase):
         files = resolve_hosted_file('https://www.dropbox.com/scl/fi/token/Sample.cbz?rlkey=publickey&dl=0', {'.cbz'})
         self.assertIn('rlkey=publickey&dl=1', files[0].url)
 
+    def test_google_drive_public_file_uses_drive_download_host(self):
+        share = 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view?usp=sharing'
+        page = b'<html><head><title>Sample Comic &amp; Friends.cbz - Google Drive</title></head></html>'
+        with patch('media_intake.file_hosts.public_get',
+                   return_value=(page, 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view')):
+            files = resolve_hosted_file(share, {'.cbz'})
+        self.assertEqual(files[0].url, 'https://drive.usercontent.google.com/download?id=1AbCdEfGhIjKlMnOp'
+                                       '&export=download&confirm=t')
+        self.assertEqual(files[0].filename, 'Sample Comic & Friends.cbz')
+        with patch('media_intake.file_hosts.public_get',
+                   return_value=(b'<title>Sign in</title>', 'https://accounts.google.com/ServiceLogin')):
+            with self.assertRaisesRegex(ManualDownloadRequired, 'not shared publicly'):
+                resolve_hosted_file(share, {'.cbz'})
+        with self.assertRaises(ManualDownloadRequired):
+            resolve_hosted_file('https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOp', {'.cbz'})
+
+    def test_onedrive_share_uses_the_shares_api(self):
+        share = 'https://1drv.ms/u/s!AbCdEf123'
+        body = json.dumps({'name': 'Sample Comic.cbz', 'size': 1234, 'file': {}}).encode()
+        with patch('media_intake.file_hosts.public_get', return_value=(body, 'https://api.onedrive.com/v1.0/x')) as fetch:
+            files = resolve_hosted_file(share, {'.cbz'})
+        self.assertTrue(fetch.call_args[0][0].startswith('https://api.onedrive.com/v1.0/shares/u!aHR0cHM6Ly8xZHJ2Lm1z'))
+        self.assertTrue(files[0].url.endswith('/root/content'))
+        self.assertEqual((files[0].filename, files[0].size), ('Sample Comic.cbz', 1234))
+        with patch('media_intake.file_hosts.public_get',
+                   return_value=(json.dumps({'name': 'Folder', 'folder': {}}).encode(), 'https://api.onedrive.com/v1.0/x')):
+            with self.assertRaises(ManualDownloadRequired):
+                resolve_hosted_file(share, {'.cbz'})
+
     def test_protected_hosts_and_deceptive_domains_are_not_automatic(self):
         for url in ('https://mega.nz/file/token#key', 'https://we.tl/transfer', 'https://gofile.io/d/token'):
             with self.subTest(url=url), self.assertRaises(ManualDownloadRequired):

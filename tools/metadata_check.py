@@ -1,6 +1,6 @@
 """Live metadata search check: run the app's category search for well-known series and flag problems.
 
-Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more | --third | --fourth] [--resume]
+Usage:  python tools/metadata_check.py [output.json] [--only CATEGORY] [--more | --third | --fourth | --fifth] [--resume]
 
 For each query it records the top results and flags: the expected title missing
 from the top 5, duplicate rows for one work (same normalized title and creator
@@ -188,6 +188,101 @@ FOURTH_QUERIES = [
     ('Light novels', 'Goblin Slayer', 'goblin slayer'), ('Light novels', 'The Eminence in Shadow', 'eminence in shadow'),
     ('Light novels', 'DanMachi', 'danmachi'), ('Light novels', 'Log Horizon', 'log horizon'),
 ]
+# Fifth set (200): more of everything, avoiding the earlier sets - classics and
+# recent hits, translated literature, YA, crime, romance, sci-fi, kids', reality and
+# documentary TV, animation, superhero runs, indie comics, shonen/shojo/seinen,
+# isekai, retro and indie games.
+FIFTH_QUERIES = [
+    # Books (50)
+    ('Books', 'The Lord of the Flies', 'lord of the flies'), ('Books', 'The Giver Quartet', 'giver'),
+    ('Books', 'The Princess Bride', 'princess bride'), ('Books', 'Rivers of London', 'rivers of london'),
+    ('Books', 'The Broken Earth', 'broken earth'), ('Books', 'The Poppy War', 'poppy war'),
+    ('Books', 'The Night Angel Trilogy', 'night angel'), ('Books', 'Lightbringer', 'lightbringer'),
+    ('Books', 'The Gentleman Bastard Sequence', 'gentleman bastard'), ('Books', 'The Riyria Revelations', 'riyria'),
+    ('Books', 'The Black Company', 'black company'), ('Books', 'The Demon Cycle', 'demon cycle'),
+    ('Books', 'Sword of Shannara', 'shannara'), ('Books', 'The Elric Saga', 'elric'),
+    ('Books', 'Conan the Barbarian', 'conan'), ('Books', 'Tarzan', 'tarzan'), ('Books', 'Barsoom', 'barsoom'),
+    ('Books', 'Lensman', 'lensman'), ('Books', 'Old Man\'s War', 'old man s war'), ('Books', 'Bobiverse', 'bobiverse'),
+    ('Books', 'The Long Earth', 'long earth'), ('Books', 'Revelation Space', 'revelation space'),
+    ('Books', 'Ancillary Justice', 'ancillary'), ('Books', 'The Wayfarers', 'wayfarers'),
+    ('Books', 'Imperial Radch', 'radch'), ('Books', 'The Southern Reach', 'southern reach'),
+    ('Books', 'Kate Daniels', 'kate daniels'), ('Books', 'Mercy Thompson', 'mercy thompson'),
+    ('Books', 'The Southern Vampire Mysteries', 'southern vampire'), ('Books', 'Anita Blake', 'anita blake'),
+    ('Books', 'Stephanie Plum', 'stephanie plum'), ('Books', 'Kinsey Millhone', 'millhone'),
+    ('Books', 'Jack Ryan', 'jack ryan'), ('Books', 'Lincoln Rhyme', 'lincoln rhyme'),
+    ('Books', 'Kay Scarpetta', 'scarpetta'), ('Books', 'Maigret', 'maigret'), ('Books', 'Wallander', 'wallander'),
+    ('Books', 'Commissario Montalbano', 'montalbano'), ('Books', 'The Cemetery of Forgotten Books', 'forgotten books'),
+    ('Books', 'Neapolitan Novels', 'neapolitan'), ('Books', 'In Search of Lost Time', 'lost time'),
+    ('Books', 'The Cairo Trilogy', 'cairo trilogy'), ('Books', 'Junie B. Jones', 'junie b'),
+    ('Books', 'Ramona', 'ramona'), ('Books', 'The Boxcar Children', 'boxcar children'),
+    ('Books', 'Amelia Bedelia', 'amelia bedelia'), ('Books', 'Paddington', 'paddington'),
+    ('Books', 'Winnie-the-Pooh', 'winnie the pooh'), ('Books', 'Mr. Men', 'mr men'), ('Books', 'Thomas the Tank Engine', 'thomas'),
+    # TV and film (50)
+    ('Videos', 'The West Wing', 'west wing'), ('Videos', 'Mad Men', 'mad men'), ('Videos', 'The Shield', 'shield'),
+    ('Videos', 'Deadwood', 'deadwood'), ('Videos', 'Six Feet Under', 'six feet under'), ('Videos', 'Arrested Development', 'arrested development'),
+    ('Videos', 'Community', 'community'), ('Videos', 'Parks and Recreation', 'parks and recreation'),
+    ('Videos', 'Brooklyn Nine-Nine', 'brooklyn nine nine'), ('Videos', 'Schitt\'s Creek', 'schitt s creek'),
+    ('Videos', 'Fleabag', 'fleabag'), ('Videos', 'The Good Place', 'good place'), ('Videos', 'Veep', 'veep'),
+    ('Videos', 'Frasier', 'frasier'), ('Videos', 'Cheers', 'cheers'), ('Videos', 'M*A*S*H', 'm a s h'),
+    ('Videos', 'Buffy the Vampire Slayer', 'buffy'), ('Videos', 'Firefly', 'firefly'), ('Videos', 'Babylon 5', 'babylon 5'),
+    ('Videos', 'Stargate SG-1', 'stargate'), ('Videos', 'Red Dwarf', 'red dwarf'), ('Videos', 'Blackadder', 'blackadder'),
+    ('Videos', 'Top Gear', 'top gear'), ('Videos', 'The Great British Bake Off', 'bake off'), ('Videos', 'Survivor', 'survivor'),
+    ('Videos', 'Blue Planet', 'blue planet'), ('Videos', 'Making a Murderer', 'making a murderer'),
+    ('Videos', 'Bluey', 'bluey'), ('Videos', 'SpongeBob SquarePants', 'spongebob'), ('Videos', 'Futurama', 'futurama'),
+    ('Videos', 'Family Guy', 'family guy'), ('Videos', 'South Park', 'south park'), ('Videos', 'Gravity Falls', 'gravity falls'),
+    ('Videos', 'Adventure Time', 'adventure time'), ('Videos', 'Steven Universe', 'steven universe'),
+    ('Videos', 'Kung Fu Panda', 'kung fu panda'), ('Videos', 'Ice Age', 'ice age'), ('Videos', 'Cars', 'cars'),
+    ('Videos', 'Frozen', 'frozen'), ('Videos', 'The Lion King', 'lion king'), ('Videos', 'Paddington', 'paddington'),
+    ('Videos', 'Wallace & Gromit', 'wallace and gromit'), ('Videos', 'Toy Story 2', 'toy story 2'),
+    ('Videos', 'Blade Runner', 'blade runner'), ('Videos', 'Highlander', 'highlander'), ('Videos', 'RoboCop', 'robocop'),
+    ('Videos', 'Child\'s Play', 'child s play'), ('Videos', 'A Nightmare on Elm Street', 'elm street'),
+    ('Videos', 'Friday the 13th', 'friday the 13th'), ('Videos', 'The Conjuring', 'conjuring'),
+    # Comics (14)
+    ('Comics', 'Spawn', 'spawn'), ('Comics', 'The Umbrella Academy', 'umbrella academy'), ('Comics', 'Chew', 'chew'),
+    ('Comics', 'Sex Criminals', 'sex criminals'), ('Comics', 'The Wicked + The Divine', 'wicked'),
+    ('Comics', 'Hawkeye', 'hawkeye'), ('Comics', 'Daredevil', 'daredevil'), ('Comics', 'The Flash', 'flash'),
+    ('Comics', 'Green Lantern', 'green lantern'), ('Comics', 'Doom Patrol', 'doom patrol'),
+    ('Comics', 'Concrete', 'concrete'), ('Comics', 'Cerebus', 'cerebus'), ('Comics', 'Elfquest', 'elfquest'),
+    ('Comics', 'Strangers in Paradise', 'strangers in paradise'),
+    # Manga (24)
+    ('Manga', 'Hunter x Hunter', 'hunter x hunter'), ('Manga', 'My Hero Academia', 'my hero academia'),
+    ('Manga', 'Demon Slayer', 'demon slayer'), ('Manga', 'Haikyu!!', 'haikyu'), ('Manga', 'Toriko', 'toriko'),
+    ('Manga', 'Black Clover', 'black clover'), ('Manga', 'Fire Force', 'fire force'), ('Manga', 'Dr. Stone', 'dr stone'),
+    ('Manga', 'The Promised Neverland', 'promised neverland'), ('Manga', 'Ouran High School Host Club', 'ouran'),
+    ('Manga', 'Skip Beat!', 'skip beat'), ('Manga', 'Kimi ni Todoke', 'kimi ni todoke'), ('Manga', 'Lone Wolf and Cub', 'lone wolf and cub'),
+    ('Manga', 'Golden Kamuy', 'golden kamuy'), ('Manga', 'Blade of the Immortal', 'blade of the immortal'),
+    ('Manga', 'Uzumaki', 'uzumaki'), ('Manga', 'Parasyte', 'parasyte'), ('Manga', 'Dorohedoro', 'dorohedoro'),
+    ('Manga', 'Hikaru no Go', 'hikaru no go'), ('Manga', 'Initial D', 'initial d'), ('Manga', 'Doraemon', 'doraemon'),
+    ('Manga', 'Astro Boy', 'astro boy'), ('Manga', 'Lone Wolf', 'lone wolf'), ('Manga', 'Kaiju No. 8', 'kaiju'),
+    # Anime (22)
+    ('Anime', 'Naruto Shippuden', 'shippuden'), ('Anime', 'Bleach', 'bleach'), ('Anime', 'Dragon Ball Z', 'dragon ball z'),
+    ('Anime', 'Pokémon', 'pokemon'), ('Anime', 'Yu-Gi-Oh!', 'yu gi oh'), ('Anime', 'Digimon Adventure', 'digimon'),
+    ('Anime', 'Sword Art Online', 'sword art online'), ('Anime', 'Tokyo Ghoul', 'tokyo ghoul'),
+    ('Anime', 'Clannad', 'clannad'), ('Anime', 'Toradora!', 'toradora'), ('Anime', 'K-On!', 'k on'),
+    ('Anime', 'Lucky Star', 'lucky star'), ('Anime', 'Serial Experiments Lain', 'lain'),
+    ('Anime', 'Paprika', 'paprika'), ('Anime', 'Grave of the Fireflies', 'grave of the fireflies'),
+    ('Anime', 'My Neighbor Totoro', 'totoro'), ('Anime', 'Howl\'s Moving Castle', 'howl'),
+    ('Anime', 'Weathering with You', 'weathering with you'), ('Anime', 'A Silent Voice', 'silent voice'),
+    ('Anime', 'Jujutsu Kaisen', 'jujutsu kaisen'), ('Anime', 'Chainsaw Man', 'chainsaw man'), ('Anime', 'Frieren', 'frieren'),
+    # Games (26)
+    ('Games', 'Castlevania', 'castlevania'), ('Games', 'Mega Man', 'mega man'), ('Games', 'Contra', 'contra'),
+    ('Games', 'Donkey Kong', 'donkey kong'), ('Games', 'Kirby', 'kirby'), ('Games', 'Star Fox', 'star fox'),
+    ('Games', 'F-Zero', 'f zero'), ('Games', 'EarthBound', 'earthbound'), ('Games', 'Chrono Trigger', 'chrono trigger'),
+    ('Games', 'Dragon Quest', 'dragon quest'), ('Games', 'Fire Emblem', 'fire emblem'), ('Games', 'Animal Crossing', 'animal crossing'),
+    ('Games', 'Splatoon', 'splatoon'), ('Games', 'Hollow Knight', 'hollow knight'), ('Games', 'Stardew Valley', 'stardew valley'),
+    ('Games', 'Minecraft', 'minecraft'), ('Games', 'Terraria', 'terraria'), ('Games', 'Undertale', 'undertale'),
+    ('Games', 'Hades', 'hades'), ('Games', 'Celeste', 'celeste'), ('Games', 'Cuphead', 'cuphead'),
+    ('Games', 'Silent Hill', 'silent hill'), ('Games', 'Far Cry', 'far cry'), ('Games', 'Borderlands', 'borderlands'),
+    ('Games', 'Red Dead Redemption', 'red dead redemption'), ('Games', 'Warcraft', 'warcraft'),
+    # Light novels (14)
+    ('Light novels', 'Toaru Majutsu no Index', 'index'), ('Light novels', 'Kino\'s Journey', 'kino'),
+    ('Light novels', 'Boogiepop', 'boogiepop'), ('Light novels', 'Baccano!', 'baccano'),
+    ('Light novels', 'Full Metal Panic!', 'full metal panic'), ('Light novels', 'Slayers', 'slayers'),
+    ('Light novels', 'Record of Lodoss War', 'lodoss'), ('Light novels', 'The Irregular at Magic High School', 'irregular'),
+    ('Light novels', 'Accel World', 'accel world'), ('Light novels', 'Shakugan no Shana', 'shana'),
+    ('Light novels', 'Hyouka', 'hyouka'), ('Light novels', 'Rascal Does Not Dream of Bunny Girl Senpai', 'bunny girl'),
+    ('Light novels', 'Torture Princess', 'torture princess'), ('Light novels', 'Bofuri', 'bofuri'),
+]
 EDITION = re.compile(r'\b(paperback|hardcover|hardback|kindle edition|mass market|box(ed)? set|boxset|collector\'?s|'
                      r'omnibus|deluxe edition|anniversary edition|special edition|illustrated edition|audiobook|'
                      r'unabridged|large print|\d+(st|nd|rd|th) edition|edition)\b', re.I)
@@ -240,8 +335,8 @@ def main():
             # Continue an interrupted run: keep finished queries, run the rest.
             report = [row for row in json.loads(output.read_text(encoding='utf-8')) if 'error' not in row]
         done = {(row['category'], row['query']) for row in report}
-        chosen = (FOURTH_QUERIES if '--fourth' in sys.argv else THIRD_QUERIES if '--third' in sys.argv else
-                  MORE_QUERIES if '--more' in sys.argv else QUERIES)
+        chosen = (FIFTH_QUERIES if '--fifth' in sys.argv else FOURTH_QUERIES if '--fourth' in sys.argv else
+                  THIRD_QUERIES if '--third' in sys.argv else MORE_QUERIES if '--more' in sys.argv else QUERIES)
         for category, query, expect in chosen:
             if (category, query) in done:
                 continue

@@ -757,7 +757,9 @@ def _search_wikidata_series(query):
         return difflib.SequenceMatcher(None, _series_words_removed(query), title_key).ratio()
     entities = [pair for pair in entities if score(pair[0]) >= 0.5]
     entities.sort(key=lambda pair: (-score(pair[0]), _normalized(pair[0].get('title'))))
-    for entity, matched_query in entities[:5]:
+    # Each candidate costs a SPARQL query; Wikimedia throttles bursts, and the
+    # best three cover a series and its likely alternates.
+    for entity, matched_query in entities[:3]:
         description = str(entity.get('description') or '')
         item = dict(entity)
         item['kind'] = 'series'

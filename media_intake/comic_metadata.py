@@ -22,7 +22,8 @@ import urllib.request
 from .webcomics.http import NoRedirect, retry_seconds
 
 COLLECTION = re.compile(r'\b(?:TPB|trade\s*paperback|hardcover|paperback|omnibus|collected\s+(?:editions?|series)|'
-    r'complete\s+collection|deluxe\s+edition|absolute\s+edition|HC)\b', re.I)
+    r'complete\s+collection|(?:deluxe|absolute|library|complete|treasury|gallery|artist|compendium)\s+edition|'
+    r'compendium|HC)\b', re.I)
 ISSUE = re.compile(r'(?:#|\bissue\s*(?:no\.?\s*)?)(\d+(?:\.\d+)?[a-z]?)\b', re.I)
 ISSUE_RANGE = re.compile(r'#\d+(?:\.\d+)?\s*(?:[-–—&]|to)\s*#?\d+|#\d+.*?\b(?:complete\s+series|full\s+run)\b', re.I)
 YEAR = re.compile(r'\((18\d{2}|19\d{2}|20\d{2})\)')
@@ -412,7 +413,11 @@ def normalize(item):
     number = issue_number(item.get('issue_number') or catalog.get('issue_number') or
                            (match.group(1) if match else ''))
     explicit_type = _name(item.get('series_type') or item.get('edition_format') or catalog.get('edition_format'))
-    if COLLECTION.search(title + ' ' + explicit_type) or ISSUE_RANGE.search(title):
+    # "Absolute Watchmen" is DC's oversized edition of Watchmen; DC's newer ongoing
+    # "Absolute" lines (Absolute Batman) run many issues, so a short run is the edition.
+    absolute_edition = (re.match(r'absolute\s+\S', title, re.I) and
+                        int(item.get('issue_count') or catalog.get('issue_count') or 0) <= 3)
+    if COLLECTION.search(title + ' ' + explicit_type) or ISSUE_RANGE.search(title) or absolute_edition:
         entity = 'collection'
     elif not entity:
         entity = 'issue' if number or item.get('kind') == 'comic_issue' else 'series'

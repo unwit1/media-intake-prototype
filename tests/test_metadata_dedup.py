@@ -462,5 +462,74 @@ class FourthSetTests(unittest.TestCase):
             self.assertEqual(found['results'][0]['title'], 'Hieronymus Bosch')
 
 
+class FifthSetTests(unittest.TestCase):
+    """General problems found by the fifth (200-series) check."""
+
+    def test_books_ordered_by_title_or_series_match_and_reader_script(self):
+        from media_intake.discovery import _sort_books_by_relevance
+        rows = [{'kind': 'book', 'title': '4:50 from Paddington'},
+                {'kind': 'series', 'title': 'Paddington'},
+                {'kind': 'book', 'title': 'A Bear Called Paddington', 'series': 'Paddington'},
+                {'kind': 'book', 'title': 'Paddington Abroad (Paddington)'}]
+        self.assertEqual([r['title'] for r in _sort_books_by_relevance(rows, 'Paddington')],
+                         ['Paddington', 'A Bear Called Paddington', 'Paddington Abroad (Paddington)',
+                          '4:50 from Paddington'])
+        rows = [{'kind': 'book', 'title': '\u0627\u0644\u0633\u0643\u0631\u064a\u0629'},
+                {'kind': 'book', 'title': 'Palace of Desire (The Cairo Trilogy, #2)'}]
+        self.assertEqual(_sort_books_by_relevance(rows, 'The Cairo Trilogy')[0]['title'],
+                         'Palace of Desire (The Cairo Trilogy, #2)')
+
+    def test_scraped_titles_lose_line_breaks_and_padding(self):
+        from media_intake.discovery import _catalog_rows
+        rows = _catalog_rows([{'title': 'Magic Bites\r\n            \r\n   Kate Daniels', 'source_url': 'x'}],
+                             'Books', 'Goodreads')
+        self.assertEqual(rows[0]['title'], 'Magic Bites Kate Daniels')
+
+    def test_both_wikimedia_hosts_busy_gives_a_clear_message(self):
+        from media_intake import wikidata
+        def busy(url, max_bytes=None):
+            raise urllib.error.HTTPError(url, 429, 'Too Many Requests', {}, None)
+        with patch.object(wikidata, 'http_get', side_effect=busy):
+            with self.assertRaisesRegex(ValueError, 'both rate-limiting'):
+                wikidata.search_wikidata('Blackadder')
+
+    def test_ranobedb_romaji_titles_and_cautious_nickname_trust(self):
+        from media_intake import media_catalogs
+        def fake(path, params):
+            return {'series': {
+                'Shakugan no Shana': [{'id': 1, 'title': '\u7076\u773c\u306e\u30b7\u30e3\u30ca',
+                                       'romaji': 'Shakugan no Shana', 'sim_score': 2}],
+                'DanMachi': [{'id': 2, 'title': 'Is It Wrong to Try to Pick Up Girls in a Dungeon?', 'sim_score': 1}],
+                'Hyouka': [{'id': 3, 'title': 'A', 'romaji': 'Game de Hyouka Sareru', 'sim_score': 1},
+                           {'id': 4, 'title': 'B', 'romaji': 'Kitai to Hyouka', 'sim_score': 1}],
+            }[params['q']]}
+        with patch.object(media_catalogs, '_ranobedb_get', side_effect=fake):
+            shana = media_catalogs.search_ranobedb('Shakugan no Shana')[0]
+            danmachi = media_catalogs.search_ranobedb('DanMachi')[0]
+            hyouka = media_catalogs.search_ranobedb('Hyouka')
+        self.assertEqual(shana['title'], 'Shakugan no Shana')
+        self.assertIn('\u7076\u773c\u306e\u30b7\u30e3\u30ca', shana['alternative_titles'])
+        self.assertTrue(danmachi['alias_match'])
+        self.assertFalse(any(row['alias_match'] for row in hyouka))
+
+    def test_game_compilations_dropped_and_named_editions_fold(self):
+        from media_intake.media_providers import _STEAM_COMPILATION, steam_base_title
+        self.assertTrue(_STEAM_COMPILATION.search('Castlevania Dominus Collection'))
+        self.assertTrue(_STEAM_COMPILATION.search('Mega Man Legacy Collection 2'))
+        self.assertFalse(_STEAM_COMPILATION.search('Hollow Knight'))
+        self.assertEqual(steam_base_title('Minecraft: Legacy Console Edition')[0], 'Minecraft')
+        self.assertNotEqual(steam_base_title('Far Cry 3: Blood Dragon Classic Edition')[0], 'Far Cry 3')
+
+    def test_absolute_editions_and_mangaupdates_doujinshi(self):
+        self.assertEqual(cm.normalize({'title': 'Absolute Watchmen', 'provider': 'GCD', 'source_url': 'a',
+                                       'issue_count': 1})['comic_entity'], 'collection')
+        self.assertEqual(cm.normalize({'title': 'Absolute Batman', 'provider': 'GCD', 'source_url': 'b',
+                                       'issue_count': 14})['comic_entity'], 'series')
+        self.assertEqual(cm.normalize({'title': 'The Umbrella Academy Library Edition', 'provider': 'GCD',
+                                       'source_url': 'c'})['comic_entity'], 'collection')
+        from media_intake.discovery import _WORK_EDITION_SUFFIX
+        self.assertEqual(_WORK_EDITION_SUFFIX.sub('', 'Doraemon Digital color edition'), 'Doraemon')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -396,16 +396,29 @@ def search_ranobedb(query, limit=20):
     if isinstance(rows, dict):
         rows = [rows]
     results = []
-    for row in rows[:limit]:
-        if not isinstance(row, dict) or row.get('id') is None or not row.get('title'):
-            continue
+    rows = [row for row in rows[:limit] if isinstance(row, dict) and row.get('id') is not None and row.get('title')]
+    # sim_score: 2 = the title itself, 1 = an alias or part of a title, below 1 = loose.
+    alias_hits = [row for row in rows if float(row.get('sim_score') or 0) >= 1]
+    for row in rows:
         series_id = str(row['id'])
-        results.append(_discovery_item(
-            'RanobeDB', row.get('title'), 'Unknown', f'https://ranobedb.org/series/{series_id}',
+        names = [name for name in dict.fromkeys(
+            [row.get('title'), row.get('romaji'), row.get('title_orig'), row.get('romaji_orig')]) if name]
+        # "灼眼のシャナ" means little to an English reader; show "Shakugan no Shana".
+        title = row['title']
+        if re.search(r'[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]', title) and row.get('romaji'):
+            title = row['romaji']
+        score = float(row.get('sim_score') or 0)
+        item = _discovery_item(
+            'RanobeDB', title, 'Unknown', f'https://ranobedb.org/series/{series_id}',
             catalog_id=series_id, original_language=row.get('olang') or row.get('lang'),
             book_count=row.get('c_num_books'), status=row.get('publication_status'),
-            title_original=row.get('title_orig'),
-        ))
+            title_original=row.get('title_orig'), match_score=score,
+        )
+        item['alternative_titles'] = [name for name in names if name != title]
+        # Trust a nickname match ("DanMachi") only when it is exact or the one alias
+        # hit; "Hyouka" matches several unrelated titles containing that word.
+        item['alias_match'] = score >= 2 or (score >= 1 and len(alias_hits) == 1 and row is alias_hits[0])
+        results.append(item)
     return results
 
 

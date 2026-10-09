@@ -2042,7 +2042,7 @@ This keeps the codebase small while still presenting many specialized connectors
 
 ---
 
-# Phase 4 — Universal automated acquisition, indexers, torrents, Usenet, and dependency-optional downloading
+# Phase 4 — Universal automated acquisition, indexers, torrents, Usenet, Soulseek, and dependency-optional downloading
 
 **Priority: P0 / High priority**
 
@@ -2150,6 +2150,7 @@ The initial source protocol set should include:
 - generic HTTP APIs
 - configurable HTML/site definitions
 - existing Media Intake native catalog/download adapters
+- native Soulseek peer search and shared-file discovery (rights-gated)
 - optional external search aggregators
 
 Do not require Prowlarr/Jackett/NZBHydra for core operation, but support them as optional adapters because they provide useful ecosystem compatibility and broad site coverage.
@@ -2511,6 +2512,16 @@ Target adapters:
 - NZBGet
 - future compatible NZB downloaders
 
+### Soulseek engines
+
+Target adapters (in dependency preference order):
+
+- `NativeSoulseekEngine` — built in-tree using Python's existing/standard-library networking primitives; **no mandatory third-party client, daemon, SDK, or new Python package**
+- `slskd` — optional HTTP API compatibility adapter for users already running it or as a development fallback
+- `aioslsk` — optional reference/alternative integration only after compatibility and licensing review; never a default install requirement
+
+Search and transfer must implement the same provider-neutral contracts used by all other acquisition engines. Peer discovery must not be treated as a conventional indexer with durable URLs; maintain expiring peer/file availability observations.
+
 ### Direct/specialized engines
 
 Target adapters:
@@ -2610,9 +2621,78 @@ Optional helpers may include:
 
 A future native PAR2 implementation may be researched separately if eliminating all external repair dependencies is worth the engineering cost.
 
+## Native Soulseek / peer-to-peer acquisition roadmap — dependency-free first
+
+**Priority: P0 architecture and proof of protocol compatibility; P1 complete native integration. Status: planned, not implemented.**
+
+**Non-negotiable default:** Soulseek must work in Media Intake **without installing slskd, Nicotine+, Soularr, aioslsk, a separate daemon, or additional Python packages**. Prefer Python standard-library networking (`asyncio`, `socket`, `struct`, `ssl`, `hashlib`, `pathlib`, `sqlite3`, etc.) and reuse dependencies already present in the repository. Soulseek network service/account connectivity itself is an unavoidable external service, not a software install. Native protocol feasibility is a **research/test gate**, not an unverified assertion of feature completeness. Keep optional mature-client interoperability available if the native engine is temporarily incomplete.
+
+### P0 — compatibility research, isolation, and dependency budget
+
+- [ ] Inventory existing runtime dependencies, packaging targets, network architecture, queue workers, rights/provenance policy, metadata resolution, transfer staging, and existing search/release/engine interfaces; reuse them rather than adding a parallel system.
+- [ ] Inspect Soulseek protocol interoperability and maintained projects: [slskd](https://github.com/slskd/slskd), [aioslsk](https://github.com/JurgenR/aioslsk), [Soularr](https://github.com/mrusse/soularr), and [Lidarr.Plugin.Slskd](https://github.com/allquiet-hub/Lidarr.Plugin.Slskd). Record useful design patterns for peer search, shared-folder browsing, album matching, transfer events, and importer handoffs, with source/version/license attribution.
+- [ ] Document licensing and protocol-maintenance constraints before borrowing or adapting implementation code. Do not vendor GPL or otherwise incompatible source into Media Intake without an explicit license decision.
+- [ ] Prototype independently implemented server authentication/session lifecycle, search broadcasts/responses, peer handshakes, shared-file listings, and a single authenticated file transfer with the standard library; validate against a controlled test account and opt-in, rights-cleared file.
+- [ ] Produce a feature-parity/dependency decision matrix (native vs optional slskd vs optional aioslsk). Native must remain the target; record unsupported capabilities or protocol drift honestly rather than quietly requiring an external service.
+- [ ] Define `SoulseekSearchProvider` and `NativeSoulseekEngine` behind the existing `SearchBroker`, `ReleaseCandidate`, `AcquisitionEngine`, and acquisition-job state machine; do not bypass authorization or create separate long-lived watched-media records.
+
+### P1 — native network and search provider
+
+- [ ] Implement bounded TCP/peer connections, server login and keepalive, message framing/parsing, search request IDs, search result collection and timeout, cancellation, reconnection/backoff, and capability/health checks; use async workers so the GUI never blocks.
+- [ ] Implement native file-share browsing and peer result ingestion: user handle, remote folder/file path, filename, size, audio metadata when advertised, peer free slots, queue information, speed/availability and observation timestamps. Mark volatile peer results as expiring, not permanent release URLs.
+- [ ] Add credential management using the existing secret-storage pattern; keep passwords, API keys, remote peer details, and raw listings out of version control and routine logs.
+- [ ] Register Soulseek as a first-class, independently enableable protocol/provider in Sources, acquisition policy `allowed_protocols`, provider capability discovery, provider health, and quota/rate/cooldown rules.
+- [ ] Use shared `SearchRequest` generation: exact artist + album/title; identifier-aware metadata retrieval for the *desired work*; artist aliases, punctuation/transliteration, edition and remaster variants; safe progressively broader queries. Do not assume Soulseek offers standardized catalogue IDs or exhaustive global results.
+- [ ] Implement result normalization with `protocol=soulseek`, source/provider ID, username, observed remote path, file size, optional codec/bitrate, parent folder/album, snapshot time, expiry and confidence; never treat a remote filename as a verified work identity.
+
+### P1 — intelligent release grouping, scoring, and cross-provider reconciliation
+
+- [ ] Group peer results into complete directory/album candidates (including multi-disc folders), preserve per-file provenance, and compare track count/order, expected titles/durations, albums/editions, artwork and bonus tracks against existing media metadata.
+- [ ] Rank candidates for codec (FLAC/lossless vs MP3/AAC), advertised bitrate/sample rate, track coverage, release/edition match, size plausibility, peer slots/queue/speed, stale availability, historical completion, and source trust. Expose explainable score/rejection reasons in Manual Search.
+- [ ] Support configurable music quality targets and cutoff upgrades without replacing a correct release with a mislabeled remaster, compilation, partial album, or wrong edition; extend cautiously to audiobooks and other eligible file families.
+- [ ] Deduplicate within Soulseek by peer + normalized remote file/folder + observation epoch, and across protocols by logical work/release identity and verified hashes after download. A peer/path is not a durable content hash.
+- [ ] Feed peer reliability, failure counts, average throughput, completed-file integrity and search success into the common adaptive provider ranking; cap reputation effects to avoid permanently excluding new peers.
+
+### P1 — native transfer engine and safe import
+
+- [ ] Implement transfer request/slot negotiation, selectable files or whole folder queueing, progress/speed, pause/resume *where the protocol permits*, cancellation, timeout, bounded concurrency, partial-transfer recovery and stale peer invalidation.
+- [ ] Persist and restore transfer/job state in Media Intake's own database; map peer queue/disconnected/unavailable/error states into the existing `AcquisitionJob` state machine with bounded retries/backoff and clear manual actions.
+- [ ] Add user-configurable download bandwidth, simultaneous connection/download limits, retry budgets, disk-space reservations and per-peer polite rate controls; support peer availability probing without excessive searches.
+- [ ] Stage all files in a controlled temp directory; sanitize filenames/remote paths to prevent traversal, symlink escape or case-collision overwrite; quarantine suspicious/mismatched content and never execute acquired files.
+- [ ] Verify file lengths and stream-calculated hashes; inspect playable/parsable media metadata where existing tooling permits; check requested album completeness and compare to quality profile before atomic import. Do not claim end-to-end integrity from an unverified peer.
+- [ ] Route through existing tagging, naming, directory standardization, manifest/provenance, library-reconciliation, and duplicate/version policies; preserve the associated watched item across failed peer transfers and fallback to authorized alternate sources.
+- [ ] Keep upload/share behavior explicit and opt-in: documented local share folders and permissions, no automatic sharing of private libraries, clear outbound exposure warnings and port/network status.
+
+### P1 — watch automation, GUI, and operational security
+
+- [ ] Trigger bounded Soulseek searches from `RecentReleaseScanner`, `BacklogHunter`, and `UpgradeHunter` according to watched-intent source permissions, cooldowns, search budget and quality cutoffs.
+- [ ] Add GUI Source settings (enabled, login, port/connectivity, native/optional adapter, rate limits, opt-in sharing); show health, search results grouped by peer/release, queue/progress/errors, available actions, reason for match, and acquisition history without requiring a separate Soulseek GUI.
+- [ ] Require existing per-item rights/provenance and acquisition authorization before initiating downloads; respect peer privacy, service/network terms, credential redaction, and sharing consent. Discovery alone must never auto-authorize grabbing content.
+- [ ] Instrument network diagnostics: connectability, NAT/firewall/port-forwarding guidance, server disconnection, failed peer negotiation, search-result expiry, and version/protocol drift, without encouraging unsafe network exposure.
+- [ ] Provide an on/off kill switch and a clear native-fallback mode with no surprise installs and no implicit external processes.
+
+### P2 — optional compatibility and hardening (not required for core use)
+
+- [ ] Add a `slskd` API adapter using built-in HTTP/JSON tools (search, grouped results, queue, transfers, status, cancel/health); support existing daemon installations only when explicitly configured.
+- [ ] Evaluate `aioslsk` as a *reference implementation* or explicitly opt-in backend, not a required package, subject to dependency licensing and maintenance review.
+- [ ] Learn from Soularr/Lidarr integration patterns without requiring Lidarr or any Sonarr-family manager; keep Media Intake the owner of watched intent and final import.
+- [ ] Add protocol version/interoperability test fixtures; unit tests for message parsing, transient peer identities, normalization, grouping, filename/path safety, and state replay; simulated network/transfer failure tests; opt-in integration tests with controlled peers and rights-cleared media.
+- [ ] Benchmark search latency, completion rate, metadata confidence, CPU/RAM, queue efficiency and dependency footprint against optional slskd when available. Record any native gaps and optimize before declaring feature parity.
+- [ ] Provide seamless migration and provider switching between native and optional backends without duplicate watched records or orphaned download jobs.
+
+### Soulseek-specific acceptance criteria
+
+- [ ] On a clean supported Media Intake installation, enabling native Soulseek requires **zero additional Python packages, command-line tools, services, or separate client applications** beyond Media Intake itself and a usable Soulseek account/network connection.
+- [ ] Native engine can log in, issue searches, browse advertised files, identify a coherent release, transfer approved files, track/retry failures, validate them, and import via the normal pipeline.
+- [ ] Album completeness/edition/quality scores are explainable, and erroneous/partial matches do not silently become canonical library assets.
+- [ ] Watch searches, peer availability and transfers share the normal scheduler/queue rather than spinning up a second library-management subsystem.
+- [ ] Offline or failing Soulseek peers do not break other acquisition providers; retries, safe cancellation, and cross-provider fallback respect all existing permissions and budgets.
+- [ ] No credentials or private share paths leak to Git/logs; no hidden share/upload behavior or unsolicited installation of slskd/aioslsk occurs.
+- [ ] Documentation includes supported platforms, peer networking limitations, manual troubleshooting, license provenance, mocked-protocol tests, and end-to-end opt-in tests.
+
 ## Provider/source registry
 
-Create a single provider registry rather than separate hard-coded lists for torrents, Usenet, feeds, and direct sites.
+Create a single provider registry rather than separate hard-coded lists for torrents, Usenet, feeds, direct sites, and peer-to-peer sources.
 
 A source should declare capabilities such as:
 
@@ -2624,6 +2704,7 @@ A source should declare capabilities such as:
 - book search
 - music search
 - comic/manga search
+- Soulseek peer/file search and remote share browsing
 - magnet
 - torrent file
 - NZB
@@ -3007,6 +3088,14 @@ Implement staged NNTP/NZB/yEnc functionality behind the existing UsenetEngine in
 - automatic routing by expected success/request cost
 - search-efficiency dashboards
 
+### Phase 4K — native Soulseek support, no new dependencies
+- P0: protocol research, license review, native stdlib proof-of-concept, provider/engine contracts
+- P1: account/session, peer search and browsing, candidate/album grouping, scores and quality profiles
+- P1: native file transfers, resumable job state where supported, recovery, verification, library imports
+- P1: watched-media searches, GUI sources/results/transfers, peer diagnostics and safety/rights controls
+- P2: optional slskd/aioslsk interoperability, protocol fixtures, cross-provider benchmarking
+- Completion governed by the detailed **Native Soulseek / peer-to-peer acquisition roadmap** above; optional adapters must never become mandatory dependencies.
+
 ## Acceptance criteria
 
 This phase is successful when:
@@ -3022,7 +3111,8 @@ This phase is successful when:
 - all acquired content passes through quarantine/verification before final import.
 - Media Intake's own database remains canonical if every external manager/downloader is disconnected.
 - users can choose external mature engines or native engines without changing their watched-media state.
-- native torrent and Usenet implementations can be improved incrementally without changing higher-level orchestration.
+- native torrent, Usenet, and Soulseek implementations can be improved incrementally without changing higher-level orchestration.
+- native Soulseek search, transfers, scoring, watched-media automation, and import function without mandatory third-party clients, daemons, or new Python packages; optional adapters remain possible.
 - no source credentials or secrets are committed to Git.
 - existing rights/provenance gates continue to control whether a discovered candidate may actually be acquired.
 

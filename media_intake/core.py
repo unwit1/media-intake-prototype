@@ -57,6 +57,80 @@ def file_name(item):
     return f"{prefix}{clean(item['title'])} - {clean(item.get('author') or 'Unknown')}{item['format']}"
 
 
+def _btih(url):
+    """Normalised BitTorrent info hash from a magnet link (hex or base32), or None."""
+    import base64
+    import binascii
+    for value in urllib.parse.parse_qs(url.query).get('xt', []):
+        if value.casefold().startswith('urn:btih:'):
+            digest = value[9:].strip()
+            if len(digest) == 40 and all(c in '0123456789abcdefABCDEF' for c in digest):
+                return digest.casefold()
+            if len(digest) == 32:
+                try:
+                    return binascii.hexlify(base64.b32decode(digest.upper())).decode()
+                except (binascii.Error, ValueError):
+                    return None
+    return None
+
+
+def item_identity_key(item):
+    """Stable key for 'the same thing' across mirrors and spellings, or None.
+
+    A magnet link is identified by its info hash, so tracker lists, name
+    parameters and hex/base32 spelling do not make it a different item. A file
+    on a catalogued source is identified by its path on that source, so the
+    source's documented alternate domains do not either."""
+    from . import source_catalog
+    url = urllib.parse.urlsplit(str(item.get('url') or ''))
+    if url.scheme == 'magnet':
+        digest = _btih(url)
+        return f'btih:{digest}' if digest else None
+    record = source_catalog.find_by_host(url.hostname or '')
+    if record and url.scheme in ('http', 'https'):
+        return f"{record['source_key']}:{url.path}{'?' + url.query if url.query else ''}"
+    return None
+
+
+def _attach_identity(item):
+    """Record the catalogued source an item came from, and its identity key, on the item."""
+    from . import source_catalog
+    explicit = str(item.get('source_key') or '').strip()
+    if explicit:
+        record = source_catalog.lookup(explicit)
+    else:
+        record = source_catalog.find_by_host(urllib.parse.urlsplit(str(item.get('url') or '')).hostname or '')
+        for hint in ('source', 'site', 'provider'):
+            if record:
+                break
+            record = source_catalog.lookup(item.get(hint))
+    if record:
+        item['source_key'] = record['source_key']
+        item.setdefault('source_name', record['name'])
+    key = item_identity_key(item)
+    if key:
+        item['dedupe_key'] = key
+    return item
+
+
+def find_duplicate(db, item):
+    """Queue row that already holds this item (same URL, or the same identity key), or None."""
+    row = db.execute('SELECT * FROM items WHERE url=?', (item['url'],)).fetchone()
+    if row or not item.get('dedupe_key'):
+        return row
+    key = item['dedupe_key']
+    row = db.execute("""SELECT * FROM items WHERE
+        CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.dedupe_key') END AS TEXT)=?
+        ORDER BY id LIMIT 1""", (key,)).fetchone()
+    if row:
+        return row
+    # Rows queued before identity keys existed: compare by recomputing the key.
+    for candidate in db.execute("SELECT * FROM items WHERE url LIKE 'magnet:%' OR url LIKE 'http%' ORDER BY id"):
+        if item_identity_key({'url': candidate['url']}) == key:
+            return candidate
+    return None
+
+
 def validate_item(item):
     for key in ('title', 'url', 'format', 'source'):
         if not item.get(key):
@@ -72,7 +146,7 @@ def validate_item(item):
             raise ValueError('Expected a magnet link or an HTTP(S) .torrent link')
         item['format'] = '.torrent'
         item.setdefault('author', 'Unknown')
-        return item
+        return _attach_identity(item)
     if ext not in EXTENSIONS:
         raise ValueError(f'Unsupported format: {ext}')
     if url.scheme not in ('http', 'https', 'irc+xdcc', 'serial+https', 'serial+http',
@@ -80,7 +154,7 @@ def validate_item(item):
         raise ValueError('Expected an HTTP(S), IRC, serial, or fanfiction URL without embedded credentials')
     item['format'] = ext
     item.setdefault('author', 'Unknown')
-    return item
+    return _attach_identity(item)
 
 
 def connect(root):
@@ -121,6 +195,8 @@ def connect(root):
     _enforce_unique_watch_sources(db)
     db.execute('''CREATE INDEX IF NOT EXISTS items_watch_request ON items(
         CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_request_id') END AS TEXT))''')
+    db.execute('''CREATE INDEX IF NOT EXISTS items_dedupe_key ON items(
+        CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.dedupe_key') END AS TEXT))''')
     db.execute('''CREATE INDEX IF NOT EXISTS items_watch_id ON items(
         CAST(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.watch_id') END AS TEXT))''')
     initialize_media_graph(db)
@@ -159,6 +235,16 @@ def _enforce_unique_watch_sources(db):
 
 def enqueue(db, item):
     item = validate_item(dict(item))
+    duplicate = find_duplicate(db, item)
+    if duplicate and duplicate['url'] != item['url']:
+        try:
+            alternates = list(json.loads(duplicate['metadata']).get('alternate_urls') or [])
+        except (TypeError, ValueError, AttributeError):
+            alternates = []
+        if item['url'] not in alternates:
+            alternates.append(item['url'])
+        item['alternate_urls'] = alternates[-10:]
+        item['url'] = duplicate['url']
     db.execute("INSERT INTO items(url, metadata) VALUES (?, ?) ON CONFLICT(url) DO UPDATE SET metadata=excluded.metadata, updated_at=CURRENT_TIMESTAMP", (item['url'], json.dumps(item, ensure_ascii=False)))
     db.commit()
     return dict(db.execute('SELECT * FROM items WHERE url=?', (item['url'],)).fetchone())
@@ -211,8 +297,11 @@ def enqueue_for_watch(db, item, watch_id):
     watch_id = int(watch_id)
     item = validate_item(dict(item))
     item['watch_request_id'] = watch_id
+    existing = find_duplicate(db, item)
+    if existing and existing['url'] != item['url']:
+        item['alternate_urls'] = sorted({*(item.get('alternate_urls') or []), item['url']})[:10]
+        item['url'] = existing['url']
     payload = json.dumps(item, ensure_ascii=False)
-    existing = db.execute('SELECT * FROM items WHERE url=?', (item['url'],)).fetchone()
 
     # A connector may have already queued this exact source (or a previous scan may
     # have tried it). Reuse one row per watched work and preserve completed files.

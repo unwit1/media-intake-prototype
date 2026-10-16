@@ -19,6 +19,20 @@ FAILING_STREAK = 3
 DEGRADED_MIN_ATTEMPTS = 4
 
 
+def canonical_key(source_key):
+    """Key used to store and read health history: a catalogued source's alias or domain
+    maps to its one canonical key, anything else is just trimmed and lower-cased."""
+    from . import source_catalog
+    text = str(source_key or '').strip().casefold()
+    return source_catalog.source_key(text) or text
+
+
+def _stored_keys(db, canonical):
+    """Every key the history was saved under that means `canonical` (older rows may hold an alias)."""
+    return [row[0] for row in db.execute('SELECT DISTINCT source_key FROM source_events')
+            if canonical_key(row[0]) == canonical] or [canonical]
+
+
 def migrate(db):
     db.execute('''CREATE TABLE IF NOT EXISTS source_events (
         id INTEGER PRIMARY KEY, source_key TEXT NOT NULL, kind TEXT NOT NULL,
@@ -29,7 +43,7 @@ def migrate(db):
 
 def record(db, source_key, kind, ok, *, bytes=None, seconds=None, detail=None):
     """Store one outcome; never raises (health tracking must not break a download)."""
-    source_key = str(source_key or '').strip().casefold()
+    source_key = canonical_key(source_key)
     if not source_key:
         return
     try:
@@ -61,9 +75,11 @@ def _status(recent, recent_downloads):
 
 
 def summary(db, source_key):
+    source_key = canonical_key(source_key)
+    stored = _stored_keys(db, source_key)
     rows = [dict(row) for row in db.execute(
-        'SELECT * FROM source_events WHERE source_key=? ORDER BY id DESC LIMIT ?',
-        (source_key, KEEP_PER_SOURCE))]
+        f"SELECT * FROM source_events WHERE source_key IN ({','.join('?' * len(stored))}) ORDER BY id DESC LIMIT ?",
+        (*stored, KEEP_PER_SOURCE))]
     recent = rows[:RECENT]
     downloads = [row for row in recent if row['kind'] == 'download']
     all_downloads = [row for row in rows if row['kind'] == 'download']
@@ -93,7 +109,7 @@ def summary(db, source_key):
 
 def summaries(db):
     """One summary per source with any history, worst first."""
-    keys = [row[0] for row in db.execute('SELECT DISTINCT source_key FROM source_events')]
+    keys = sorted({canonical_key(row[0]) for row in db.execute('SELECT DISTINCT source_key FROM source_events')})
     order = {'failing': 0, 'degraded': 1, 'untested': 2, 'healthy': 3}
     return sorted((summary(db, key) for key in keys),
                   key=lambda item: (order[item['status']], item['source_key']))
@@ -101,7 +117,8 @@ def summaries(db):
 
 def clear(db, source_key=None):
     if source_key:
-        db.execute('DELETE FROM source_events WHERE source_key=?', (str(source_key).casefold(),))
+        stored = _stored_keys(db, canonical_key(source_key))
+        db.execute(f"DELETE FROM source_events WHERE source_key IN ({','.join('?' * len(stored))})", stored)
     else:
         db.execute('DELETE FROM source_events')
     db.commit()

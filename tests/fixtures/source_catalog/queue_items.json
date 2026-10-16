@@ -1,0 +1,14 @@
+{
+  "note": "Queue items as different entry points submit them. Hashes and paths are placeholders, not real releases.",
+  "hash_hex": "0123456789abcdef0123456789abcdef01234567",
+  "yts": {"title": "Example Film", "format": ".torrent", "source": "yts.mx",
+          "url": "https://yts.mx/torrent/download/ABC123"},
+  "yts_alias": {"title": "Example Film", "format": ".torrent", "source": "https://yts.bz/movies/example",
+                "url": "https://yts.bz/torrent/download/ABC123"},
+  "nyaa": {"title": "Example Episode", "format": ".torrent", "source": "https://nyaa.si/view/1",
+           "url": "https://nyaa.si/download/1.torrent"},
+  "nyaa_lookalike": {"title": "Example Episode", "format": ".torrent", "source": "https://nyaa.eu/view/1",
+                     "url": "https://nyaa.eu/download/1.torrent"},
+  "plain_file": {"title": "Plain Book", "format": ".epub", "source": "fixture", "url": "https://files.example.test/plain.epub"},
+  "legacy_metadata": {"title": "Example Film", "format": ".torrent", "source": "yts.mx", "source_key": "yts.mx"}
+}

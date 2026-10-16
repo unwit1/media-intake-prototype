@@ -133,6 +133,16 @@ def _launch(arguments, popen=None):
         raise HandoffError(f'Could not start {arguments[0]}: {exc}') from exc
 
 
+def _labels(item):
+    """Gopeed task labels; includes the source identity when the item has a catalogued one."""
+    from .rights_evidence import source_key_for_item
+    labels = {'source': 'Media Intake', 'title': str(item.get('title') or '')[:200]}
+    key = source_key_for_item(item)
+    if key and key != 'direct_file_url':
+        labels['source_key'] = key
+    return labels
+
+
 def hand_off(item, settings, rights_path=None, opener=None, popen=None):
     """Send one item to the configured download manager. Returns a short status line."""
     settings = dict(settings or {})
@@ -149,7 +159,7 @@ def hand_off(item, settings, rights_path=None, opener=None, popen=None):
     if downloader == 'gopeed':
         task_id = send_to_gopeed(url, settings.get('gopeed_url') or 'http://127.0.0.1:9999',
                                  settings.get('gopeed_token') or '', directory, name,
-                                 {'source': 'Media Intake', 'title': str(item.get('title') or '')[:200]},
+                                 _labels(item),
                                  opener=opener)
         return f'Sent to Gopeed (task {task_id})' if task_id else 'Sent to Gopeed'
     if downloader == 'xdm':

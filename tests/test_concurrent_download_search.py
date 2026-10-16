@@ -53,12 +53,11 @@ class ConcurrentSearchTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertTrue(any('temporary outage' in error for error in errors))
 
-    def test_unapproved_sources_are_not_contacted(self):
+    def test_sources_without_approval_records_are_still_searched(self):
         watch = {'kind': 'comic', 'title': 'Example Comic', 'author': 'Unknown', 'metadata': '{}'}
-        with patch('media_intake.watched._approved_source_record', return_value=None), \
-             patch('media_intake.watched.search_getcomics') as getcomics:
-            self.assertEqual(_search_candidates(watch), ([], []))
-            getcomics.assert_not_called()
+        with patch('media_intake.watched.search_getcomics', return_value=[]) as getcomics:
+            _search_candidates(watch)
+            getcomics.assert_called()
 
     def test_process_wide_search_limit_across_many_books(self):
         from concurrent.futures import ThreadPoolExecutor

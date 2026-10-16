@@ -5,8 +5,6 @@ Supported targets:
 - Xtreme Download Manager command line: ``xdm-app.exe --url URL [-o FILE]`` (HTTP only).
 - A custom command template for anything else (for example FileCxx), run without a
   shell; ``{url}``, ``{dir}`` and ``{name}`` are substituted per argument.
-
-The same rights-evidence approval used by core.download is checked first.
 """
 import json
 from pathlib import Path
@@ -135,21 +133,6 @@ def _launch(arguments, popen=None):
         raise HandoffError(f'Could not start {arguments[0]}: {exc}') from exc
 
 
-def _check_rights(item, rights_path):
-    if not rights_path or not Path(rights_path).is_file():
-        return
-    from .rights_evidence import load_rights_evidence, source_download_rights, source_key_for_item
-    document = load_rights_evidence(rights_path)
-    work_record = (document.get('works') or {}).get(str(item.get('rights_work_key') or ''))
-    if isinstance(work_record, dict):
-        approved = work_record.get('approved_for_download') is True
-    else:
-        approved = source_download_rights(document, source_key_for_item(item)) is not None
-    if not approved:
-        source = source_key_for_item(item)
-        raise HandoffError(f'Download not approved: set {source}.approved_for_download to true in {rights_path}')
-
-
 def hand_off(item, settings, rights_path=None, opener=None, popen=None):
     """Send one item to the configured download manager. Returns a short status line."""
     settings = dict(settings or {})
@@ -160,7 +143,6 @@ def hand_off(item, settings, rights_path=None, opener=None, popen=None):
     url = _handoff_url(url)
     if is_torrent(url) and downloader not in TORRENT_CAPABLE:
         raise HandoffError(f'{DOWNLOADER_LABELS[downloader]} cannot download torrents or magnets; use Gopeed')
-    _check_rights(item, rights_path)
     directory = settings.get('directory') or ''
     name = item.get('source_filename') or ''
     label = DOWNLOADER_LABELS[downloader]

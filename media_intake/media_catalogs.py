@@ -1,4 +1,4 @@
-"""Metadata lookup and locally approved file intake for novel catalogs."""
+"""Metadata lookup and file intake for novel catalogs."""
 import datetime as dt
 import difflib
 import html
@@ -234,9 +234,9 @@ class _CatalogPageLinks(HTMLParser):
 
 
 def resolve_catalog_file_links(item, approval, limit=20):
-    """Resolve direct media links from an approved LNORI/NovelArchive page."""
-    if not isinstance(approval, dict) or approval.get('approved_for_download') is not True:
-        return []
+    """Resolve direct media links from an LNORI/NovelArchive page."""
+    if not isinstance(approval, dict):
+        approval = {}
     url = str(item.get('url') or '')
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != 'https' or parts.hostname not in {'lnori.com', 'novelarchive.cc'}:
@@ -259,8 +259,8 @@ def resolve_catalog_file_links(item, approval, limit=20):
         results.append({
             'provider': item.get('provider'), 'title': item.get('title') or 'Untitled',
             'author': item.get('author') or 'Unknown', 'url': file_url, 'source': final,
-            # The user's approval belongs to the catalog connector, even when
-            # its file link is hosted by a separate CDN or file service.
+            # The file belongs to the catalog connector, even when its link
+            # is hosted by a separate CDN or file service.
             'source_key': connector, 'format': ext,
             'discovery_only': False,
             **({'rights_work_key': approval['rights_work_key']}
@@ -295,7 +295,7 @@ class _NovelArchiveChapterLinks(HTMLParser):
 
 
 def discover_novelarchive_chapters(series_url, limit=500):
-    """Build a chapter manifest from a NovelArchive series page for approved watches."""
+    """Build a chapter manifest from a NovelArchive series page."""
     parts = urllib.parse.urlsplit(str(series_url or ''))
     if parts.scheme != 'https' or parts.hostname != 'novelarchive.cc':
         raise ValueError('NovelArchive series URL must use its HTTPS host')

@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from media_intake import podcasts
 from media_intake.core import connect, download
-from media_intake.rights_evidence import ensure_rights_evidence, load_rights_evidence
 from media_intake.webcomics.http import Response
 
 FEED = 'https://pod.example/feed.xml'
@@ -114,8 +113,6 @@ class FollowTests(unittest.TestCase):
             base = server.url.rsplit('/', 1)[0]
             client = FeedClient(rss([(n, base) for n in range(1, 4)]))
             show_id = podcasts.follow(self.db, FEED, backlog='all', client=client)
-            self.assertTrue(load_rights_evidence(ensure_rights_evidence(Path(self.temp.name) / 'rights-evidence.json'))
-                            ['sources']['podcast_rss']['approved_for_download'])
             for (item_id,) in self.db.execute('SELECT item_id FROM podcast_episodes WHERE show_id=?', (show_id,)).fetchall():
                 result = download(self.db, item_id, self.temp.name)
                 self.assertEqual(Path(result['file_path']).parent, Path(self.temp.name) / 'downloads' / 'Podcasts' / 'Fixture Show')

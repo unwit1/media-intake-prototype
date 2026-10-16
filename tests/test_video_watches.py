@@ -299,6 +299,7 @@ class VideoWatchTest(unittest.TestCase):
             watch = dict(db.execute('SELECT * FROM watched_items WHERE id=?',
                                     (watch_id,)).fetchone())
             with patch('media_intake.watched.has_configured_source', return_value=True), patch(
+                    'media_intake.watched._download_search_plan', return_value=('Videos', ['irc'])), patch(
                     'media_intake.watched.search_configured_sources',
                     return_value=([candidate], [])) as search:
                 results, errors = _search_candidates(watch, {'irc_servers': [{'name': 'primary'}]})

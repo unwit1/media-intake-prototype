@@ -51,9 +51,7 @@ from .kindle import (deliver_to_kindle, find_kindle_documents_folder,
                      set_setting as set_kindle_setting)
 from .media_catalogs import (search_lnori, search_mangaupdates, search_novelarchive,
                              search_ranobedb)
-from .rights_evidence import (effective_work_rights, ensure_rights_evidence,
-                              load_rights_evidence, set_work_rights,
-                              source_download_rights)
+from .rights_evidence import ensure_rights_evidence
 from .serial import discover_feed, enqueue_serial
 from .sources import (resolve_detail, search_forum_threads,
                       search_google_books_metadata, search_openlibrary_metadata,
@@ -319,10 +317,6 @@ class MediaIntakeApp:
         ttk.Button(toolbar, text='Choose…', command=self.choose_root).pack(side='left')
         ttk.Button(toolbar, text='Open logs', command=self.open_logs).pack(side='left', padx=6)
         ttk.Button(toolbar, text='Back up database…', command=self.backup_database).pack(side='left')
-        rights_actions = ttk.Frame(toolbar)
-        rights_actions.pack(side='right', padx=(8, 0))
-        ttk.Button(rights_actions, text='Open rights file', command=self.open_rights_evidence).pack(side='left')
-        ttk.Button(rights_actions, text='Edit rights evidence', command=self.edit_watch_rights).pack(side='left', padx=(6, 0))
         ttk.Label(toolbar, textvariable=self.status).pack(side='right')
 
         tabs = ttk.Notebook(self.root)
@@ -661,7 +655,7 @@ class MediaIntakeApp:
         ttk.Label(
             priority_content,
             text=('Choose a media category, then move its connected download sources into priority order. '
-                  'Metadata repositories are searched separately and never need download approval here. '
+                  'Metadata repositories are searched separately and are not download sources.'
                   'Configured IRC servers stay at the top and follow their server order. Books prefer EPUB, then PDF, '
                   'AZW3, MOBI, TXT, and audiobook formats; source priority breaks ties.'),
             wraplength=900, justify='left').pack(anchor='w', pady=(4, 10))
@@ -2226,12 +2220,6 @@ class MediaIntakeApp:
                     category = 'Games' if categories == frozenset({'Games'}) else 'Books'
                 if category not in categories:
                     raise ValueError(f'{source} is not connected to the {category} category')
-                approval = source_download_rights(
-                    load_rights_evidence(self.rights_evidence_path), source_key)
-                if not approval:
-                    raise ValueError(
-                        f'{source} is NO in the local rights-evidence.json file. '
-                        'Set approved_for_download to true before searching it.')
                 allowed = formats_for_category(category)
                 found = search_registered_download_site(
                     query, source_key, limit=30, category=category,
@@ -2275,12 +2263,6 @@ class MediaIntakeApp:
                 if category not in {'Auto-detect', 'Software'}:
                     raise ValueError(f'{source} is connected to the Software category')
                 source_key = 'sourceforge.net' if source == 'SourceForge' else 'github_foss'
-                approval = source_download_rights(
-                    load_rights_evidence(self.rights_evidence_path), source_key)
-                if not approval:
-                    raise ValueError(
-                        f'{source} is NO in the local rights-evidence.json file. '
-                        'Set approved_for_download to true before searching it.')
                 searcher = search_sourceforge_foss if source == 'SourceForge' else search_github_foss
                 results = searcher(query, limit=30)
                 for item in results:
@@ -2314,12 +2296,6 @@ class MediaIntakeApp:
                 if category != 'Anime':
                     raise ValueError(f'{source} is only connected to the Anime category')
                 source_key, searcher, resolver = anime_sources[source]
-                approval = source_download_rights(
-                    load_rights_evidence(self.rights_evidence_path), source_key)
-                if not approval:
-                    raise ValueError(
-                        f'{source} is NO in the local rights-evidence.json file. '
-                        'Set approved_for_download to true before searching it.')
                 resolved = []
                 for result in searcher(query):
                     for item in resolver(result, allowed_formats=formats_for_category('Anime')):
@@ -3159,8 +3135,7 @@ class MediaIntakeApp:
             'Direct files use the built-in engine above. Jackett searches the indexers you configured in your own '
             'Jackett instance (choose "Jackett (torrents)" on the Search tab). An external manager is optional: '
             'torrent and magnet results can go to Gopeed, and any file can go to Xtreme Download Manager or a '
-            'custom command. Hand-offs use the same rights-evidence approval as built-in downloads; Jackett results '
-            'need jackett.approved_for_download = true.'
+            'custom command.'
         )).pack(anchor='w', pady=(4, 10))
         settings = self.external_dl_settings
         variables = {key: tk.StringVar(value=str(settings.get(key) or ''))
@@ -5918,81 +5893,6 @@ class MediaIntakeApp:
                 item.get('series_position') or ''))
         ttk.Button(dialog, text='Close', command=dialog.destroy).pack(anchor='e', padx=10, pady=(4, 10))
         self._done(f'Saved {len(relationships)} Wikidata relationship(s)')
-
-    def open_rights_evidence(self):
-        try:
-            ensure_rights_evidence(self.rights_evidence_path)
-            if hasattr(os, 'startfile'):
-                os.startfile(str(self.rights_evidence_path))
-            else:
-                webbrowser.open(self.rights_evidence_path.resolve().as_uri())
-        except Exception as exc:
-            self.logger.exception('Could not open local rights evidence file')
-            messagebox.showerror('Rights evidence', f'Could not open {self.rights_evidence_path}: {exc}')
-
-    def edit_watch_rights(self):
-        selected = self.watched_view.selection()
-        if not selected:
-            messagebox.showinfo('Rights evidence', 'Select a comic series or issue watch first.')
-            return
-        row = next((item for item in self.watch_rows if str(item.get('id')) == selected[0]), None)
-        if not row or row.get('kind') not in ('comic', 'comic_issue', 'manga', 'webcomic', 'webtoon'):
-            messagebox.showinfo('Rights evidence', 'Select a comic, manga, webcomic, webtoon, or comic issue watch.')
-            return
-        try:
-            document = load_rights_evidence(self.rights_evidence_path)
-            rights = effective_work_rights(document, row, self.db)
-        except Exception as exc:
-            self.logger.exception('Could not read local rights evidence')
-            messagebox.showerror('Rights evidence', str(exc))
-            return
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title('Edit local rights evidence')
-        dialog.geometry('620x310')
-        dialog.transient(self.root)
-        ttk.Label(dialog, text=f"Local approval for {row.get('title', 'selected comic')}",
-                  font=('', 10, 'bold')).pack(anchor='w', padx=12, pady=(12, 4))
-        ttk.Label(dialog, text=('The YES/NO value and evidence are saved in rights-evidence.json. '
-                                'A YES authorizes downloads for this comic watch. Issue watches inherit '
-                                'the series record unless you edit the issue itself.'),
-                  wraplength=585, justify='left').pack(anchor='w', padx=12, pady=(0, 10))
-        form = ttk.Frame(dialog)
-        form.pack(fill='x', padx=12)
-        ttk.Label(form, text='Approval').grid(row=0, column=0, sticky='w', pady=4)
-        choice_map = {
-            'No - not reviewed': 'not_reviewed',
-            'Yes - public domain': 'public_domain',
-            'Yes - permission granted': 'permission_granted',
-            'No - restricted': 'restricted',
-        }
-        reverse_map = {value: label for label, value in choice_map.items()}
-        choice = tk.StringVar(value=reverse_map.get((rights or {}).get('status'), 'No - not reviewed'))
-        ttk.Combobox(form, textvariable=choice, state='readonly', width=32,
-                     values=list(choice_map)).grid(row=0, column=1, sticky='w', pady=4)
-        ttk.Label(form, text='Evidence note').grid(row=1, column=0, sticky='w', pady=4)
-        evidence = tk.StringVar(value=(rights or {}).get('evidence', ''))
-        ttk.Entry(form, textvariable=evidence, width=68).grid(row=1, column=1, sticky='ew', pady=4)
-        ttk.Label(form, text='Evidence URL').grid(row=2, column=0, sticky='w', pady=4)
-        reference = tk.StringVar(value=(rights or {}).get('reference', ''))
-        ttk.Entry(form, textvariable=reference, width=68).grid(row=2, column=1, sticky='ew', pady=4)
-        form.columnconfigure(1, weight=1)
-
-        def save():
-            try:
-                set_work_rights(self.rights_evidence_path, row, choice_map[choice.get()],
-                                evidence.get(), reference.get())
-            except Exception as exc:
-                messagebox.showerror('Rights evidence', str(exc), parent=dialog)
-                return
-            dialog.destroy()
-            self.refresh_watches()
-            self._done('Local rights evidence saved')
-
-        buttons = ttk.Frame(dialog)
-        buttons.pack(fill='x', padx=12, pady=(16, 12))
-        ttk.Button(buttons, text='Save', command=save).pack(side='right')
-        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right', padx=6)
 
     def _schedule_watch_scan(self):
         self._run_watch_scan(force=False, automatic=True)

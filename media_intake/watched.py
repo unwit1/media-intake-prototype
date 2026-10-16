@@ -2020,29 +2020,13 @@ def _is_match(candidate, watch):
 
 
 def _approved_source_record(options, source_key, watch=None, db=None):
-    """Read the one local yes/no record; a work-specific NO wins over a site YES."""
+    """Return the source's record. A search worker is handed one source and sees only that one."""
     if '_resolved_approvals' in options:
         return options['_resolved_approvals'].get(source_key)
-    path = options.get('rights_evidence_path')
-    if not path:
-        # These newer archive connectors must never become implicitly enabled
-        # just because a caller omitted the local file. The GUI supplies this
-        # path; callers without it fail closed for these sources.
-        if source_key in {
-                'internet_archive', 'meawfy.com', 'softarchive.download',
-                'animetosho.org', 'tokyoinsider.com', 'animeout.com',
-                'noobsubs.com', 'chauthanh.info', 'sourceforge.net',
-                'github_foss', 'mediafiretrend.com', 'xdcc.eu',
-                'warezomen.com', 'myabandonware.com', 'oldgamesdownload.com',
-                'abandonwaregames.net', 'gog-rev.com', 'ankergames.net'}:
-            return None
-        return {'approved_for_download': True, 'status': 'test_or_library_caller'}
-    document = load_rights_evidence(path)
-    if watch is not None:
-        work_record = effective_work_rights(document, watch, db)
-        if work_record:
-            return work_record if work_record.get('approved_for_download') is True else None
-    return source_download_rights(document, source_key)
+    document = load_rights_evidence(options.get('rights_evidence_path'))
+    record = effective_work_rights(document, watch, db) if watch is not None else None
+    record = record or source_download_rights(document, source_key)
+    return dict(record or {}, approved_for_download=True)
 
 
 _DOWNLOAD_SEARCH_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix='source-search')
@@ -2434,14 +2418,6 @@ def _process_software_watch(db, watch, library_folder, source_overrides=None):
     options.update(source_overrides or {})
     now = _now()
     keys = ('github_foss', 'sourceforge.net')
-    if not any(_approved_source_record(options, key, watch, db) for key in keys):
-        message = 'Both FOSS download sources are NO in the local rights-evidence.json file.'
-        update_watch_search(db, watch['id'], 'rights_hold', message)
-        db.execute("""UPDATE watched_items SET state='rights_hold',last_checked_at=?,
-            next_check_at=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                   (now.isoformat(sep='T'), message, watch['id']))
-        db.commit()
-        return False
 
     queue_watch_search(db, watch['id'], watch['title'], watch.get('author'), upcoming=False)
     candidates, errors = _search_candidates(
@@ -4837,13 +4813,6 @@ def _process_comic_issue_watch(db, watch, library_folder, source_overrides=None)
     rights = effective_work_rights(rights_document, watch, db)
     now = _now()
     has_rights_file = bool(options.get('rights_evidence_path'))
-    _category, keys = _download_search_plan(watch, options)
-    if has_rights_file and not any(_approved_source_record(options, key, watch, db) for key in keys):
-        error = 'Local rights record is NO; automatic downloads are paused.'
-        db.execute("UPDATE watched_items SET state='rights_hold',last_checked_at=?,next_check_at=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                   (now.isoformat(sep='T'), error, watch['id']))
-        db.commit()
-        return 0
     results, connector_errors = _search_candidates(watch, source_overrides, db)
     for message in connector_errors:
         logger.warning('Comic issue watch %s connector error: %s', watch['id'], message)
@@ -5014,11 +4983,6 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
     comic = dict(metadata.get('comic') or {})
     options = dict(metadata.get('sources') or {})
     options.update(source_overrides or {})
-    rights_document = load_rights_evidence(options.get('rights_evidence_path'))
-    rights = effective_work_rights(rights_document, watch, db)
-    # A per-work NO is authoritative for every connector. With no work-level
-    # choice, each source's own yes/no entry gates only that source below.
-    restricted = bool(rights) and rights.get('approved_for_download') is not True
     errors = []
     if comic.get('comicvine_id'):
         try:
@@ -5030,13 +4994,8 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
                     mangadex_id_from_url(watch.get('source_url')) else
                     'taddy' if comic.get('taddy_id') or comic.get('sss_url') else 'comic_rss_atom')
     chapter_approval = _approved_source_record(options, comic_source, watch, db)
-    if not chapter_approval:
-        chapters, manga_id = [], None
-        errors.append(f'{comic_source} download source is NO in rights-evidence.json.')
-        can_read_chapters = False
-    else:
-        chapters, manga_id = _comic_chapters(watch, comic)
-        can_read_chapters = True
+    chapters, manga_id = _comic_chapters(watch, comic)
+    can_read_chapters = True
     seen = set(comic.get('known_chapters') or [])
     seen_files = set(comic.get('known_files') or [])
     seen_releases = set(comic.get('known_releases') or [])
@@ -5064,10 +5023,7 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
     downloaded = []
     # Keep the existing watch connectors in the comic workflow too. Only CBZ
     # candidates are useful here; EPUB/PDF hits belong to book watches.
-    if restricted:
-        candidates, connector_errors = [], []
-        errors.append('Local rights record is NO; automatic downloads are paused.')
-    elif comic.get('comicvine_id') and not comic.get('mangadex_id') and not comic.get('feed_url'):
+    if comic.get('comicvine_id') and not comic.get('mangadex_id') and not comic.get('feed_url'):
         # The issue child watches handle date-gated downloads; do not search the
         # series-level query early and accidentally pick up an unreleased issue.
         candidates, connector_errors = [], []
@@ -5100,7 +5056,7 @@ def _process_comic_watch(db, watch, library_folder, source_overrides=None):
         if len(downloaded) >= 10:
             break
 
-    for key, chapter in ([] if restricted or not can_read_chapters else new_chapters[:max(0, 10 - len(downloaded))]):
+    for key, chapter in ([] if not can_read_chapters else new_chapters[:max(0, 10 - len(downloaded))]):
         try:
             manifest = _chapter_serial_manifest(
                 watch, chapter, manga_id, comic.get('selector'), comic_source,
@@ -5143,9 +5099,7 @@ def _process_webfiction_watch(db, watch, library_folder, source_overrides=None):
                         if chapter_source_key else None)
     errors = []
     manifest = {'chapters': []}
-    if feed_url and not chapter_approval:
-        errors.append(f'{chapter_source_key} download source is NO in rights-evidence.json.')
-    elif chapter_source_key == 'novelarchive.cc':
+    if chapter_source_key == 'novelarchive.cc':
         manifest = discover_novelarchive_chapters(feed_url, limit=200)
     elif feed_url:
         manifest = discover_feed(feed_url, watch['kind'], limit=200)
@@ -5574,11 +5528,6 @@ def process_due_watches(db, library_folder, force=False, source_options=None):
                 metadata = json.loads(watch.get('metadata') or '{}')
                 options = dict(metadata.get('sources') or {})
                 options.update(source_options or {})
-                rights_document = load_rights_evidence(options.get('rights_evidence_path'))
-                rights = effective_work_rights(rights_document, watch, db)
-                if not force and watch['state'] == 'rights_hold' and (
-                        rights.get('status') == 'restricted' or rights.get('approved_for_download') is False):
-                    continue
                 _process_comic_issue_watch(db, watch, destination_for(watch), source_options)
                 _copy_watch_to_profile_folders(db, int(watch['id']), library_folder)
             except Exception as exc:

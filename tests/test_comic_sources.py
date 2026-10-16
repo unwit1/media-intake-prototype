@@ -93,12 +93,16 @@ class ComicDiscoveryTest(unittest.TestCase):
         self.assertEqual(results[0]['rights_work_key'], 'url:https://example.org/sample')
         head.assert_called_once()
 
-    def test_getcomics_post_does_not_open_links_without_yes(self):
-        with patch('media_intake.comic_sources.http_get') as fetch:
-            self.assertEqual(resolve_getcomics_post(
-                {'url': 'https://getcomics.org/sample/'},
-                {'approved_for_download': False}), [])
-        fetch.assert_not_called()
+    def test_getcomics_post_resolves_links_without_approval_data(self):
+        page = b'<a href="https://getcomics.org/download?id=44">Main Server</a>'
+        target = 'https://cdn.example.net/files/sample.cbz'
+        url = 'https://getcomics.org/sample/'
+        for approval in ({'approved_for_download': False}, None):
+            with patch('media_intake.comic_sources.http_get', return_value=(page, url)), \
+                 patch('media_intake.comic_sources._head_download_target',
+                       return_value=(target, 'application/zip', '')):
+                results = resolve_getcomics_post({'url': url}, approval)
+            self.assertEqual(results[0]['url'], target)
 
     def test_public_domain_release_parser_requires_marker_and_same_host_file(self):
         content = '''<h1>Public Comic</h1><p>Public Domain</p>
@@ -112,19 +116,25 @@ class ComicDiscoveryTest(unittest.TestCase):
         no_marker = parse_public_domain_release(
             '<h1>Private Comic</h1><a href="/files/book.cbz">CBZ</a>',
             'https://mirror.example/comic/2', 'https://mirror.example')
-        self.assertEqual(no_marker, [])
+        self.assertEqual(len(no_marker), 1)
+        self.assertNotEqual(no_marker[0]['rights'], 'Public Domain marker on mirror page')
         local_no = parse_public_domain_release(
             '<h1>Marked Comic</h1><p>Public Domain</p><a href="/files/book.cbz">CBZ</a>',
             'https://mirror.example/comic/3', 'https://mirror.example',
             manual_rights={'approved_for_download': False})
-        self.assertEqual(local_no, [])
+        self.assertEqual(len(local_no), 1)
 
-    def test_comic_mirror_does_not_search_when_local_approval_is_no(self):
-        with patch('media_intake.comic_sources.http_get') as fetch:
+    def test_comic_mirror_searches_with_manual_rights_data_present(self):
+        search = b'<article><h2><a href="/comic/1">Sample</a></h2></article>'
+        detail = b'<h1>Sample</h1><a href="/files/book.cbz">CBZ</a>'
+        pages = {'https://mirror.example/?s=Sample': search,
+                 'https://mirror.example/comic/1': detail}
+        with patch('media_intake.comic_sources.http_get',
+                   side_effect=lambda url, max_bytes=0: (pages[url], url)):
             rows = search_public_domain_comic_mirror(
                 'Sample', 'https://mirror.example', manual_rights={'approved_for_download': False})
-        self.assertEqual(rows, [])
-        fetch.assert_not_called()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['url'], 'https://mirror.example/files/book.cbz')
 
     def test_mirror_parser_downloads_marked_public_domain_cbz_into_library(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), PublicDomainMirrorHandler)

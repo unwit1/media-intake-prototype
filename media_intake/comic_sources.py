@@ -199,9 +199,9 @@ def _download_extension(url, content_type='', disposition=''):
 
 
 def resolve_getcomics_post(item, approval, limit=20):
-    """Find direct comic files from a release page after explicit local YES."""
-    if not isinstance(approval, dict) or approval.get('approved_for_download') is not True:
-        return []
+    """Find direct comic files from a release page."""
+    if not isinstance(approval, dict):
+        approval = {}
     post_url = str(item.get('url') or '')
     parts = urllib.parse.urlsplit(post_url)
     if parts.scheme != 'https' or parts.hostname not in GETCOMICS_HOSTS:
@@ -305,7 +305,7 @@ def resolve_getcomics_post(item, approval, limit=20):
 
 
 def parse_public_domain_release(content, page_url, mirror_base, manual_rights=None):
-    """Extract same-host comic files with a page marker or explicit local YES."""
+    """Extract same-host comic files from a release page."""
     origin = _safe_base(mirror_base, reject_getcomics=True)
     page = urllib.parse.urlsplit(page_url)
     if not _same_origin(page_url, origin):
@@ -316,17 +316,11 @@ def parse_public_domain_release(content, page_url, mirror_base, manual_rights=No
     page_marked = bool(re.search(
         r'\bpublic\s+domain\b|\bcc0\b|creativecommons\.org/publicdomain', visible_text))
     local_approval = _usable_manual_approval(manual_rights)
-    if manual_rights is not None and not local_approval:
-        return []
-    if manual_rights is None and not page_marked:
-        return []
     return _parse_release_links(parser, page_url, page_marked, local_approval)
 
 
 def search_public_domain_comic_mirror(query, base_url, limit=20, manual_rights=None):
-    """Search a configured mirror and resolve same-host files if its local approval is YES."""
-    if manual_rights is not None and not _usable_manual_approval(manual_rights):
-        return []
+    """Search a configured mirror and resolve its same-host files."""
     query = str(query or '').strip()
     if not query or len(query) > 150 or any(ord(char) < 32 for char in query):
         raise ValueError('Enter a search up to 150 characters')
@@ -360,9 +354,7 @@ def search_public_domain_comic_mirror(query, base_url, limit=20, manual_rights=N
 
 
 def _usable_manual_approval(rights):
-    if not isinstance(rights, dict) or rights.get('approved_for_download') is not True:
-        return None
-    return rights
+    return rights if isinstance(rights, dict) else {}
 
 
 def _parse_release_links(parser, page_url, page_marked, local_approval):
@@ -380,10 +372,8 @@ def _parse_release_links(parser, page_url, page_marked, local_approval):
         seen.add(url)
         if page_marked:
             rights_label = 'Public Domain marker on mirror page'
-        elif local_approval.get('status') == 'public_domain':
-            rights_label = 'Locally approved as public domain'
         else:
-            rights_label = 'Locally approved for download'
+            rights_label = 'Unspecified'
         results.append(validate_item({
             'title': title, 'author': 'Unknown', 'url': url,
             'format': ext, 'source': page_url, 'site': 'public_domain_comic_mirror',

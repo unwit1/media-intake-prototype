@@ -211,8 +211,6 @@ def _irc_files(query, category, source_options):
     from .irc import has_configured_source, search_configured_sources
     if not has_configured_source(options, category):
         return [], []
-    if not _approved_source_record(options, 'irc'):
-        return [], ['IRC download source is NO in rights-evidence.json.']
 
     kinds = {
         'Books': 'book', 'Comics': 'comic', 'Manga': 'manga', 'Anime': 'anime',
@@ -1100,9 +1098,7 @@ def _webserial_files(query, source_options):
     for source_key, provider, searcher in (
             ('lnori.com', 'LNORI', search_lnori),
             ('novelarchive.cc', 'NovelArchive', search_novelarchive)):
-        approval = _approved_source_record(options, source_key)
-        if not approval:
-            continue
+        approval = _approved_source_record(options, source_key) or {}
         try:
             for item in searcher(query, limit=10):
                 item.setdefault('provider', provider)
@@ -1126,9 +1122,7 @@ def _webserial_files(query, source_options):
 
 def _internet_archive_files(query, category, source_options):
     options = dict(source_options or {})
-    approval = _approved_source_record(options, 'internet_archive')
-    if not approval:
-        return [], []
+    approval = _approved_source_record(options, 'internet_archive') or {}
     try:
         results = search_internet_archive(query, category=category, limit=20)
         for item in results:
@@ -1149,9 +1143,7 @@ def _internet_archive_files(query, category, source_options):
 def _general_download_site_files(query, category, source_options, source_key,
                                  provider, searcher, resolver):
     options = dict(source_options or {})
-    approval = _approved_source_record(options, source_key)
-    if not approval:
-        return [], []
+    approval = _approved_source_record(options, source_key) or {}
     allowed = _CATEGORY_FORMATS.get(category, set())
     results, errors = [], []
     try:
@@ -1194,9 +1186,7 @@ def _registered_download_site_files(query, category, source_options):
     for source_key, provider, categories in GENERAL_DOWNLOAD_ADAPTERS:
         if category not in categories:
             continue
-        approval = _approved_source_record(options, source_key)
-        if not approval:
-            continue
+        approval = _approved_source_record(options, source_key) or {}
         try:
             hits = search_registered_download_site(
                 query, source_key, limit=30, category=category,
@@ -1234,9 +1224,7 @@ def _registered_download_site_files(query, category, source_options):
 
 def _foss_download_files(query, source_options, source_key, provider, searcher):
     options = dict(source_options or {})
-    approval = _approved_source_record(options, source_key)
-    if not approval:
-        return [], []
+    approval = _approved_source_record(options, source_key) or {}
     try:
         results = searcher(query)
         for item in results:
@@ -1390,9 +1378,9 @@ def search_media_category(query, category, source_options=None, credentials=None
     source_options['download_priority'] = list(priority)
     tasks = _tasks(query, category, source_options, credentials)
     if category not in {'Books', 'Light novels'} and any(
-            category in categories and _approved_source_record(source_options, source_key)
-           for source_key, _provider, categories in GENERAL_DOWNLOAD_ADAPTERS):
-        tasks.append(('additional approved download sites',
+            category in categories
+            for _source_key, _provider, categories in GENERAL_DOWNLOAD_ADAPTERS):
+        tasks.append(('additional download sites',
                       lambda: _registered_download_site_files(
                           query, category, source_options)))
     results, errors = [], []

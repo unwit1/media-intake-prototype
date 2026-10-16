@@ -93,17 +93,18 @@ class CategoryDiscoveryTest(unittest.TestCase):
                     if category != 'Games':
                         self.assertNotIn(source, DOWNLOAD_CONNECTORS[category])
 
-    def test_new_general_sites_are_yes_gated_before_search(self):
+    def test_new_general_sites_are_searched_without_approval_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = ensure_rights_evidence(Path(tmp) / 'rights-evidence.json')
             options = {'rights_evidence_path': str(path)}
-            with patch('media_intake.discovery.search_registered_download_site') as searcher:
+            with patch('media_intake.discovery.search_registered_download_site',
+                       return_value=[]) as searcher:
                 results, errors = _registered_download_site_files(
                     'Example', 'Games', options)
 
         self.assertEqual(results, [])
         self.assertEqual(errors, [])
-        searcher.assert_not_called()
+        searcher.assert_called()
 
     def test_approved_new_game_source_search_resolves_and_keeps_rights_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -122,7 +123,7 @@ class CategoryDiscoveryTest(unittest.TestCase):
                          'format': '.zip', 'source': hit['detail_url'],
                          'source_key': 'oldgamesdownload.com'}
             with patch('media_intake.discovery.search_registered_download_site',
-                       return_value=[hit]) as searcher, \
+                       side_effect=lambda query, key, *_a, **_k: [hit] if key == 'oldgamesdownload.com' else []) as searcher, \
                     patch('media_intake.discovery.resolve_site_downloads',
                           return_value=[dict(file_item)]):
                 results, errors = _registered_download_site_files(
@@ -133,7 +134,7 @@ class CategoryDiscoveryTest(unittest.TestCase):
         self.assertTrue(results[0]['downloadable'])
         self.assertEqual(results[0]['rights_evidence_path'], str(path))
         self.assertEqual(results[0]['category'], 'Games')
-        self.assertEqual(searcher.call_args.args[1], 'oldgamesdownload.com')
+        self.assertIn('oldgamesdownload.com', [call.args[1] for call in searcher.call_args_list])
 
     def test_anime_download_sites_are_registered_only_for_anime(self):
         for source in ('Anime Tosho', 'Tokyo Insider', 'AnimeOut', 'NoobSubs', 'Chauthanh'):
@@ -156,7 +157,7 @@ class CategoryDiscoveryTest(unittest.TestCase):
         self.assertIn('WarezOmen', DOWNLOAD_CONNECTORS['Software'])
         self.assertNotIn('FOSShub', DOWNLOAD_CONNECTORS['Software'])
 
-    def test_foss_download_source_requires_yes_then_attaches_local_evidence_path(self):
+    def test_foss_download_source_searches_and_attaches_local_evidence_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = ensure_rights_evidence(Path(tmp) / 'rights-evidence.json')
             options = {'rights_evidence_path': str(path)}
@@ -166,14 +167,6 @@ class CategoryDiscoveryTest(unittest.TestCase):
                 'format': '.zip', 'source': 'https://github.com/example/tool',
                 'source_key': 'github_foss',
             }])
-            blocked, _ = _foss_download_files(
-                'Example Tool', options, 'github_foss', 'GitHub (FOSS)', searcher)
-            self.assertEqual(blocked, [])
-            searcher.assert_not_called()
-
-            document = json.loads(path.read_text(encoding='utf-8'))
-            document['sources']['github_foss']['approved_for_download'] = True
-            path.write_text(json.dumps(document), encoding='utf-8')
             allowed, errors = _foss_download_files(
                 'Example Tool', options, 'github_foss', 'GitHub (FOSS)', searcher)
 
@@ -482,18 +475,22 @@ class CategoryDiscoveryTest(unittest.TestCase):
                  'source_url': 'https://mangadex.org/title/id'}]) as mangadex, \
              patch('media_intake.discovery.search_mangaupdates', return_value=[{
                  'provider': 'MangaUpdates', 'title': 'Example Manga',
-                 'source_url': 'https://www.mangaupdates.com/series/1'}]) as updates:
+                 'source_url': 'https://www.mangaupdates.com/series/1'}]) as updates, \
+             patch('media_intake.discovery._registered_download_site_files',
+                   return_value=([], [])) as extra_sites:
             response = search_media_category('Example Manga', 'Manga')
 
         self.assertEqual(anilist.call_count, 1)
         self.assertEqual(mangadex.call_count, 1)
         self.assertEqual(updates.call_count, 1)
+        extra_sites.assert_called_once()
         self.assertEqual(len(response['results']), 1)
         self.assertEqual({item['kind'] for item in response['results']}, {'manga'})
         self.assertEqual(set(response['results'][0]['metadata_sources']),
                          {'AniList', 'MangaDex', 'MangaUpdates'})
         self.assertEqual(len(response['results'][0]['metadata_variants']), 3)
-        self.assertEqual(len(response['searched']), 4)
+        self.assertEqual(len(response['searched']), 5)
+        self.assertIn('additional download sites', response['searched'])
 
     def test_anime_searches_anilist_as_anime_and_wikidata(self):
         with patch('media_intake.discovery.search_anilist', return_value=[{
@@ -503,7 +500,14 @@ class CategoryDiscoveryTest(unittest.TestCase):
                  'provider': 'Wikidata', 'kind': 'video', 'entity_type': 'work',
                  'video_subtype': 'anime', 'title': 'Example Anime',
                  'source_url': 'https://www.wikidata.org/entity/Q1', 'format': 'catalog',
-                 'discovery_only': True}]) as wikidata:
+                 'discovery_only': True}]) as wikidata, \
+             patch('media_intake.discovery.search_tvmaze', return_value=[]), \
+             patch('media_intake.discovery._internet_archive_files', return_value=([], [])), \
+             patch('media_intake.discovery._general_download_site_files',
+                   return_value=([], [])), \
+             patch('media_intake.discovery._irc_files', return_value=([], [])), \
+             patch('media_intake.discovery._registered_download_site_files',
+                   return_value=([], [])):
             response = search_media_category('Example Anime', 'Anime')
 
         anilist.assert_called_once_with('Example Anime', media_type='ANIME')
@@ -513,8 +517,13 @@ class CategoryDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(response['results'][0]['metadata_variants']), 2)
 
     def test_fanfiction_category_accepts_a_story_url(self):
-        response = search_media_category(
-            'https://archiveofourown.org/works/123', 'Fanfiction')
+        with patch('media_intake.discovery._internet_archive_files', return_value=([], [])), \
+             patch('media_intake.discovery._general_download_site_files',
+                   return_value=([], [])), \
+             patch('media_intake.discovery._registered_download_site_files',
+                   return_value=([], [])):
+            response = search_media_category(
+                'https://archiveofourown.org/works/123', 'Fanfiction')
         self.assertEqual(len(response['results']), 1)
         self.assertEqual(response['results'][0]['kind'], 'fanfiction')
         self.assertTrue(response['results'][0]['discovery_only'])

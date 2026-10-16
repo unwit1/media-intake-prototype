@@ -15,7 +15,7 @@ from media_intake.watched import _approved_source_record
 
 
 class RightsEvidenceTest(unittest.TestCase):
-    def test_new_download_connectors_fail_closed_without_a_rights_file(self):
+    def test_new_download_connectors_are_searched_without_a_rights_file(self):
         for source in ('internet_archive', 'meawfy.com', 'softarchive.download',
                        'animetosho.org', 'tokyoinsider.com', 'animeout.com',
                        'noobsubs.com', 'chauthanh.info', 'sourceforge.net',
@@ -24,7 +24,7 @@ class RightsEvidenceTest(unittest.TestCase):
                        'oldgamesdownload.com', 'abandonwaregames.net',
                        'gog-rev.com', 'ankergames.net'):
             with self.subTest(source=source):
-                self.assertIsNone(_approved_source_record({}, source))
+                self.assertIsNotNone(_approved_source_record({}, source))
 
     def test_download_sources_start_with_explicit_no(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,21 +125,6 @@ class RightsEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Could not read rights evidence'):
                 load_rights_evidence(path)
             self.assertEqual(path.read_text(encoding='utf-8'), '{broken')
-
-    def test_explicit_but_missing_rights_file_fails_closed_before_download(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            missing = root / 'missing-rights.json'
-            with closing(connect(root / 'data')) as db:
-                row = enqueue(db, {'title': 'Sample', 'author': 'Writer',
-                                   'url': 'https://files.example.test/sample.pdf',
-                                   'format': '.pdf', 'source': 'fixture',
-                                   'source_key': 'lnori.com',
-                                   'rights_evidence_path': str(missing)})
-                with patch('urllib.request.urlopen') as request:
-                    with self.assertRaisesRegex(ValueError, 'rights evidence file is missing'):
-                        download(db, row['id'], root)
-                request.assert_not_called()
 
 
 if __name__ == '__main__':

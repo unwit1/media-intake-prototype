@@ -8,7 +8,6 @@ import urllib.parse
 
 from media_intake import external_downloaders as ext
 from media_intake import jackett
-from media_intake.rights_evidence import ensure_rights_evidence, load_rights_evidence, save_rights_evidence
 
 TORZNAB = b'''<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:torznab="http://torznab.com/schemas/2015/feed">
@@ -149,21 +148,14 @@ class HandoffTests(unittest.TestCase):
             ext.hand_off({'url': 'file:///C:/secret'}, {'downloader': 'command', 'command': 'x {url}'},
                          popen=self.popen)
 
-    def test_rights_evidence_gates_jackett_handoff(self):
+    def test_jackett_handoff_proceeds_without_rights_file(self):
         with tempfile.TemporaryDirectory() as root:
-            path = ensure_rights_evidence(Path(root) / 'rights-evidence.json')
-            document = load_rights_evidence(path)
-            self.assertIs(document['sources']['jackett']['approved_for_download'], False)
+            path = Path(root) / 'rights-evidence.json'
             item = {'handoff_url': 'magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef',
                     'source_key': 'jackett'}
-            with self.assertRaisesRegex(ext.HandoffError, 'jackett.approved_for_download'):
-                ext.hand_off(item, {'downloader': 'gopeed'}, rights_path=path,
-                             opener=self.opener({'code': 0, 'data': 't'}))
-            self.assertEqual(self.calls, [])
-            document['sources']['jackett']['approved_for_download'] = True
-            save_rights_evidence(path, document)
             self.assertEqual(ext.hand_off(item, {'downloader': 'gopeed'}, rights_path=path,
                                           opener=self.opener({'code': 0, 'data': 't'})), 'Sent to Gopeed (task t)')
+            self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == '__main__':

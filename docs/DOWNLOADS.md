@@ -46,7 +46,7 @@ window.
 
 Every queue download, of every kind (HTTP, IRC, serial, fanfiction, torrent, stream),
 and every watched-item source search records an outcome for its source. Pauses,
-cancels, shortlinks waiting for the helper and approval refusals are not counted.
+cancels and shortlinks waiting for the helper are not counted.
 **Source health** on the Queue tab shows, for each source:
 
 - its status
@@ -183,9 +183,6 @@ The **Podcasts** tab follows shows and downloads their episodes automatically.
   another podcast app, folders included. Already-followed shows are skipped, and no
   back catalogue is queued, so only new episodes download. *Export OPML…* writes your
   followed shows for any other app.
-- **Approval:** the `podcast_rss` source starts approved in `rights-evidence.json`,
-  because podcast feeds publish their episodes for download. Set it to false to stop
-  podcast downloads.
 
 ## Email to a chosen Kindle
 
@@ -196,8 +193,7 @@ Settings → Kindle, plus *All Kindles*. Sending this way works even when auto-s
 
 Search tab → *Jackett (torrents)* searches the indexers configured in your own
 Jackett (Settings → Downloads: address, API key, optional indexer). Results show size
-and seeders and queue as torrents. They need `jackett.approved_for_download = true`
-in `rights-evidence.json`, like every other source's approval switch.
+and seeders and queue as torrents.
 
 ## Clipboard capture
 

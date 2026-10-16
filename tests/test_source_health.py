@@ -63,8 +63,7 @@ class DownloadHookTests(unittest.TestCase):
             with patch('media_intake.core._download', side_effect=ValueError('HTTP 404')), self.assertRaises(ValueError):
                 download(db, item['id'], root)
             for quiet in (transfer.TransferPaused('p'), transfer.TransferCancelled('c'), ShortlinkPending('s'),
-                          ValueError('This item is already downloading'),
-                          ValueError('Download not approved: set x.approved_for_download to true')):
+                          ValueError('This item is already downloading')):
                 with patch('media_intake.core._download', side_effect=quiet), self.assertRaises(type(quiet)):
                     download(db, item['id'], root)
             summary = source_health.summary(db, 'softarchive.download')

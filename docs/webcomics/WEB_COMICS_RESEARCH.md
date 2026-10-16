@@ -58,6 +58,6 @@ The desired resolver order remains public API → structured metadata → feed �
 
 ## Reuse and attribution ledger
 
-No third-party runtime code copied or vendored. All new subsystem code is independently implemented; existing repository `serial`, `core`, `watched` and rights/graph abstractions are reused. No new dependency was installed. No GPL/AGPL source incorporated. The repository did not expose a root license during inspection, so do not assume license compatibility for future copying. A future borrowed component must record repository, immutable commit/version, exact files, license text, modifications and required notices in `licenses/` and here.
+No third-party runtime code copied or vendored. All new subsystem code is independently implemented; existing repository `serial`, `core`, `watched` and graph abstractions are reused. No new dependency was installed. No GPL/AGPL source incorporated. The repository did not expose a root license during inspection, so do not assume license compatibility for future copying. A future borrowed component must record repository, immutable commit/version, exact files, license text, modifications and required notices in `licenses/` and here.
 
-No publicly accessible page implies public-domain rights. The app's existing source/per-work configuration applies to archive jobs. Protected connectors belong behind legitimate user sessions and credentials; this subsystem implements no access-control bypass.
+No publicly accessible page implies public-domain rights. Protected connectors belong behind legitimate user sessions and credentials; this subsystem implements no access-control bypass.

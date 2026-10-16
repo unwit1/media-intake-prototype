@@ -1,10 +1,10 @@
 # Download connector validation — 2026-09-29
 
-This report distinguishes connector wiring, controlled transfers, public discovery, and real file downloads. A passing fixture does not prove that every live host/file is accessible. No source approval settings in the user's library were changed.
+This report distinguishes connector wiring, controlled transfers, public discovery, and real file downloads. A passing fixture does not prove that every live host/file is accessible.
 
 ## Concurrent search and selection
 
-`watched._search_candidates` resolves applicable source approvals and configured priorities on the caller thread, then searches each approved source in a shared eight-worker pool. Workers do not use the caller's SQLite connection. Progress callbacks return to the caller thread. Results are collected deterministically, duplicate URLs/formats are removed, and exact normalized titles rank before fuzzy matches; format and source preferences break ties. Existing creator matching remains a gate. The book download loop tries the next candidate after a failed transfer.
+`watched._search_candidates` resolves applicable sources and configured priorities on the caller thread, then searches each source in a shared eight-worker pool. Workers do not use the caller's SQLite connection. Progress callbacks return to the caller thread. Results are collected deterministically, duplicate URLs/formats are removed, and exact normalized titles rank before fuzzy matches; format and source preferences break ties. Existing creator matching remains a gate. The book download loop tries the next candidate after a failed transfer.
 
 Tests cover simultaneous sources, a faster inferior match, failures, duplicate links, denied sources, callback thread ownership, and 20 concurrent book requests sharing the same global limit. The existing book watch pool allows four active books and eight outstanding book tasks. Category search already had a bounded metadata/source pool; it now benefits from concurrent watched-source search internally too.
 
@@ -28,22 +28,22 @@ The live Pixeldrain route resolved a CBR filename, size and SHA-256 metadata suc
 | Terabox / 1024terabox | Explicit manual/session-required result | Live link inventory confirms these variants; no authentication automation |
 | GoFile / Google Drive / 1fichier | Explicit manual/session-required result | Proper credentials/session/wait handling needed; no fabricated direct URLs |
 
-Host restrictions, CAPTCHAs, quotas, takedowns and missing files stop extraction and produce warnings. No limit bypass, alternate proxy, CAPTCHA solver or private-session borrowing is implemented. The host registry also serves static detail connectors in `download_connectors.py`, retaining the originating source's rights/provenance.
+Host restrictions, CAPTCHAs, quotas, takedowns and missing files stop extraction and produce warnings. No limit bypass, alternate proxy, CAPTCHA solver or private-session borrowing is implemented. The host registry also serves static detail connectors in `download_connectors.py`, retaining the originating source's provenance.
 
 Core HTTP downloads now verify Content-Length when available, host-declared size and SHA-256 before completing the queue item. Failures remove partial files and retain an actionable failed state. Each public file-host path was tested through real local HTTP with original bytes; a deliberately wrong checksum failed safely.
 
 ## Current source coverage
 
-`tools/smoke_download_connectors.py` checked 24 source keys using at most one bounded public query each (four parallel domains). It does not enable sources or download release files. Dated evidence is retained in [research/download-connector-probes.json](research/download-connector-probes.json). A zero-result query cannot distinguish no matching work from parser breakage; these sources are marked unverified rather than healthy.
+`tools/smoke_download_connectors.py` checked 24 source keys using at most one bounded public query each (four parallel domains). It does not download release files. Dated evidence is retained in [research/download-connector-probes.json](research/download-connector-probes.json). A zero-result query cannot distinguish no matching work from parser breakage; these sources are marked unverified rather than healthy.
 
 | Source(s) | Controlled coverage | Observed live discovery |
 |---|---|---|
 | GetComics | Search/pagination, post/direct/wrapped hosts, download, issue matching, mirror retry/deduplication, missing/denied/challenge paths, parser load | Search and post metadata work; wrapped Pixeldrain metadata works; sampled main file server 403 |
 | LibGen | Existing row/detail parsers and watched download routing tests | 14 metadata results; no files fetched; title filtering rejects unrelated editions |
-| Anna's Archive | Existing search/detail/rights tests | HTTP 403; no circumvention |
-| LNORI / NovelArchive | Existing catalog/resolution/chapter tests, approved local EPUB downloads | Metadata references returned; broad query can return unrelated titles, so match gating remains necessary |
-| Internet Archive | Public metadata/files, restricted-file omission, redirect checks, approved local EPUB transfer | No eligible file from one bounded sample; lending/restricted items excluded |
-| GitHub FOSS | Identified license/release-asset parser, approved local ZIP transfer | No eligible asset from one-repository sample; not proof of general failure |
+| Anna's Archive | Existing search/detail tests | HTTP 403; no circumvention |
+| LNORI / NovelArchive | Existing catalog/resolution/chapter tests, local EPUB downloads | Metadata references returned; broad query can return unrelated titles, so match gating remains necessary |
+| Internet Archive | Public metadata/files, restricted-file omission, redirect checks, local EPUB transfer | No eligible file from one bounded sample; lending/restricted items excluded |
+| GitHub FOSS | Identified license/release-asset parser, local ZIP transfer | No eligible asset from one-repository sample; not proof of general failure |
 | SourceForge | Project/release parser and allowed package tests | HTTP 403; live transfer unverified |
 | FOSShub | Explicit open-source metadata catalog tests | No matching sample; metadata-only connector, not binary downloader |
 | Meawfy / SoftArchive | Detail parser plus actual local EPUB transfers and shared host resolution | No matching sample; live downloads unverified |

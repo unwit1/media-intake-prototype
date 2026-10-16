@@ -2,7 +2,7 @@
 
 ## Integration
 
-`core.connect()` applies additive version-1 tables without dropping/changing existing media records. `watched.process_due_watches()` dispatches only webcomic watches bearing the new `metadata.webcomics` marker to the engine. Existing comic/manga/webtoon/feed watches remain on their original path. The GUI's existing worker, polling timer, settings/data-root conventions and Queue tab are reused. `core.download()` routes marked serial queue records to the webcomic asset worker after the existing rights checks.
+`core.connect()` applies additive version-1 tables without dropping/changing existing media records. `watched.process_due_watches()` dispatches only webcomic watches bearing the new `metadata.webcomics` marker to the engine. Existing comic/manga/webtoon/feed watches remain on their original path. The GUI's existing worker, polling timer, settings/data-root conventions and Queue tab are reused. `core.download()` routes marked serial queue records to the webcomic asset worker.
 
 The first-class Webcomics tab provides URL/title input, adapter selection, recipe loading, baseline versus archive-existing choice, automatic future archival, a library status table, a paginated chapter/entry/image tree, watch settings, source state, metadata evidence, recent events and persistent chapter overrides. Covers, reader progress, a local reader and a fully styled provenance editor are backlog features. This is a working first ingestion pass, not complete platform coverage.
 

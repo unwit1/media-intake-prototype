@@ -80,8 +80,9 @@ from the environment and are never stored.
 
 The window now calls the same helpers for logging, the IRC source list and the
 feed flags. `tests/test_workspace_headless.py` compares the window's options with
-the headless ones for a clean and a configured folder, and was checked to fail
-when either side drifts.
+the headless ones for a clean and a configured folder. It was checked to fail when
+the headless defaults or the IRC import change; the window side is covered only
+through the helpers it shares, since Tk was unavailable to run its own tests.
 
 Defaults that differ on purpose and are unchanged: the window uses
 `~/MediaIntakeData` (beside the executable in a frozen build), the CLI uses
@@ -118,8 +119,8 @@ Defaults that differ on purpose and are unchanged: the window uses
 * The window's own tests need Tk and could not be run in the environment this was
   built in; the parity test covers the settings and IRC logic the window shares.
 * `test_book_batch.py::test_two_connections_share_one_batch_without_double_processing`
-  fails about 1 run in 12 with a SQLite "database is locked" error, on the
-  original code as well.
+  fails occasionally with a SQLite "database is locked" error (3 of 50 isolated
+  runs, on the original code and on this branch alike).
 
 ## Tests
 

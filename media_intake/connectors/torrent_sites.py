@@ -188,7 +188,8 @@ def rutracker_login(spec, config, opener):
             'login_password': password.encode('cp1251', 'replace'), 'login': 'вход'.encode('cp1251')}
     body, _url, headers = request(spec.label, f"{config['base']}/forum/login.php",
                                   data=urllib.parse.urlencode(form).encode('ascii'), opener=opener,
-                                  headers={'Content-Type': 'application/x-www-form-urlencoded'})
+                                  headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                                  follow_redirects=False)
     cookies = [value.split(';', 1)[0] for value in headers.get_all('Set-Cookie') or []]
     session = next((cookie for cookie in cookies if cookie.startswith('bb_session=')), '')
     if not session:

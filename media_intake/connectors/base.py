@@ -14,7 +14,6 @@ import urllib.parse
 import urllib.request
 import zlib
 
-from ..core import open_url
 
 USER_AGENT = 'Mozilla/5.0 (compatible; MediaIntake/0.4; +personal library intake)'
 MAX_RESPONSE_BYTES = 6_000_000
@@ -94,18 +93,35 @@ def _decode(body, encoding):
 
 
 def looks_like_challenge(body):
-    head = body[:6000].casefold()
+    head = body[:6000].lower()
     return any(marker in head for marker in (
         b'cf-browser-verification', b'challenge-platform', b'just a moment...',
         b'attention required! | cloudflare', b'ddos-guard', b'cf_chl_opt'))
 
 
+def _urlopen(req, timeout):
+    # Unlike core.open_url this keeps an error reply readable, so a browser-check page
+    # behind a 403/503 can be recognised.
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+class _KeepRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # hand the 3xx reply (and its Set-Cookie headers) back to the caller
+
+
+_NO_REDIRECT = urllib.request.build_opener(_KeepRedirect())
+
+
 def request(source, url, *, data=None, headers=None, timeout=25, max_bytes=MAX_RESPONSE_BYTES,
-            opener=None, method=None):
+            opener=None, method=None, follow_redirects=True):
     """Fetch a page or API response, turning network and HTTP failures into SourceError.
 
-    Returns (body bytes, final url, response headers).
+    Returns (body bytes, final url, response headers). With follow_redirects=False a
+    3xx reply is returned as-is, which sign-in forms need to keep their cookies.
     """
+    if not follow_redirects and opener is None:
+        opener = lambda req, timeout: _NO_REDIRECT.open(req, timeout=timeout)
     base_headers = {'User-Agent': USER_AGENT, 'Accept-Encoding': 'gzip',
                     'Accept': '*/*', 'Accept-Language': 'en;q=0.9,*;q=0.5'}
     base_headers.update(headers or {})
@@ -114,16 +130,20 @@ def request(source, url, *, data=None, headers=None, timeout=25, max_bytes=MAX_R
         base_headers.setdefault('Content-Type', 'application/x-www-form-urlencoded')
     req = urllib.request.Request(url, data=data, headers=base_headers, method=method)
     try:
-        with (opener or open_url)(req, timeout=timeout) as reply:
+        with (opener or _urlopen)(req, timeout=timeout) as reply:
             body = reply.read(max_bytes + 1)
             final_url = reply.geturl()
             reply_headers = reply.headers
     except urllib.error.HTTPError as exc:
         body = b''
         try:
-            body = exc.read(20000) or b''
+            body = _decode(exc.read(20000) or b'', exc.headers.get('Content-Encoding'))
         except Exception:
             pass
+        finally:
+            exc.close()
+        if not follow_redirects and 300 <= exc.code < 400:
+            return body, url, exc.headers
         raise http_error(source, exc.code, body) from exc
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
         raise network_error(source, exc) from exc

@@ -307,7 +307,7 @@ def search_sources(query, category, options=None, keys=None, pages=None, opener=
     runnable, skipped, approvals = [], {}, {}
     for spec in selected:
         config = configs.get(spec.key) or {}
-        if config.get('enabled') is False:
+        if config.get('enabled', spec.key not in OFF_BY_DEFAULT) is False:
             skipped[spec.key] = 'turned off in Settings → Sources'
             continue
         if spec.file_capable:

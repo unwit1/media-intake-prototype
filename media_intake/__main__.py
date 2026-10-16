@@ -1,7 +1,7 @@
 import argparse
 import json
 import sys
-from .core import connect, download, enqueue, import_calibre, list_items, search_catalog, search_opds
+from .core import download, enqueue, import_calibre, list_items, search_catalog, search_opds
 from .sources import SITE_PROFILES, resolve_detail, search_openlibrary, search_site
 from .irc import enqueue_irc, search_irc
 from .fmhy import candidates, fallback_search, refresh_directory
@@ -30,6 +30,8 @@ def main():
     wc.add_argument('url'); wc.add_argument('--title'); wc.add_argument('--recipe', help='Declarative recipe JSON file')
     wc.add_argument('--adapter'); wc.add_argument('--archive-existing', action='store_true')
     sub.add_parser('list-webcomics')
+    pw = sub.add_parser('process-watches', help='Check every due watched item once (for scheduled runs; no GUI needed)')
+    pw.add_argument('--force', action='store_true', help='check watches that are not due yet'); pw.add_argument('--library', help='library folder (default: the saved setting, else <root>/downloads)')
     wcp = sub.add_parser('poll-webcomics'); wcp.add_argument('--force', action='store_true'); wcp.add_argument('--library')
     b = sub.add_parser('add-json'); b.add_argument('file'); b.add_argument('--index', type=int, default=0)
     l = sub.add_parser('list'); l.add_argument('--state')
@@ -52,7 +54,8 @@ def main():
         gui_main(args.root)
         return
     else:
-        db = connect(args.root)
+        from .workspace import ensure_workspace, library_folder
+        db = ensure_workspace(args.root)
         if args.action == 'add': result = enqueue(db, {k: v for k, v in vars(args).items() if k in ('title','author','url','format','source','series','series_index') and v is not None})
         elif args.action == 'add-irc': result = enqueue_irc(db, json.loads(open(args.config, encoding='utf-8').read()))
         elif args.action == 'add-irc-result': result = enqueue_irc(db, json.loads(open(args.file, encoding='utf-8').read())[args.index]['irc'])
@@ -64,6 +67,12 @@ def main():
                 with open(args.recipe, encoding='utf-8') as stream:
                     config['recipe'] = json.load(stream)
             result = {'watch_id': add_series(db, args.url, title=args.title, config=config, archive_existing=args.archive_existing)}
+        elif args.action == 'process-watches':
+            from .watched import process_due_watches
+            from .workspace import watch_source_options
+            folder = args.library or library_folder(db, args.root)
+            result = {'library': folder, 'checked': process_due_watches(
+                db, folder, force=args.force, source_options=watch_source_options(db, args.root))}
         elif args.action == 'list-webcomics':
             from .webcomics.storage import library
             result = library(db)
@@ -73,7 +82,7 @@ def main():
             rows = db.execute("SELECT * FROM watched_items WHERE kind='webcomic' AND json_extract(metadata,'$.webcomics') IS NOT NULL AND (? OR next_check_at<=?)",
                               (args.force, _now().isoformat())).fetchall()
             for row in rows:
-                process_watch(db, dict(row), args.library or str(__import__('pathlib').Path(args.root) / 'downloads'))
+                process_watch(db, dict(row), args.library or library_folder(db, args.root))
             result = {'checked': len(rows)}
         elif args.action == 'add-json': result = enqueue(db, json.loads(open(args.file, encoding='utf-8').read())[args.index])
         elif args.action == 'list': result = list_items(db, args.state)

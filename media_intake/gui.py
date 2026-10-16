@@ -16,7 +16,6 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from logging.handlers import RotatingFileHandler
 
 from .core import connect, download, enqueue, list_items
 from .comics import (list_comicvine_issues, mangadex_id_from_url, search_anilist,
@@ -51,7 +50,7 @@ from .kindle import (deliver_to_kindle, find_kindle_documents_folder,
                      set_setting as set_kindle_setting)
 from .media_catalogs import (search_lnori, search_mangaupdates, search_novelarchive,
                              search_ranobedb)
-from .rights_evidence import ensure_rights_evidence
+from .workspace import configure_logging, ensure_workspace, feed_flags, load_irc_sources
 from .serial import discover_feed, enqueue_serial
 from .sources import (resolve_detail, search_forum_threads,
                       search_google_books_metadata, search_openlibrary_metadata,
@@ -77,12 +76,9 @@ class MediaIntakeApp:
         self.root.title('Media Intake')
         self.root.geometry('1050x680')
         self.data_root = Path(data_root or _default_data_root())
-        self.rights_evidence_path = ensure_rights_evidence(self.data_root / 'rights-evidence.json')
+        self.rights_evidence_path = self.data_root / 'rights-evidence.json'
         self._configure_logging()
-        self.db = connect(self.data_root)
-        if get_setting(self.db, 'media_graph_change_cursor') is None:
-            latest_change = self.db.execute('SELECT COALESCE(MAX(id),0) AS id FROM media_graph_changes').fetchone()['id']
-            set_setting(self.db, 'media_graph_change_cursor', latest_change)
+        self.db = ensure_workspace(self.data_root, logging_enabled=False)
         self.default_irc_config = Path(__file__).resolve().parent.parent / 'examples' / 'irc-search.json'
         irc_default = str(self.default_irc_config) if self.default_irc_config.is_file() else ''
         self.library_folder = tk.StringVar(value=get_setting(self.db, 'library_folder', str(self.data_root / 'downloads')))
@@ -241,20 +237,8 @@ class MediaIntakeApp:
         self.root.after(15_000, self._schedule_podcast_checks)
 
     def _configure_logging(self):
-        self.log_folder = self.data_root / 'logs'
-        self.log_folder.mkdir(parents=True, exist_ok=True)
-        self.log_file = self.log_folder / 'media-intake.log'
-        self.logger = logging.getLogger('media_intake')
-        self.logger.setLevel(logging.INFO)
-        self.logger.propagate = False
-        for handler in list(self.logger.handlers):
-            self.logger.removeHandler(handler)
-            handler.close()
-        handler = RotatingFileHandler(self.log_file, maxBytes=2_000_000,
-                                      backupCount=4, encoding='utf-8')
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s %(name)s: %(message)s'))
-        self.logger.addHandler(handler)
+        self.logger, self.log_file = configure_logging(self.data_root)
+        self.log_folder = self.log_file.parent
 
     @staticmethod
     def _consume_graph_changes(db):
@@ -404,13 +388,10 @@ class MediaIntakeApp:
         chosen = filedialog.askdirectory(initialdir=str(self.data_root), title='Choose Media Intake data folder')
         if not chosen: return
         self.data_root = Path(chosen)
-        self.rights_evidence_path = ensure_rights_evidence(self.data_root / 'rights-evidence.json')
+        self.rights_evidence_path = self.data_root / 'rights-evidence.json'
         self._configure_logging()
         self.db.close()
-        self.db = connect(self.data_root)
-        if get_setting(self.db, 'media_graph_change_cursor') is None:
-            latest_change = self.db.execute('SELECT COALESCE(MAX(id),0) AS id FROM media_graph_changes').fetchone()['id']
-            set_setting(self.db, 'media_graph_change_cursor', latest_change)
+        self.db = ensure_workspace(self.data_root, logging_enabled=False)
         self._saved_watch_sources = None
         self.library_profiles = self._load_library_profiles()
         self.active_profile_id.set(get_setting(self.db, 'active_library_profile_id', '') or '')
@@ -1295,46 +1276,9 @@ class MediaIntakeApp:
             'Configured for this session: ' + (', '.join(configured) if configured else 'none'))
 
     def _load_irc_sources(self):
-        try:
-            sources = json.loads(get_setting(self.db, 'watch_irc_sources', '[]'))
-        except (TypeError, ValueError):
-            sources = []
-        sources = [source for source in sources if isinstance(source, dict)] if isinstance(sources, list) else []
-        remaining_paths = []
-        migrated = False
-        for config_path in (value.strip() for value in self.watch_irc_configs.get().split(';')):
-            if not config_path:
-                continue
-            try:
-                config = json.loads(Path(config_path).read_text(encoding='utf-8'))
-                if not isinstance(config, dict) or not config.get('server') or not config.get('channel'):
-                    raise ValueError('IRC config needs server and channel')
-                sources.append({
-                    'id': uuid.uuid4().hex,
-                    'name': Path(config_path).stem or config['server'],
-                    'server': config['server'], 'port': int(config.get('port', 6697)),
-                    'tls': bool(config.get('tls', True)),
-                    'verify_tls': bool(config.get('verify_tls', True)),
-                    'nick': config.get('nick') or 'MediaIntake',
-                    'channel': config['channel'],
-                    'password_env': config.get('password_env') or '',
-                    'timeout': int(config.get('timeout', 180)),
-                    'categories': list(CATEGORIES), 'enabled': True,
-                })
-                migrated = True
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                remaining_paths.append(config_path)
-        if migrated:
-            self.watch_irc_configs.set(';'.join(remaining_paths))
-            set_setting(self.db, 'watch_irc_configs', ';'.join(remaining_paths))
-        from .irc import ensure_ebook_presets
-        try:
-            applied = json.loads(get_setting(self.db, 'irc_presets_applied', '[]'))
-        except (TypeError, ValueError):
-            applied = []
-        sources, applied, _added = ensure_ebook_presets(sources, applied)
-        set_setting(self.db, 'irc_presets_applied', json.dumps(applied))
-        set_setting(self.db, 'watch_irc_sources', json.dumps(sources, ensure_ascii=False))
+        sources, remaining = load_irc_sources(self.db, self.watch_irc_configs.get())
+        if remaining != self.watch_irc_configs.get():
+            self.watch_irc_configs.set(remaining)
         return sources
 
     def _build_irc_sources(self, parent):
@@ -4171,34 +4115,7 @@ class MediaIntakeApp:
         opds_feeds = [value.strip() for value in self.watch_opds_feeds.get().split(';') if value.strip()]
         catalogs = [value.strip() for value in self.watch_catalogs.get().split(';') if value.strip()]
         irc_configs = [value.strip() for value in self.watch_irc_configs.get().split(';') if value.strip()]
-        comic_rss_configured = False
-        webfiction_rss_configured = False
-        taddy_configured = bool(self.taddy_user_id and self.taddy_api_key)
-        for row in self.db.execute('SELECT kind,source_url,metadata FROM watched_items'):
-            try:
-                metadata = json.loads(row['metadata'] or '{}')
-            except (TypeError, ValueError):
-                metadata = {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-            comic = metadata.get('comic') or {}
-            serial = metadata.get('serial') or {}
-            if not isinstance(comic, dict):
-                comic = {}
-            if not isinstance(serial, dict):
-                serial = {}
-            comic_feed = str(comic.get('feed_url') or row['source_url'] or '')
-            comic_host = (urllib.parse.urlsplit(comic_feed).hostname or '').casefold()
-            if comic.get('taddy_id') or comic.get('sss_url') or comic_host.endswith('taddy.org'):
-                taddy_configured = True
-            elif (row['kind'] in {'comic', 'comic_issue', 'manga', 'webcomic', 'webtoon'}
-                  and comic_feed and not comic.get('mangadex_id')
-                  and comic_host not in {'mangadex.org', 'www.mangadex.org'}):
-                comic_rss_configured = True
-            serial_feed = str(serial.get('feed_url') or row['source_url'] or '')
-            serial_host = (urllib.parse.urlsplit(serial_feed).hostname or '').casefold()
-            if row['kind'] == 'webfiction' and serial_feed and not serial_host.endswith('novelarchive.cc'):
-                webfiction_rss_configured = True
+        flags = feed_flags(self.db, bool(self.taddy_user_id and self.taddy_api_key))
         sources = {
             'rights_evidence_path': str(self.rights_evidence_path),
             'libgen': self.watch_libgen.get(),
@@ -4210,9 +4127,7 @@ class MediaIntakeApp:
             'irc_configs': irc_configs,
             'irc_sources': list(self.irc_sources),
             'comic_mirror_base': self.watch_comic_mirror_base.get().strip(),
-            'taddy_configured': taddy_configured,
-            'comic_rss_configured': comic_rss_configured,
-            'webfiction_rss_configured': webfiction_rss_configured,
+            **flags,
         }
         if sources != self._saved_watch_sources:
             for key, value in sources.items():

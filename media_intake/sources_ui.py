@@ -54,7 +54,7 @@ def approval_text(rights_path, key):
 def format_summary(item):
     """What a result offers, in plain words: '1080p, 720p · torrent', 'EPUB, PDF', 'NZB'."""
     variants = item.get('download_variants') or ([item] if item.get('connector_row') else [])
-    if not variants:
+    if not variants or item.get('discovery_only'):
         return item.get('format', '')
     labels, kinds = [], []
     for row in variants:

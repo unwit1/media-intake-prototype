@@ -51,6 +51,11 @@ def torrent_row(spec, category, *, name, magnet='', torrent_url='', info_hash=''
         row['video_subtype'] = video_subtype(info)
         if category == 'Anime':
             row['kind'] = 'anime'
+    if category in ('Books', 'Light novels', 'Comics', 'Manga'):
+        # "Pride and Prejudice by Jane Austen": keep the work title so it groups with catalogue entries.
+        match = re.match(r'^(.{2,}?)\s+by\s+([A-Z][\w.\' -]{2,60})$', row['title'])
+        if match:
+            row['title'], row['author'] = match.group(1).strip(), match.group(2).strip()
     if needs_resolve:
         row['resolve_connector'] = spec.key
     row.update(extra or {})
@@ -179,7 +184,20 @@ RUTRACKER_FORUM_HINTS = {
 }
 
 
+_RUTRACKER_SESSIONS = {}
+
+
 def rutracker_login(spec, config, opener):
+    """Sign in once per app session; repeated sign-ins make RuTracker ask for a CAPTCHA."""
+    cached = _RUTRACKER_SESSIONS.get((config.get('base'), config.get('username')))
+    if cached and not config.get('force_login'):
+        return cached
+    cookie = _rutracker_sign_in(spec, config, opener)
+    _RUTRACKER_SESSIONS[(config.get('base'), config.get('username'))] = cookie
+    return cookie
+
+
+def _rutracker_sign_in(spec, config, opener):
     username, password = (config.get('username') or '').strip(), config.get('password') or ''
     if not username or not password:
         raise SourceError(spec.label, 'searching needs a RuTracker account.', 'config',
@@ -211,6 +229,9 @@ def search_rutracker(spec, query, category, page=1, config=None, opener=None):
     text = body.decode('cp1251', 'replace') if b'charset=windows-1251' in body[:3000].lower() else \
         body.decode('utf-8', 'replace')
     if 'login.php' in final_url or 'login_username' in text and 'tor-tbl' not in text:
+        _RUTRACKER_SESSIONS.pop((config.get('base'), config.get('username')), None)
+        if not config.get('force_login'):
+            return search_rutracker(spec, query, category, page, dict(config, cookie='', force_login=True), opener)
         raise SourceError(spec.label, 'RuTracker signed the app out before searching.', 'auth',
                           'Check your username and password in Settings → Sources.')
     tree = parse_html(text)

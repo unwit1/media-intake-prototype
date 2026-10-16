@@ -373,6 +373,33 @@ class UsenetDownloadTest(DownloadCase):
                 download(self.db, nothing, self.root)
         self.assertIn('need SABnzbd or NZBGet', self.item(nothing)['error'])
 
+    def test_nzbget_json_rpc_is_followed_to_completion(self):
+        polls = []
+
+        def rpc(request):
+            self.assertTrue(request['headers']['Authorization'].startswith('Basic '))
+            call = json.loads(request['body'])
+            polls.append(call['method'])
+            result = {'append': 41, 'version': '24.3', 'editqueue': True}.get(call['method'])
+            if call['method'] == 'append':
+                import base64
+                self.assertIn(b'<nzb', base64.b64decode(call['params'][1]))
+            if call['method'] == 'listgroups':
+                result = [{'NZBID': 41, 'Status': 'DOWNLOADING', 'FileSizeMB': 100, 'RemainingSizeMB': 60}] \
+                    if polls.count('listgroups') < 2 else []
+            if call['method'] == 'history':
+                result = [{'NZBID': 41, 'Status': 'SUCCESS/ALL', 'FileSizeMB': 100, 'DestDir': '/data/notld'}]
+            return Reply(json.dumps({'result': result}), content_type='application/json')
+        with FakeSite() as indexer, FakeSite() as nzbget:
+            nzbget.route('POST', '/jsonrpc', rpc)
+            save_source_config(self.db, 'usenet_client', {'client': 'nzbget', 'url': nzbget.base,
+                                                          'username': 'nzbget', 'password': 'tegbzn6789'})
+            item_id = self.queue(self.row(indexer))
+            download(self.db, item_id, self.root)
+        item = self.item(item_id)
+        self.assertEqual((item['state'], item['file_path']), ('downloaded', str(Path('/data/notld'))))
+        self.assertEqual(polls[0], 'append')
+
     def test_without_a_newsreader_the_nzb_can_be_saved_for_later(self):
         save_source_config(self.db, 'usenet_client', {'url': '', 'nzb_mode': 'save'})
         with FakeSite() as indexer:

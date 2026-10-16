@@ -1,5 +1,11 @@
 # PirateBot → Media Intake: 15 high-potential source research leads
 
+> **Update (2026-10-16):** all 15 candidates are now implemented as connectors in
+> `media_intake/connectors/` (registry `review_state: implemented_connector`, schema 2). File-capable
+> connectors still default to `approved_for_download: false`, and none was verified against its live
+> site. See [SOURCES.md](SOURCES.md) for the verification table. The text below is the original
+> research-only audit.
+
 **Date:** 2026-10-16  
 **Scope:** controlled security-review branch; no automatic search/download integrations or changed source rights.  
 **Machine-readable registry:** [piratebot_source_candidates_2026-10-16.json](piratebot_source_candidates_2026-10-16.json)

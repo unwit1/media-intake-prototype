@@ -121,6 +121,30 @@ class TorrentSiteSearchTest(unittest.TestCase):
             resolved = resolve_download(row, options)
         self.assertEqual(info_hash_from_magnet(resolved['resolved_url']), '4' * 40)
 
+    def test_rutracker_signs_in_once_and_again_only_when_signed_out(self):
+        from media_intake.connectors import torrent_sites
+        torrent_sites._RUTRACKER_SESSIONS.clear()
+        pages = iter([fixture('rutracker_tracker.html'), b'<html><form><input name="login_username"></form></html>',
+                      fixture('rutracker_tracker.html'), fixture('rutracker_tracker.html')])
+        with FakeSite() as site:
+            site.route('POST', '/forum/login.php', Reply(b'', 302, {'Location': '/forum/index.php',
+                                                                   'Set-Cookie': 'bb_session=0-1-x; path=/'}))
+            site.route('GET', '/forum/tracker.php', lambda request: Reply(next(pages),
+                                                                          content_type='text/html; charset=windows-1251'))
+            options = configs('rutracker', site.base, username='reader', password='secret')
+            search_one('rutracker', 'night', 'Videos', 1, options)
+            self.assertEqual(len(site.hits('/forum/login.php')), 1)
+            search_one('rutracker', 'night', 'Videos', 1, options)  # signed out: signs in again, then searches
+            self.assertEqual(len(site.hits('/forum/login.php')), 2)
+            search_one('rutracker', 'night', 'Videos', 1, options)
+            self.assertEqual(len(site.hits('/forum/login.php')), 2)
+
+    def test_ebook_releases_named_title_by_author_keep_the_work_title(self):
+        from media_intake.connectors.torrent_sites import torrent_row
+        row = torrent_row(CONNECTORS['thepiratebay'], 'Books', name='Pride and Prejudice by Jane Austen EPUB',
+                          info_hash=HASH_A)
+        self.assertEqual((row['title'], row['author'], row['quality']), ('Pride and Prejudice', 'Jane Austen', 'EPUB'))
+
     def test_rutracker_without_an_account_explains_what_is_needed(self):
         with self.assertRaises(SourceError) as caught:
             search_one('rutracker', 'x', 'Videos', 1, configs('rutracker', 'https://rutracker.org'))

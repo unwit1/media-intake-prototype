@@ -14,6 +14,7 @@ python -m media_intake add-json results.json --index 0
 python -m media_intake list
 python -m media_intake download 1
 python -m media_intake import-calibre 1 --library "/path/to/Calibre Library"
+python -m media_intake process-watches   # check every due watch once, no window needed (for a scheduler)
 ```
 
 The GUI provides source search, result review, direct URL intake, queue status and transfer progress, downloads, and a persistent **Watched** tab. Network work runs in the background so the window remains responsive. It uses the same SQLite queue and download validation as the command line commands.

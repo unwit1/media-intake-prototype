@@ -106,7 +106,11 @@ def resolve_zlibrary(spec, item, config=None, opener=None):
     if file.get('allowDownload') is False:
         raise SourceError(spec.label, 'this book is not available for download.', 'unsupported',
                           'Choose another edition.')
-    return {'url': file['downloadLink'], 'format': '.' + str(file.get('extension') or item['format']).lstrip('.')}
+    extension = '.' + str(file.get('extension') or item['format']).lstrip('.').casefold()
+    if extension not in EXTENSIONS:
+        raise SourceError(spec.label, f'the file is a {extension.lstrip(".").upper()}, which the library cannot '
+                          'check or open.', 'unsupported', 'Choose an EPUB, PDF, MOBI or AZW3 edition.')
+    return {'url': file['downloadLink'], 'format': extension}
 
 
 # --------------------------------------------------------------------------- MagzDB

@@ -161,13 +161,15 @@ def info_hash_from_magnet(magnet):
     return ''
 
 
-def magnet_link(info_hash, name, trackers=PUBLIC_TRACKERS):
+def magnet_link(info_hash, name, trackers=None):
     info_hash = normalize_info_hash(info_hash)
+    trackers = PUBLIC_TRACKERS if trackers is None else trackers
     if not info_hash:
         raise ValueError('Missing BitTorrent info hash')
-    params = [('xt', f'urn:btih:{info_hash}'), ('dn', str(name or info_hash)[:200])]
-    params += [('tr', tracker) for tracker in trackers]
-    return 'magnet:?' + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    # The xt value stays readable (urn:btih:...): clients and the queue's validation look for it as-is.
+    query = f'xt=urn:btih:{info_hash}&dn=' + urllib.parse.quote(str(name or info_hash)[:200], safe='')
+    query += ''.join('&tr=' + urllib.parse.quote(tracker, safe='') for tracker in trackers)
+    return 'magnet:?' + query
 
 
 def release_identity(row):

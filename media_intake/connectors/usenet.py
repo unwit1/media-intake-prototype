@@ -289,8 +289,10 @@ def test_client(config, opener=None):
     return f'SABnzbd {version} connected'
 
 
-def follow_job(config, job_id, *, control, progress, poll=2.0, opener=None, stall_seconds=6 * 3600,
-               sleep=time.sleep):
+POLL_SECONDS = 2.0
+
+
+def follow_job(config, job_id, *, control, progress, poll=None, opener=None, stall_seconds=6 * 3600):
     """Mirror a SABnzbd/NZBGet job into the queue until it completes. Returns the completed folder."""
     from ..transfer import TransferCancelled, TransferError, TransferPaused, format_bytes
     first = True
@@ -326,7 +328,7 @@ def follow_job(config, job_id, *, control, progress, poll=2.0, opener=None, stal
         if total:
             label += f' · {format_bytes(done or 0)} of {format_bytes(total)}'
         progress(int(done) if done is not None else None, int(total) if total else None, label)
-        sleep(poll)
+        time.sleep(POLL_SECONDS if poll is None else poll)
 
 
 def _float_mb(value):

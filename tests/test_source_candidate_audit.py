@@ -1,6 +1,7 @@
-"""Offline, negative-control regression tests for PirateBot candidate intake."""
+"""Offline regression tests for PirateBot candidate intake and its promotion to connectors."""
 import unittest
 
+from media_intake.connectors import CONNECTORS
 from media_intake.discovery import CATEGORIES, DOWNLOAD_CONNECTORS, _catalog_rows
 from media_intake.rights_evidence import DOWNLOAD_SOURCES, initial_document, source_download_rights
 from media_intake.source_candidate_audit import (
@@ -21,19 +22,26 @@ class PiratebotCandidateAuditTests(unittest.TestCase):
                 self.assertIn(row["observational_state"], {
                     "historical_reference", "named_in_source_not_live_checked"})
                 self.assertTrue(set(row["proposed_media_intake_categories"]) <= set(CATEGORIES))
-                self.assertEqual(row["review_state"], "research_only")
+                self.assertEqual(row["review_state"], "implemented_connector")
+                self.assertIn(row["connector_key"], CONNECTORS)
 
-    def test_no_candidate_silently_becomes_an_enabled_connector(self):
+    def test_promoted_connectors_never_start_approved_for_download(self):
         approved = initial_document()
         for row in load_research_source_candidates():
             with self.subTest(source=row["name"]):
-                self.assertFalse(row["live_search_implemented"])
-                self.assertFalse(row["direct_download_implemented"])
+                spec = CONNECTORS[row["connector_key"]]
                 self.assertFalse(row["default_approved_for_download"])
-                self.assertNotIn(row["piratebot_id"], DOWNLOAD_SOURCES)
+                self.assertFalse(row["live_verified"])
+                self.assertEqual(row["direct_download_implemented"], spec.file_capable)
+                self.assertIsNone(source_download_rights(approved, row["connector_key"]))
                 self.assertIsNone(source_download_rights(approved, "research:" + row["piratebot_id"]))
-                for connectors in DOWNLOAD_CONNECTORS.values():
-                    self.assertNotIn(row["name"], connectors)
+                if spec.file_capable:
+                    self.assertIn(row["connector_key"], DOWNLOAD_SOURCES)
+                    self.assertTrue(any(spec.label in names for names in DOWNLOAD_CONNECTORS.values()))
+                else:
+                    self.assertNotIn(row["connector_key"], DOWNLOAD_SOURCES)
+                    for connectors in DOWNLOAD_CONNECTORS.values():
+                        self.assertNotIn(spec.label, connectors)
 
     def test_candidate_lookup_is_local_and_only_returns_metadata(self):
         matches = find_research_source_candidates("nyaa", "Anime")
@@ -56,6 +64,15 @@ class PiratebotCandidateAuditTests(unittest.TestCase):
     def test_research_catalog_rejects_promoted_or_malformed_records(self):
         with self.assertRaises(ValueError):
             metadata_preview({"name": "Forged", "review_state": "approved"})
+        with self.assertRaises(ValueError):
+            import json, tempfile, pathlib
+            from media_intake.source_candidate_audit import _REGISTRY_PATH
+            document = json.loads(pathlib.Path(_REGISTRY_PATH).read_text(encoding="utf-8"))
+            document["candidates"][0]["default_approved_for_download"] = True
+            with tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "forged.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                load_research_source_candidates(path)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,10 @@ from .media_graph import (DEFAULT_WATCH_POLICY, capture_graph_snapshot, get_medi
                           set_reviewed_release_date, set_watch_policy)
 from .media_resolver import (refresh_graph as refresh_media_graph,
                              resolve as resolve_media_query)
+from .connectors import CONNECTORS as SOURCE_CONNECTORS, connectors_for, load_all_configs, missing_settings
+from .sources_ui import (ReleasePicker, SourcesSettingsPanel, connector_options, format_summary,
+                         queue_rows, single_source_choices, source_summary, spec_for_choice,
+                         wants_release_picker)
 from .wikidata import import_wikidata_entity, search_wikidata
 
 
@@ -491,7 +495,7 @@ class MediaIntakeApp:
                              'MyAbandonware (download)', 'OldGamesDownload (download)', 'AbandonwareGames (download)', 'GOG Revived (download)', 'AnkerGames (download)',
                              'FMHY directory', 'Snahp forum threads', 'NovelArchive (metadata)', 'LNORI (metadata)',
                              'RanobeDB (metadata)', 'MangaUpdates (metadata)', 'GetComics (download)',
-                             'Public-domain comic mirror (download)']).pack(side='left', padx=6)
+                             'Public-domain comic mirror (download)'] + single_source_choices()).pack(side='left', padx=6)
         ttk.Entry(advanced, textvariable=self.site_base, width=28).pack(side='left', padx=4)
         ttk.Button(advanced, text='Snahp browser helper', command=self.open_forum_helper).pack(side='left', padx=6)
         ttk.Label(parent, textvariable=self.search_category_info,
@@ -526,6 +530,10 @@ class MediaIntakeApp:
         ttk.Button(buttons, text='Open selected link', command=self.open_selected_link).pack(side='left')
         ttk.Button(buttons, text='Send to download manager',
                    command=self.send_selected_results_to_downloader).pack(side='left', padx=6)
+        ttk.Button(buttons, text='Choose release…', command=self.choose_release).pack(side='left')
+        self.load_more_button = ttk.Button(buttons, text='Load more results', command=self.load_more_results,
+                                           state='disabled')
+        self.load_more_button.pack(side='left', padx=6)
 
         add = ttk.LabelFrame(parent, text='Add a direct file')
         add.pack(fill='x', pady=(12, 0))
@@ -650,6 +658,9 @@ class MediaIntakeApp:
         pages.add(profiles_page, text='Profiles')
         external_page, external_content = self._scrollable_frame(pages, padding=8)
         pages.add(external_page, text='Downloads')
+        sources_page, sources_content = self._scrollable_frame(pages, padding=8)
+        pages.add(sources_page, text='Sources')
+        self.sources_panel = SourcesSettingsPanel(self, sources_content)
         self._build_external_download_settings(external_content)
         self._build_irc_sources(irc_content)
         self._build_metadata_api_settings(metadata_content)
@@ -2145,14 +2156,41 @@ class MediaIntakeApp:
             notes.append('TVMaze and Wikidata work without a key; add TMDB_API_KEY in Metadata APIs for movie and TV expansion.')
         if category == 'Games' and not (self.igdb_client_id and self.igdb_client_secret):
             notes.append('Steam and Wikidata work without a key; add IGDB Twitch credentials in Metadata APIs for game relationships.')
+        notes.append(self._connector_status_note(category))
         self.search_category_info.set(
             f'Metadata repositories: {metadata}. Download sources: {downloads}. ' + ' '.join(notes))
+
+    def _connector_status_note(self, category):
+        """Which torrent, Usenet and library sites this category will search, and why others will not."""
+        try:
+            configs = load_all_configs(self.db)
+            rights = load_rights_evidence(self.rights_evidence_path)
+        except Exception:
+            return ''
+        ready, waiting = [], []
+        for spec in connectors_for(category):
+            config = configs.get(spec.key) or {}
+            if not config.get('enabled'):
+                continue
+            if spec.file_capable and not source_download_rights(rights, spec.key):
+                waiting.append(f'{spec.label} (needs YES in rights file)')
+            elif missing_settings(spec, config) and config.get('access') != 'jackett':
+                waiting.append(f'{spec.label} (needs setup)')
+            else:
+                ready.append(spec.label)
+        parts = []
+        if ready:
+            parts.append('Also searching: ' + ', '.join(ready) + '.')
+        if waiting:
+            parts.append('Not searched yet: ' + ', '.join(waiting) + ' — see Settings → Sources.')
+        return ' '.join(parts)
 
     def search(self):
         query = self.query.get().strip()
         if not query:
             messagebox.showinfo('Media Intake', 'Enter a title, author, or search term.')
             return
+        self._set_more_pages({})
         source = self.source.get()
         if source == 'Snahp forum threads':
             self.open_forum_helper()
@@ -2160,9 +2198,19 @@ class MediaIntakeApp:
         if source == 'Jackett (torrents)':
             self._search_jackett(query)
             return
+        if spec_for_choice(source):
+            self._search_connector(spec_for_choice(source), query)
+            return
         if source == 'All connected in category':
             category = self.search_category.get()
             options = self._watch_sources()
+            if category != 'Auto-detect':
+                # Torrent, Usenet and library sites are category-targeted; Auto-detect leaves them out
+                # rather than asking each site once per category.
+                options = connector_options(self, options)
+            self._more_search = {'query': query, 'category': category, 'options': options,
+                                 'priority': None if category == 'Auto-detect' else
+                                 get_download_priority(self.db, category, options)}
             priority = ({name: get_download_priority(self.db, name, options)
                          for name in CATEGORIES} if category == 'Auto-detect'
                         else get_download_priority(self.db, category, options))
@@ -2363,6 +2411,10 @@ class MediaIntakeApp:
         results = response.get('results') or []
         errors = response.get('errors') or []
         self.show_results(results)
+        self._set_more_pages(response.get('connector_pages') or {})
+        if response.get('connector_skipped') is not None or response.get('notices'):
+            self.logger.info('Source connectors skipped: %s; notices: %s',
+                             response.get('connector_skipped'), response.get('notices'))
         searched = len(response.get('searched') or [])
         correction = response.get('query_correction') or {}
         if response.get('comic_summary'):
@@ -2402,7 +2454,12 @@ class MediaIntakeApp:
                 summary += f' {len(errors)} connector error(s) across {searched} searches; details are in logs.'
             self._done(summary)
         elif errors:
-            self._done(f'{corrected}{len(results)} result(s); {len(errors)} connector error(s) across {searched} searches (details in logs)')
+            first = next((error for error in errors if any(error.startswith(spec.label + ':')
+                                                            for spec in SOURCE_CONNECTORS.values())), '')
+            self._done(f'{corrected}{len(results)} result(s); {len(errors)} connector error(s) across {searched} '
+                       f'searches' + (f'. {first}' if first else ' (details in logs)'))
+            for error in errors:
+                self.logger.warning('Search source error: %s', error)
         else:
             self._done(f'{corrected}{len(results)} result(s) across {searched} connected searches')
 
@@ -3245,6 +3302,74 @@ class MediaIntakeApp:
             settings['directory'] = self.library_folder.get().strip()
         return settings
 
+    def _search_connector(self, spec, query):
+        """Search one source connector directly (Search one source), with paging."""
+        from .connectors import search_one
+        category = self.search_category.get()
+        if category == 'Auto-detect' or category not in spec.categories:
+            category = 'Videos' if 'Videos' in spec.categories else sorted(spec.categories)[0]
+        if spec.file_capable:
+            approval = source_download_rights(load_rights_evidence(self.rights_evidence_path), spec.key)
+            if not approval:
+                messagebox.showinfo('Media Intake', (
+                    f'{spec.label} is NO in the local rights-evidence.json file, so it is not searched or '
+                    'downloaded. Use Settings → Sources → Open rights file and set its approved_for_download to '
+                    'true if you are entitled to download from it.'))
+                return
+        options = connector_options(self, {})
+        configs = options['source_configs']
+        rights_path = str(self.rights_evidence_path)
+
+        def action(page=1):
+            found = search_one(spec.key, query, category, page, configs)
+            for row in found.rows:
+                row.update(connector_row=True, category=category)
+                if spec.file_capable:
+                    row['rights_evidence_path'] = rights_path
+            return found
+
+        def shown(found, append=False):
+            rows = found.rows
+            for row in rows:
+                row['format_label'] = row.get('quality')
+            self.show_results((self.results if append else []) + rows)
+            self._more_search = {'single': spec.key, 'query': query, 'category': category, 'action': action}
+            self._set_more_pages({spec.key: found.page + 1} if found.has_more and spec.pages else {})
+            note = f' {found.notice}' if found.notice else ''
+            self._done(f'{len(self.results)} result(s) from {spec.label} ({category}).{note}')
+        self._more_search_shown = shown
+        self._worker(f'Searching {spec.label}…', action, shown,
+                     lambda error: (self._done(str(error)), messagebox.showerror('Media Intake', str(error))))
+
+    def _set_more_pages(self, pages):
+        self._more_pages = dict(pages or {})
+        button = getattr(self, 'load_more_button', None)
+        if button is not None:
+            button.configure(state='normal' if self._more_pages else 'disabled')
+
+    def load_more_results(self):
+        state = getattr(self, '_more_search', None)
+        pages = dict(getattr(self, '_more_pages', {}) or {})
+        if not state or not pages:
+            return
+        if state.get('single'):
+            page = pages[state['single']]
+            self._worker('Loading more results…', lambda: state['action'](page),
+                         lambda found: self._more_search_shown(found, append=True))
+            return
+        from .discovery import search_more_connector_results
+        existing = list(self.results)
+
+        def loaded(response):
+            self.show_results(response['results'])
+            self._set_more_pages(response.get('connector_pages') or {})
+            errors = response.get('errors') or []
+            self._done(f"Loaded {response.get('added', 0)} more release(s)"
+                       + (f'; {errors[0]}' if errors else ''))
+        self._worker('Loading more results…', lambda: search_more_connector_results(
+            state['query'], state['category'], state['options'], pages, existing, state.get('priority') or ()),
+            loaded)
+
     def _search_jackett(self, query):
         from .jackett import search_jackett
         settings = dict(self.external_dl_settings)
@@ -4008,8 +4133,8 @@ class MediaIntakeApp:
             self.results_view.insert('', 'end', iid=str(index), values=(
                 item.get('category') or self.search_category.get(), item.get('title', ''),
                 self._result_creator_label(item), item.get('series', ''),
-                self._series_order_label(item), item.get('format', ''),
-                item.get('display_source') or item.get('source', '')))
+                self._series_order_label(item), format_summary(item),
+                source_summary(item)))
         self._done(f'{len(results)} result(s)')
 
     @staticmethod
@@ -4051,10 +4176,28 @@ class MediaIntakeApp:
             label = '~' + label
         return label
 
+    def choose_release(self):
+        selected = self.results_view.selection()
+        if not selected:
+            return
+        item = self.results[int(selected[0])]
+        if not (item.get('download_variants') or item.get('connector_row')) or item.get('discovery_only'):
+            messagebox.showinfo('Choose release', 'This result has no downloadable releases. Try another result, '
+                                'or check Settings → Sources for sources that need approval or an account.')
+            return
+        ReleasePicker(self, item)
+
     def queue_result(self):
         selected = self.results_view.selection()
         if not selected: return
         item = self.results[int(selected[0])]
+        if wants_release_picker(item):
+            ReleasePicker(self, item)
+            return
+        if item.get('connector_row') and not item.get('discovery_only'):
+            queue_rows(self, [dict(self.results[int(index)]) for index in selected
+                              if self.results[int(index)].get('connector_row')])
+            return
         if item.get('external_download'):
             from .torrents import available
             if not available():
@@ -4121,7 +4264,9 @@ class MediaIntakeApp:
 
     def activate_result(self):
         selected = self.results_view.selection()
-        if selected and self.results[int(selected[0])].get('series_bundle'):
+        if selected and wants_release_picker(self.results[int(selected[0])]):
+            ReleasePicker(self, self.results[int(selected[0])])
+        elif selected and self.results[int(selected[0])].get('series_bundle'):
             self.add_selected_search_to_watched()
         elif selected and (self.results[int(selected[0])].get('forum_thread')
                          or self.results[int(selected[0])].get('discovery_only')

@@ -25,6 +25,7 @@ from .download_connectors import (ANIME_DOWNLOAD_ADAPTERS,
                                   search_internet_archive, search_meawfy,
                                   search_registered_download_site,
                                   search_softarchive, search_sourceforge_foss)
+from .connectors import CONNECTORS as SOURCE_CONNECTORS, connectors_for, search_sources
 from .fanfiction import story_url_key
 from .media_catalogs import (resolve_catalog_file_links, search_lnori,
                              search_mangaupdates, search_novelarchive,
@@ -87,6 +88,15 @@ for _source_key, _provider, _categories in GENERAL_DOWNLOAD_ADAPTERS:
         if _provider not in DOWNLOAD_CONNECTORS[_category]:
             DOWNLOAD_CONNECTORS[_category] += (_provider,)
 
+# Source connectors (media_intake/connectors): file sources join the download priority
+# list; AniDB and WorldCat are metadata repositories.
+for _spec in SOURCE_CONNECTORS.values():
+    for _category in sorted(_spec.categories):
+        if _spec.file_capable and _spec.label not in DOWNLOAD_CONNECTORS[_category]:
+            DOWNLOAD_CONNECTORS[_category] += (_spec.label,)
+        elif _spec.role == 'metadata' and _spec.label not in METADATA_CONNECTORS[_category]:
+            METADATA_CONNECTORS[_category] += (_spec.label,)
+
 CATEGORY_CONNECTORS = {
     category: tuple(dict.fromkeys(METADATA_CONNECTORS.get(category, ()) +
                                   DOWNLOAD_CONNECTORS.get(category, ())))
@@ -116,6 +126,7 @@ SOURCE_KEY_LABELS = {
     'public_domain_comic_mirror': 'Public-domain comic mirror',
     'taddy': 'Taddy', 'webfiction_rss_atom': 'RSS / Atom feeds',
     'fanficfare': 'FanFicFare',
+    **{_key: _spec.label for _key, _spec in SOURCE_CONNECTORS.items()},
 }
 
 _PROVIDER_LABELS = {
@@ -147,7 +158,7 @@ _PROVIDER_LABELS = {
     'fanficfare story': 'FanFicFare',
 }
 
-_DOWNLOAD_FORMATS = EXTENSIONS
+_DOWNLOAD_FORMATS = EXTENSIONS | {'.torrent', '.nzb'}
 _CATEGORY_FORMATS = {
     'Books': BOOK_FORMATS | AUDIO_FORMATS,
     'Comics': COMIC_FORMATS | {'.pdf'},
@@ -196,6 +207,10 @@ def connected_download_sources(category, source_options=None):
         sources = [source for source in sources if source != 'LibGen']
     if options.get('annas') is False:
         sources = [source for source in sources if source != "Anna's Archive"]
+    configs = options.get('source_configs') or {}
+    disabled = {spec.label for key, spec in SOURCE_CONNECTORS.items()
+                if (configs.get(key) or {}).get('enabled') is False}
+    sources = [source for source in sources if source not in disabled]
     if not options.get('taddy_configured'):
         sources = [source for source in sources if source != 'Taddy']
     if not options.get('comic_rss_configured'):
@@ -337,9 +352,11 @@ def _download_sort_key(item, category, priority):
     rank = source_rank.get(source_label.casefold(), len(source_rank) + 1)
     item_format = str(item.get('format') or '').casefold()
     format_rank = _BOOK_FORMAT_ORDER.get(item_format, len(_BOOK_FORMAT_ORDER))
+    # Better-seeded torrents (and more-grabbed NZBs) first among equally ranked releases.
+    health = -int(item.get('seeders') or item.get('grabs') or 0)
     if category in {'Books', 'Light novels'}:
-        return (format_rank, rank, item.get('title', '').casefold(), item.get('url', '').casefold())
-    return (rank, format_rank, item.get('title', '').casefold(), item.get('url', '').casefold())
+        return (format_rank, rank, health, item.get('title', '').casefold(), item.get('url', '').casefold())
+    return (rank, format_rank, health, item.get('title', '').casefold(), item.get('url', '').casefold())
 
 
 _CROSS_CATALOG_IDS = {'imdb', 'tvmaze', 'tmdb_movie', 'tmdb_tv', 'thetvdb', 'anilist', 'mal_anime', 'mal_manga',
@@ -1232,6 +1249,60 @@ def _registered_download_site_files(query, category, source_options):
     return results, errors
 
 
+def _connector_files(query, category, source_options, state, pages=None):
+    """Search the source connectors (torrent, Usenet, library and metadata sites) for a category."""
+    found = search_sources(query, category, source_options, pages=pages,
+                           health=source_options.get('source_health'))
+    state.update(found)
+    return found['rows'], found['errors']
+
+
+def search_more_connector_results(query, category, source_options, pages, existing, download_priority=()):
+    """Fetch the next page from connectors that have more and fold it into the shown results."""
+    state = {}
+    rows, errors = _connector_files(query, category, dict(source_options or {}), state, pages=pages)
+    rows = _catalog_rows(rows, category)
+    for row in rows:
+        if category == 'Anime':
+            row['kind'] = 'anime'
+    merged = merge_more_results(list(existing or []), rows, category, download_priority)
+    return {'results': merged, 'errors': errors, 'connector_pages': state.get('next_pages', {}),
+            'added': len(rows), 'notices': state.get('notices', [])}
+
+
+def merge_more_results(existing, rows, category, download_priority=()):
+    """Add newly loaded rows to matching result groups; unmatched works become new rows."""
+    new_groups = _merge_same_title(rows, category, download_priority)
+    by_title = {}
+    for row in existing:
+        by_title.setdefault((_title_key(row), str(row.get('release_year') or str(row.get('release_date') or '')[:4])),
+                            row)
+        by_title.setdefault((_title_key(row), ''), row)
+    for group in new_groups:
+        year = str(group.get('release_year') or str(group.get('release_date') or '')[:4])
+        target = by_title.get((_title_key(group), year)) or by_title.get((_title_key(group), ''))
+        if target is None:
+            existing.append(group)
+            by_title[(_title_key(group), year)] = group
+            continue
+        variants = list(target.get('download_variants') or [])
+        seen = {str(row.get('url')).casefold() for row in variants}
+        for row in group.get('download_variants') or []:
+            if str(row.get('url')).casefold() not in seen:
+                variants.append(row)
+                seen.add(str(row.get('url')).casefold())
+        variants.sort(key=lambda item: _download_sort_key(item, category, download_priority))
+        target['download_variants'] = variants
+        target['available_formats'] = list(dict.fromkeys(
+            str(item.get('format') or '').casefold() for item in variants))
+        if variants and not target.get('downloadable'):
+            target.update(downloadable=True, source_role='download', discovery_only=False,
+                          format=variants[0].get('format'), url=variants[0].get('url'),
+                          provider=variants[0].get('provider'),
+                          display_source=f'Download · {variants[0].get("provider") or "Source"}')
+    return existing
+
+
 def _foss_download_files(query, source_options, source_key, provider, searcher):
     options = dict(source_options or {})
     approval = _approved_source_record(options, source_key)
@@ -1389,6 +1460,9 @@ def search_media_category(query, category, source_options=None, credentials=None
     priority = download_priority or connected_download_sources(category, source_options)
     source_options['download_priority'] = list(priority)
     tasks = _tasks(query, category, source_options, credentials)
+    connector_state = {}
+    if source_options.get('source_configs') and connectors_for(category):
+        tasks.append(('more sources', lambda: _connector_files(query, category, source_options, connector_state)))
     if category not in {'Books', 'Light novels'} and any(
             category in categories and _approved_source_record(source_options, source_key)
            for source_key, _provider, categories in GENERAL_DOWNLOAD_ADAPTERS):
@@ -1430,7 +1504,7 @@ def search_media_category(query, category, source_options=None, credentials=None
                     if category == 'Comics' and row.get('kind') not in {
                             None, 'comic', 'comic_issue', 'webcomic', 'webtoon'}:
                         continue
-                    if category == 'Anime' and row.get('provider') not in {'AniList', 'Wikidata'}:
+                    if category == 'Anime' and row.get('provider') not in {'AniList', 'Wikidata', 'AniDB'}:
                         catalog = row.get('catalog_metadata') or row.get('metadata') or {}
                         genres = {str(value).casefold() for value in catalog.get('genres') or []}
                         genre_ids = {str(value) for value in catalog.get('genre_ids') or []}
@@ -1462,6 +1536,14 @@ def search_media_category(query, category, source_options=None, credentials=None
     response = {'category': category, 'results': unique_titles[:result_limit],
                 'errors': list(dict.fromkeys(errors)),
                 'searched': [provider for provider, _ in tasks]}
+    if connector_state:
+        # Connector errors already start with their source's name.
+        response['errors'] = [error.removeprefix('more sources: ') for error in response['errors']]
+        response['searched'] = [name for name in response['searched'] if name != 'more sources'] + \
+            connector_state.get('searched', [])
+        response['connector_pages'] = connector_state.get('next_pages', {})
+        response['connector_skipped'] = connector_state.get('skipped', {})
+        response['notices'] = connector_state.get('notices', [])
     if category == 'Comics':
         response['comic_summary'] = {
             entity: sum(row.get('comic_entity') == entity for row in response['results'])

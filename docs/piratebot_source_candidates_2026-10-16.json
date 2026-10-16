@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "batch": "piratebot-coverage-candidates-2026-10-16",
   "source_repo": "unwit1/pirateBot",
   "source_path": "data/sites.jsonl",
@@ -42,10 +42,12 @@
       "identity_caveat": "The historical directory and 2026 self-described interface reference the same aiosearch.com root domain, but shared domain spelling does not establish unchanged operators, working search-provider integrations, or continuity over intervening years.",
       "coverage_hypothesis": "Cross-category metasearch is a high-potential discovery complement, but the operator's listed provider categories are not proof of functioning connectors.",
       "integration_hint": "manual_review_only",
-      "review_state": "research_only",
-      "live_search_implemented": false,
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
       "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "default_approved_for_download": false,
+      "connector_key": "aiosearch",
+      "live_verified": false
     },
     {
       "rank": 2,
@@ -68,10 +70,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Broad-category torrent index candidate; assess overlap with user-configured Jackett indexers before adding a separate adapter.",
       "integration_hint": "jackett_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "1337x",
+      "live_verified": false
     },
     {
       "rank": 3,
@@ -96,10 +100,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Broad-category torrent index candidate that could duplicate existing Torznab/Jackett results; measure only source-disjoint incremental hits.",
       "integration_hint": "jackett_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "thepiratebay",
+      "live_verified": false
     },
     {
       "rank": 4,
@@ -124,10 +130,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Regional and potentially distinctive media catalog hypothesis; media-intake currently has no standalone Music category.",
       "integration_hint": "jackett_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "rutracker",
+      "live_verified": false
     },
     {
       "rank": 5,
@@ -153,10 +161,12 @@
       "identity_caveat": "Nyaa.si is treated separately from the earlier pre-2017 NyaaTorrents service. Similar branding and reused data do not establish common operators.",
       "coverage_hypothesis": "Anime-oriented index candidate; measure incremental catalog matches beyond existing AniList, MangaDex and Anime Tosho.",
       "integration_hint": "jackett_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "nyaa",
+      "live_verified": false
     },
     {
       "rank": 6,
@@ -181,10 +191,12 @@
       "identity_caveat": "Domains shown are from separate dated 2025 and 2026 reports; neither is asserted to be the current entry point. The original YIFY/YTS group is a distinct historical identity.",
       "coverage_hypothesis": "Film-focused torrent index candidate; dated domains are not current entry points.",
       "integration_hint": "jackett_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "yts",
+      "live_verified": false
     },
     {
       "rank": 7,
@@ -207,10 +219,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "TV-focused index candidate for episode-level metadata; separate it from the original historical EZTV identity.",
       "integration_hint": "jackett_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "eztvx",
+      "live_verified": false
     },
     {
       "rank": 8,
@@ -235,10 +249,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Newznab/Usenet discovery candidate, which differs structurally from existing HTTP and Torznab searches.",
       "integration_hint": "newznab_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "nzbgeek",
+      "live_verified": false
     },
     {
       "rank": 9,
@@ -262,10 +278,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Second Usenet catalog candidate to measure distinct search coverage without assuming API entitlement or active access.",
       "integration_hint": "newznab_candidate",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "drunkenslug",
+      "live_verified": false
     },
     {
       "rank": 10,
@@ -285,10 +303,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Book-index discovery hypothesis; record catalog metadata only unless source- and work-specific permissions are separately established.",
       "integration_hint": "metadata_review",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "z-library",
+      "live_verified": false
     },
     {
       "rank": 11,
@@ -307,10 +327,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Retro-game and emulation archive category gap; neither abandonware labeling nor listing implies distribution rights.",
       "integration_hint": "metadata_review",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "vimm",
+      "live_verified": false
     },
     {
       "rank": 12,
@@ -334,10 +356,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Game-release catalog candidate distinct from existing abandonware connectors; no file links or automatic acquisitions.",
       "integration_hint": "metadata_review",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "fitgirl",
+      "live_verified": false
     },
     {
       "rank": 13,
@@ -360,10 +384,12 @@
       "identity_caveat": "Historical or reported service identity is not evidence of common ownership or operator continuity with similarly named sites.",
       "coverage_hypothesis": "Anime/file-hash metadata complement; metadata coverage is distinct from downloadable files.",
       "integration_hint": "metadata_review",
-      "review_state": "research_only",
-      "live_search_implemented": false,
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
       "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "default_approved_for_download": false,
+      "connector_key": "anidb",
+      "live_verified": false
     },
     {
       "rank": 14,
@@ -385,10 +411,12 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Bibliographic holdings discovery that can improve match/edition identification; not a general file download site.",
       "integration_hint": "metadata_review",
-      "review_state": "research_only",
-      "live_search_implemented": false,
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
       "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "default_approved_for_download": false,
+      "connector_key": "worldcat",
+      "live_verified": false
     },
     {
       "rank": 15,
@@ -407,10 +435,18 @@
       "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
       "coverage_hypothesis": "Periodical and magazine discovery gap hypothesis; category applicability and live operation need independent verification.",
       "integration_hint": "metadata_review",
-      "review_state": "research_only",
-      "live_search_implemented": false,
-      "direct_download_implemented": false,
-      "default_approved_for_download": false
+      "review_state": "implemented_connector",
+      "live_search_implemented": true,
+      "direct_download_implemented": true,
+      "default_approved_for_download": false,
+      "connector_key": "magzdb",
+      "live_verified": false
     }
-  ]
+  ],
+  "implemented_search_connectors": 15,
+  "promotion": {
+    "date": "2026-10-16",
+    "module": "media_intake/connectors",
+    "note": "All 15 candidates are implemented as connectors. Implementation is not live verification: see docs/SOURCES.md for which behaviour was checked against fixtures and which against live sites. File-capable connectors default to approved_for_download = false in rights-evidence.json; nothing here grants download permission."
+  }
 }

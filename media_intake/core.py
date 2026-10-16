@@ -73,6 +73,13 @@ def validate_item(item):
         item['format'] = '.torrent'
         item.setdefault('author', 'Unknown')
         return item
+    if ext == '.nzb':
+        # Usenet releases queue as their indexer's NZB link; a newsreader fetches the articles.
+        if url.scheme not in ('http', 'https') or not url.netloc or url.username or url.password:
+            raise ValueError('Expected an HTTP(S) NZB link')
+        item['format'] = '.nzb'
+        item.setdefault('author', 'Unknown')
+        return item
     if ext not in EXTENSIONS:
         raise ValueError(f'Unsupported format: {ext}')
     if url.scheme not in ('http', 'https', 'irc+xdcc', 'serial+https', 'serial+http',
@@ -635,6 +642,15 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
             db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
             db.commit()
             raise
+    if item.get('resolve_connector'):
+        try:
+            item = _resolve_connector_item(db, item_id, item, root)
+        except Exception as exc:
+            db.execute("UPDATE items SET state='failed', error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+            db.commit()
+            raise
+    if item['format'] == '.nzb':
+        return _download_usenet(db, item_id, item, root, destination)
     from .torrents import is_torrent_item
     if is_torrent_item(item):
         return _download_torrent(db, item_id, item, root, destination)
@@ -659,7 +675,7 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         result = transfer.fetch(
             item.get('resolved_url') or item['url'], part, max_bytes=max_bytes,
             connections=settings['connections'], retries=settings['retries'], control=control,
-            opener=lambda request, timeout: open_url(request, timeout=timeout),
+            opener=_opener_with_headers(item.get('request_headers')),
             progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message))
         total = result.size
         real_format = Path(result.filename).suffix.casefold() if result.filename else ''
@@ -727,6 +743,110 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         db.commit()
         return _download_stream(db, item_id, item, root, destination)
     return _auto_deliver_to_kindle(db, item_id, root)
+
+
+def _opener_with_headers(headers):
+    """Open transfer requests with the extra headers a source requires (for example a Referer)."""
+    headers = {str(key): str(value) for key, value in (headers or {}).items()
+               if str(key).casefold() in ('referer', 'cookie', 'accept')}
+
+    def opener(request, timeout):
+        for key, value in headers.items():
+            if not request.has_header(key.capitalize()):
+                request.add_header(key, value)
+        return open_url(request, timeout=timeout)
+    return opener
+
+
+def _connector_configs(db, root):
+    from .connectors import load_all_configs
+    return load_all_configs(db, cache_dir=Path(root) / 'cache')
+
+
+def _resolve_connector_item(db, item_id, item, root):
+    """Ask a connector for the real magnet or file link just before downloading.
+
+    Magnets are stable and kept; direct-file links (Z-Library, Vimm's Lair, MagzDB) can
+    expire, so they are asked for again on every attempt.
+    """
+    from .connectors import CONNECTORS, resolve_download
+    spec = CONNECTORS.get(item['resolve_connector'])
+    if spec is None or (item.get('resolved_url') and spec.role == 'torrent'):
+        return item
+    update_download_progress(db, item_id, None, None, f'Asking {spec.label} for the download link')
+    item = resolve_download(dict(item, resolved_url=None), _connector_configs(db, root))
+    db.execute('UPDATE items SET metadata=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+               (json.dumps(item, ensure_ascii=False), item_id))
+    db.commit()
+    return item
+
+
+def _download_usenet(db, item_id, item, root, destination):
+    """Hand an NZB to SABnzbd/NZBGet and mirror the job's progress, or save the .nzb when asked to."""
+    from . import transfer
+    from .connectors import usenet
+    folder = _item_folder(root, destination, item)
+    key = ('item', item_id)
+    control = transfer.claim_control(key)
+    if control is None:
+        raise ValueError('This item is already downloading')
+    client = _connector_configs(db, root).get('usenet_client') or {}
+    source = item.get('provider') or 'Usenet indexer'
+    try:
+        job_id = item.get('usenet_job_id')
+        if job_id and client.get('url'):
+            status = usenet.job_status(client, job_id)
+            if status['state'] in ('missing', 'failed'):
+                job_id = None  # removed or failed in the newsreader: send the NZB again
+        if not job_id:
+            update_download_progress(db, item_id, None, None, f'Fetching NZB from {source}')
+            nzb = usenet.fetch_nzb(source, item.get('resolved_url') or item['url'])
+            if not client.get('url'):
+                if client.get('nzb_mode') != 'save':
+                    raise ValueError('Usenet downloads need SABnzbd or NZBGet. Add one in Settings → Sources, '
+                                     'or choose "save" there to keep the .nzb file for your own newsreader.')
+                folder.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(nzb).hexdigest()
+                part = folder / f'.partial-{item_id}.nzb'
+                part.write_bytes(nzb)
+                dest = _place_download(folder, dict(item, format='.nzb'), part, digest)
+                db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (str(dest.resolve()), digest, 'NZB saved: open it in your newsreader', item_id))
+                db.commit()
+                return None
+            update_download_progress(db, item_id, None, None, 'Sending NZB to the newsreader')
+            job_id = usenet.add_nzb(client, nzb, item.get('release_title') or item['title'],
+                                    client.get('category') or '')
+            item = dict(item, usenet_job_id=job_id)
+            db.execute('UPDATE items SET metadata=? WHERE id=?', (json.dumps(item, ensure_ascii=False), item_id))
+            db.commit()
+        else:
+            usenet.control_job(client, job_id, 'resume')
+        status = usenet.follow_job(
+            client, job_id, control=control,
+            progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message))
+        path = Path(status.get('path') or folder)
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=NULL, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (str(path), 'Completed in the newsreader', item_id))
+        db.commit()
+    except transfer.TransferPaused:
+        db.execute("UPDATE items SET state='paused', error=NULL, progress_message='Paused in the newsreader — resume to continue', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        db.commit()
+        raise
+    except transfer.TransferCancelled:
+        item.pop('usenet_job_id', None)
+        db.execute("UPDATE items SET state='cancelled', metadata=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (json.dumps(item, ensure_ascii=False), item_id))
+        db.commit()
+        raise
+    except Exception as exc:
+        db.execute("UPDATE items SET state='failed', error=?, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (str(exc), item_id))
+        db.commit()
+        raise
+    finally:
+        transfer.release_control(key)
+    return None
 
 
 def _item_folder(root, destination, item):

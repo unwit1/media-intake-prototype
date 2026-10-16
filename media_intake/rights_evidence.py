@@ -22,11 +22,14 @@ DOWNLOAD_SOURCES = (
     'mediafiretrend.com', 'xdcc.eu', 'warezomen.com',
     'myabandonware.com', 'oldgamesdownload.com', 'abandonwaregames.net',
     'gog-rev.com', 'ankergames.net', 'jackett', 'podcast_rss',
+    # Source connectors from the PirateBot source review (media_intake/connectors).
+    'thepiratebay', '1337x', 'rutracker', 'nyaa', 'yts', 'eztvx', 'fitgirl',
+    'nzbgeek', 'drunkenslug', 'z-library', 'magzdb', 'vimm',
 )
 METADATA_ONLY_SOURCES = frozenset({
     'openlibrary', 'open library', 'goodreads', 'comicvine', 'comic vine',
     'ranobedb', 'anilist', 'mangaupdates', 'manga updates', 'wikidata',
-    'fosshub.com', 'fosshub',
+    'fosshub.com', 'fosshub', 'anidb', 'worldcat', 'aiosearch',
 })
 
 

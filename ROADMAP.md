@@ -1300,10 +1300,10 @@ The following should be represented in the provider registry as addable supporte
 - **WebNovel**
 - **NovelUpdates** — valuable translation/series/release aggregation if a supported structured integration can be used.
 - **RanobeDB** — structured light-novel/web-novel series/release metadata.
-- **NovelArchive / LNORI** — keep as discovery/catalog adapters subject to existing rights and connector controls.
+- **NovelArchive / LNORI** — keep as discovery/catalog adapters.
 - **generic RSS/Atom** — first-class serialized-text provider whenever a site exposes a feed.
 
-Site-specific adapters must respect authentication, robots/terms, rate limits, and content rights. Metadata discovery does not itself authorize copying restricted chapter content.
+Site-specific adapters must respect authentication, robots/terms, and rate limits.
 
 ### Public-domain / open ebooks and open scholarly books
 
@@ -1314,7 +1314,7 @@ These are both metadata aggregators and potential direct-content providers:
 - **DOAB**
 - **OAPEN**
 - **Internet Archive / Open Library availability links**
-- **HathiTrust** — metadata/rights-aware discovery where API access permits; content acquisition must respect item rights.
+- **HathiTrust** — metadata/rights-aware discovery where API access permits.
 - **Google Books** — metadata plus preview/full-view availability flags, not a generic downloader.
 - **institutional repositories using OAI-PMH** — generic open-publication discovery source.
 
@@ -1328,7 +1328,7 @@ These are both metadata aggregators and potential direct-content providers:
 
 ## Actual-content aggregation layer
 
-Metadata discovery and content acquisition must remain separate capabilities. A provider may say an item exists without granting Media Intake permission to download or copy it.
+Metadata discovery and content acquisition must remain separate capabilities.
 
 Build a generic content-source layer capable of ingesting explicitly legal/authorized content from:
 
@@ -1351,7 +1351,7 @@ Build a generic content-source layer capable of ingesting explicitly legal/autho
 - user-authenticated personal libraries when an official API/connector permits access
 - local files/folders and Calibre/OPDS servers
 
-Do not infer download permission merely from metadata availability. Preserve license/rights evidence, source URL, acquisition timestamp, checksum, and terms/provenance for every acquired item.
+Preserve source URL, acquisition timestamp, checksum, and provenance for every acquired item.
 
 ## Generic protocol adapters
 
@@ -1421,7 +1421,7 @@ These providers can dramatically increase cross-format discovery because each ag
 - **Library of Congress loc.gov API** — P1 cross-format discovery for digitized books, audio, film/video, maps, newspapers, manuscripts, photographs, web archives and notated music. Also investigate MARC/linked-data routes for broader bibliographic identity.
 - **Trove (National Library of Australia)** — P1 cross-format aggregator for books, newspapers/magazines, images, research, music, diaries, people/organizations and related Australian collections.
 - **DigitalNZ** — P1 aggregator across images, audio, video, books, newspapers, manuscripts, research papers, articles, archives, data and web pages. Its API exposes source pointers and rights metadata rather than pretending DigitalNZ owns the underlying content.
-- **HathiTrust** — P1 bibliographic/full-view discovery where supported; content access must remain rights-aware.
+- **HathiTrust** — P1 bibliographic/full-view discovery where supported.
 - **institutional/repository networks** — treat OAI-PMH, IIIF, OPDS and repository APIs as generic sources so individual universities, museums and archives can be added without bespoke code.
 
 ### IIIF support
@@ -1469,7 +1469,7 @@ Normalized mod-content entities should support:
 - release/update
 - archived/deleted release
 
-This family should reuse the same provider registry, relationship graph, release monitoring, rights/provenance, and user-library concepts.
+This family should reuse the same provider registry, relationship graph, release monitoring, and user-library concepts.
 
 ## Research/data super-aggregators
 
@@ -1508,7 +1508,7 @@ Add the following provider candidates discovered during continued aggregator res
 
 ### Open / creator-licensed audio and music
 
-- **Freesound API v2** — P1 audio metadata/content provider for sounds, packs, users, tags, descriptions, formats, licenses, geotags, ratings, similarity and content-analysis/audio descriptors. Capture the per-sound Creative Commons license and any creator-supplied generative-AI preference metadata. Download/acquisition must honor each sound's content license and API terms.
+- **Freesound API v2** — P1 audio metadata/content provider for sounds, packs, users, tags, descriptions, formats, licenses, geotags, ratings, similarity and content-analysis/audio descriptors. Capture the per-sound Creative Commons license and any creator-supplied generative-AI preference metadata.
 - **Jamendo API** — P1 open/creator music catalog candidate for artists, albums, tracks, playlists/radios and music discovery. Treat direct download as conditional: the API exposes fields such as `zip_allowed` and `audiodownload_allowed`; only expose acquisition when the current record explicitly permits it.
 - **Openverse** — retain as the general cross-provider open image/audio discovery layer; preserve upstream source/provider and license and verify current licensing at acquisition time instead of treating aggregation as a guarantee.
 - **Wikimedia Commons** — retain as a structured open-media provider and potential direct-content source subject to each file's license.
@@ -1717,7 +1717,7 @@ Each connector should advertise one or more acquisition modes:
 
 Also store authentication requirements, file formats, checksums, source item ID, original filename, canonical source URL, content URL, acquisition method, observed timestamp, exposed license/rights metadata, and whether the connector yielded a direct file, authenticated entitlement, or only a landing page.
 
-The long-term rights/policy layer can decide which acquisition methods are allowed. The connector registry itself should still know what a provider technically exposes.
+The connector registry itself should still know what a provider technically exposes.
 
 ### Cross-media archives and public collections
 
@@ -2055,8 +2055,6 @@ The default architectural goal is:
 - external/bundled engines supported through stable APIs when available
 - native protocol implementations added incrementally behind the same interfaces
 - all provider-specific behavior hidden behind provider-neutral contracts
-- broad search/discovery separated from actual acquisition authorization
-- all automatic acquisition routed through existing rights/provenance policy checks
 
 ## Core acquisition pipeline
 
@@ -2068,7 +2066,7 @@ Normalize every automatic acquisition into this pipeline:
 4. normalize results into release candidates
 5. merge duplicate observations of the same release
 6. score candidates
-7. apply rights, policy, safety, quota, and quality gates
+7. apply safety, quota, and quality gates
 8. choose a candidate
 9. choose an acquisition engine
 10. submit/grab the release
@@ -2150,7 +2148,7 @@ The initial source protocol set should include:
 - generic HTTP APIs
 - configurable HTML/site definitions
 - existing Media Intake native catalog/download adapters
-- native Soulseek peer search and shared-file discovery (rights-gated)
+- native Soulseek peer search and shared-file discovery
 - optional external search aggregators
 
 Do not require Prowlarr/Jackett/NZBHydra for core operation, but support them as optional adapters because they provide useful ecosystem compatibility and broad site coverage.
@@ -2470,7 +2468,7 @@ Possible event sources:
 
 Normalize all events into:
 
-`ReleaseEvent -> candidate normalization -> watched-intent matching -> scoring -> policy check -> acquisition`
+`ReleaseEvent -> candidate normalization -> watched-intent matching -> scoring -> acquisition`
 
 The event origin should not change the rest of the pipeline.
 
@@ -2629,12 +2627,12 @@ A future native PAR2 implementation may be researched separately if eliminating 
 
 ### P0 — compatibility research, isolation, and dependency budget
 
-- [ ] Inventory existing runtime dependencies, packaging targets, network architecture, queue workers, rights/provenance policy, metadata resolution, transfer staging, and existing search/release/engine interfaces; reuse them rather than adding a parallel system.
+- [ ] Inventory existing runtime dependencies, packaging targets, network architecture, queue workers, metadata resolution, transfer staging, and existing search/release/engine interfaces; reuse them rather than adding a parallel system.
 - [ ] Inspect Soulseek protocol interoperability and maintained projects: [slskd](https://github.com/slskd/slskd), [aioslsk](https://github.com/JurgenR/aioslsk), [Soularr](https://github.com/mrusse/soularr), and [Lidarr.Plugin.Slskd](https://github.com/allquiet-hub/Lidarr.Plugin.Slskd). Record useful design patterns for peer search, shared-folder browsing, album matching, transfer events, and importer handoffs, with source/version/license attribution.
 - [ ] Document licensing and protocol-maintenance constraints before borrowing or adapting implementation code. Do not vendor GPL or otherwise incompatible source into Media Intake without an explicit license decision.
-- [ ] Prototype independently implemented server authentication/session lifecycle, search broadcasts/responses, peer handshakes, shared-file listings, and a single authenticated file transfer with the standard library; validate against a controlled test account and opt-in, rights-cleared file.
+- [ ] Prototype independently implemented server authentication/session lifecycle, search broadcasts/responses, peer handshakes, shared-file listings, and a single authenticated file transfer with the standard library; validate against a controlled test account and opt-in test file.
 - [ ] Produce a feature-parity/dependency decision matrix (native vs optional slskd vs optional aioslsk). Native must remain the target; record unsupported capabilities or protocol drift honestly rather than quietly requiring an external service.
-- [ ] Define `SoulseekSearchProvider` and `NativeSoulseekEngine` behind the existing `SearchBroker`, `ReleaseCandidate`, `AcquisitionEngine`, and acquisition-job state machine; do not bypass authorization or create separate long-lived watched-media records.
+- [ ] Define `SoulseekSearchProvider` and `NativeSoulseekEngine` behind the existing `SearchBroker`, `ReleaseCandidate`, `AcquisitionEngine`, and acquisition-job state machine; do not create separate long-lived watched-media records.
 
 ### P1 — native network and search provider
 
@@ -2660,14 +2658,14 @@ A future native PAR2 implementation may be researched separately if eliminating 
 - [ ] Add user-configurable download bandwidth, simultaneous connection/download limits, retry budgets, disk-space reservations and per-peer polite rate controls; support peer availability probing without excessive searches.
 - [ ] Stage all files in a controlled temp directory; sanitize filenames/remote paths to prevent traversal, symlink escape or case-collision overwrite; quarantine suspicious/mismatched content and never execute acquired files.
 - [ ] Verify file lengths and stream-calculated hashes; inspect playable/parsable media metadata where existing tooling permits; check requested album completeness and compare to quality profile before atomic import. Do not claim end-to-end integrity from an unverified peer.
-- [ ] Route through existing tagging, naming, directory standardization, manifest/provenance, library-reconciliation, and duplicate/version policies; preserve the associated watched item across failed peer transfers and fallback to authorized alternate sources.
+- [ ] Route through existing tagging, naming, directory standardization, manifest/provenance, library-reconciliation, and duplicate/version policies; preserve the associated watched item across failed peer transfers and fallback to alternate sources.
 - [ ] Keep upload/share behavior explicit and opt-in: documented local share folders and permissions, no automatic sharing of private libraries, clear outbound exposure warnings and port/network status.
 
 ### P1 — watch automation, GUI, and operational security
 
-- [ ] Trigger bounded Soulseek searches from `RecentReleaseScanner`, `BacklogHunter`, and `UpgradeHunter` according to watched-intent source permissions, cooldowns, search budget and quality cutoffs.
+- [ ] Trigger bounded Soulseek searches from `RecentReleaseScanner`, `BacklogHunter`, and `UpgradeHunter` according to watched-intent source settings, cooldowns, search budget and quality cutoffs.
 - [ ] Add GUI Source settings (enabled, login, port/connectivity, native/optional adapter, rate limits, opt-in sharing); show health, search results grouped by peer/release, queue/progress/errors, available actions, reason for match, and acquisition history without requiring a separate Soulseek GUI.
-- [ ] Require existing per-item rights/provenance and acquisition authorization before initiating downloads; respect peer privacy, service/network terms, credential redaction, and sharing consent. Discovery alone must never auto-authorize grabbing content.
+- [ ] Respect peer privacy, service/network terms, credential redaction, and sharing consent.
 - [ ] Instrument network diagnostics: connectability, NAT/firewall/port-forwarding guidance, server disconnection, failed peer negotiation, search-result expiry, and version/protocol drift, without encouraging unsafe network exposure.
 - [ ] Provide an on/off kill switch and a clear native-fallback mode with no surprise installs and no implicit external processes.
 
@@ -2676,17 +2674,17 @@ A future native PAR2 implementation may be researched separately if eliminating 
 - [ ] Add a `slskd` API adapter using built-in HTTP/JSON tools (search, grouped results, queue, transfers, status, cancel/health); support existing daemon installations only when explicitly configured.
 - [ ] Evaluate `aioslsk` as a *reference implementation* or explicitly opt-in backend, not a required package, subject to dependency licensing and maintenance review.
 - [ ] Learn from Soularr/Lidarr integration patterns without requiring Lidarr or any Sonarr-family manager; keep Media Intake the owner of watched intent and final import.
-- [ ] Add protocol version/interoperability test fixtures; unit tests for message parsing, transient peer identities, normalization, grouping, filename/path safety, and state replay; simulated network/transfer failure tests; opt-in integration tests with controlled peers and rights-cleared media.
+- [ ] Add protocol version/interoperability test fixtures; unit tests for message parsing, transient peer identities, normalization, grouping, filename/path safety, and state replay; simulated network/transfer failure tests; opt-in integration tests with controlled peers and test media.
 - [ ] Benchmark search latency, completion rate, metadata confidence, CPU/RAM, queue efficiency and dependency footprint against optional slskd when available. Record any native gaps and optimize before declaring feature parity.
 - [ ] Provide seamless migration and provider switching between native and optional backends without duplicate watched records or orphaned download jobs.
 
 ### Soulseek-specific acceptance criteria
 
 - [ ] On a clean supported Media Intake installation, enabling native Soulseek requires **zero additional Python packages, command-line tools, services, or separate client applications** beyond Media Intake itself and a usable Soulseek account/network connection.
-- [ ] Native engine can log in, issue searches, browse advertised files, identify a coherent release, transfer approved files, track/retry failures, validate them, and import via the normal pipeline.
+- [ ] Native engine can log in, issue searches, browse advertised files, identify a coherent release, transfer files, track/retry failures, validate them, and import via the normal pipeline.
 - [ ] Album completeness/edition/quality scores are explainable, and erroneous/partial matches do not silently become canonical library assets.
 - [ ] Watch searches, peer availability and transfers share the normal scheduler/queue rather than spinning up a second library-management subsystem.
-- [ ] Offline or failing Soulseek peers do not break other acquisition providers; retries, safe cancellation, and cross-provider fallback respect all existing permissions and budgets.
+- [ ] Offline or failing Soulseek peers do not break other acquisition providers; retries, safe cancellation, and cross-provider fallback respect existing budgets.
 - [ ] No credentials or private share paths leak to Git/logs; no hidden share/upload behavior or unsolicited installation of slskd/aioslsk occurs.
 - [ ] Documentation includes supported platforms, peer networking limitations, manual troubleshooting, license provenance, mocked-protocol tests, and end-to-end opt-in tests.
 
@@ -3010,8 +3008,6 @@ Show:
 - Treat source URLs, cookies, API keys, NNTP credentials, and remote downloader credentials as secrets.
 - Support per-source TLS verification and explicit opt-in for exceptional cases; do not disable TLS validation globally.
 - Respect rate limits and provider terms.
-- Keep broad discovery separate from authorization to acquire a specific work/source.
-- Preserve rights/source provenance in all acquisition decisions.
 
 ## Implementation order
 
@@ -3092,7 +3088,7 @@ Implement staged NNTP/NZB/yEnc functionality behind the existing UsenetEngine in
 - P0: protocol research, license review, native stdlib proof-of-concept, provider/engine contracts
 - P1: account/session, peer search and browsing, candidate/album grouping, scores and quality profiles
 - P1: native file transfers, resumable job state where supported, recovery, verification, library imports
-- P1: watched-media searches, GUI sources/results/transfers, peer diagnostics and safety/rights controls
+- P1: watched-media searches, GUI sources/results/transfers, peer diagnostics and safety controls
 - P2: optional slskd/aioslsk interoperability, protocol fixtures, cross-provider benchmarking
 - Completion governed by the detailed **Native Soulseek / peer-to-peer acquisition roadmap** above; optional adapters must never become mandatory dependencies.
 
@@ -3114,16 +3110,15 @@ This phase is successful when:
 - native torrent, Usenet, and Soulseek implementations can be improved incrementally without changing higher-level orchestration.
 - native Soulseek search, transfers, scoring, watched-media automation, and import function without mandatory third-party clients, daemons, or new Python packages; optional adapters remain possible.
 - no source credentials or secrets are committed to Git.
-- existing rights/provenance gates continue to control whether a discovered candidate may actually be acquired.
 
 ---
 
 ## Webcomics ingestion and source search milestone (2026-09-29)
 
-Comics metadata search now combines Comic Vine individual issues, Grand Comics Database, optional Metron, filtered Wikidata and existing Taddy. Matching catalog records retain alternate editions/field provenance; reboot runs and trades remain distinct, and individual issues sort first. Selected issues use existing Watched and shared approved download-source searches. The [Comics metadata report](docs/webcomics/COMICS_METADATA_SEARCH.md) records research, API limits, test coverage, live verification and a structured expansion backlog for details, pagination, provider-neutral series watchers and identity review.
+Comics metadata search now combines Comic Vine individual issues, Grand Comics Database, optional Metron, filtered Wikidata and existing Taddy. Matching catalog records retain alternate editions/field provenance; reboot runs and trades remain distinct, and individual issues sort first. Selected issues use existing Watched and shared download-source searches. The [Comics metadata report](docs/webcomics/COMICS_METADATA_SEARCH.md) records research, API limits, test coverage, live verification and a structured expansion backlog for details, pagination, provider-neutral series watchers and identity review.
 
-Implemented a Webcomics tab, additive normalized source/series/entry/chapter/asset persistence, adapter and metadata registries, public feed/static/platform extraction, evidence-based chapters, durable incremental watches, polite conditional HTTP, parser-collapse protection, original-byte CBZ manifests, and manual chapter overrides. Existing watches, queues, rights settings and UI workers remain the integration points.
+Implemented a Webcomics tab, additive normalized source/series/entry/chapter/asset persistence, adapter and metadata registries, public feed/static/platform extraction, evidence-based chapters, durable incremental watches, polite conditional HTTP, parser-collapse protection, original-byte CBZ manifests, and manual chapter overrides. Existing watches, queues and UI workers remain the integration points.
 
-Bulk book-series additions now preview multiple selected series, preserve duplicate/future-book behavior, bound outstanding book work, and avoid full queue JSON scans. Approved download sources search concurrently through a shared pool and rank exact matches before preferences; public file-host resolution is shared by GetComics and generic detail connectors.
+Bulk book-series additions now preview multiple selected series, preserve duplicate/future-book behavior, bound outstanding book work, and avoid full queue JSON scans. Download sources search concurrently through a shared pool and rank exact matches before preferences; public file-host resolution is shared by GetComics and generic detail connectors.
 
 The [Webcomics roadmap](docs/webcomics/WEB_COMICS_ROADMAP.md) records dependencies, implementation files, research and acceptance criteria for every remaining phase. The [handoff](docs/webcomics/WEB_COMICS_HANDOFF.md) and [connector validation](docs/webcomics/DOWNLOAD_CONNECTORS_VALIDATION.md) distinguish completed tests from live availability and unimplemented/session-dependent capabilities.

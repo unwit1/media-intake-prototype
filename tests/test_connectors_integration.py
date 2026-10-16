@@ -69,7 +69,7 @@ class GatingTest(unittest.TestCase):
             found = search_sources('x', 'Videos', {'rights_evidence_path': str(path), 'source_configs': {
                 'nzbgeek': direct('https://api.nzbgeek.info'), 'yts': dict(enabled=False)}})
         self.assertEqual(found['skipped']['yts'], 'turned off in Settings → Sources')
-        self.assertEqual(found['skipped']['nzbgeek'], 'needs api key in Settings → Sources')
+        self.assertEqual(found['skipped']['nzbgeek'], 'needs API key in Settings → Sources')
 
     def test_metadata_sources_need_no_approval(self):
         with tempfile.TemporaryDirectory() as folder:

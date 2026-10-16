@@ -6,7 +6,7 @@ import urllib.parse
 import webbrowser
 
 from . import source_health
-from .connectors import (BY_LABEL, CONNECTORS, USENET_CLIENT_FIELDS, load_all_configs, load_source_config,
+from .connectors import (ALL, BY_LABEL, CONNECTORS, USENET_CLIENT_FIELDS, describe_missing, load_all_configs, load_source_config,
                          missing_settings, save_source_config, search_one)
 from .connectors.base import SourceError, human_size
 from .core import connect, enqueue
@@ -203,20 +203,19 @@ class SourcesSettingsPanel:
             'files are searched and downloaded only when their entry in your local rights-evidence.json is YES '
             '(use "Open rights file"). Metadata sources need no approval. A source that is down or blocked only '
             'shows an error for itself; the others keep working.')).pack(anchor='w', pady=(4, 8))
-        body = ttk.Frame(parent)
-        body.pack(fill='both', expand=True)
-        self.view = ttk.Treeview(body, columns=('type', 'categories', 'status'), show='tree headings',
+        self.view = ttk.Treeview(parent, columns=('type', 'categories', 'status'), show='tree headings',
                                  selectmode='browse', height=15)
         self.view.heading('#0', text='Source')
-        self.view.column('#0', width=150)
-        for column, label, width in (('type', 'Type', 120), ('categories', 'Categories', 230),
-                                     ('status', 'Status', 300)):
+        self.view.column('#0', width=150, stretch=False)
+        for column, label, width in (('type', 'Type', 120), ('categories', 'Categories', 260),
+                                     ('status', 'Status', 470)):
             self.view.heading(column, text=label)
             self.view.column(column, width=width, anchor='w')
-        self.view.pack(side='left', fill='y')
+        self.view.pack(fill='x')
         self.view.bind('<<TreeviewSelect>>', lambda _event: self.show_selected())
-        self.form = ttk.Frame(body, padding=(12, 0))
-        self.form.pack(side='left', fill='both', expand=True)
+        self.form = ttk.LabelFrame(parent, text='Selected source', padding=8)
+        self.form.pack(fill='x', pady=(8, 0))
+        ttk.Label(self.form, text='Select a source above to change its settings.').grid(row=0, column=0, sticky='w')
         actions = ttk.Frame(parent)
         actions.pack(fill='x', pady=(8, 0))
         ttk.Button(actions, text='Open rights file', command=app.open_rights_evidence).pack(side='left')
@@ -237,12 +236,14 @@ class SourcesSettingsPanel:
             parts.append(f'Downloads approved: {approval_text(self.app.rights_evidence_path, spec.key)}')
         missing = missing_settings(spec, config)
         if missing and not (spec.role == 'torrent' and config.get('access') == 'jackett'):
-            parts.append('Needs ' + ', '.join(missing).replace('_', ' '))
+            parts.append('Needs ' + describe_missing(spec, missing))
         if spec.role == 'torrent' and spec.jackett_indexer and config.get('access') != 'auto':
             parts.append(f"via {config.get('access')}")
-        if health:
-            parts.append(f"{health['status']}" + (f": {health['last_error'][:60]}" if health.get('last_error')
-                                                  and health['status'] in ('failing', 'degraded') else ''))
+        if health and health.get('failure_streak') and health.get('last_error'):
+            error = str(health['last_error']).split(': ', 1)[-1]
+            parts.append(f"{'failing' if health['status'] == 'failing' else 'last attempt failed'}: {error[:70]}")
+        elif health:
+            parts.append(health['status'])
         return ' · '.join(parts) or 'Ready'
 
     def refresh(self):
@@ -256,8 +257,8 @@ class SourcesSettingsPanel:
         for spec in CONNECTORS.values():
             config = load_source_config(self.app.db, spec.key)
             self.view.insert('', 'end', iid=spec.key, text=spec.label, values=(
-                ROLE_LABELS[spec.role], ', '.join(sorted(spec.categories)) if len(spec.categories) < 8 else
-                'All categories', self.status_text(spec, config, health.get(spec.key))))
+                ROLE_LABELS[spec.role], 'All categories' if spec.categories == ALL else
+                ', '.join(sorted(spec.categories)), self.status_text(spec, config, health.get(spec.key))))
         if selected and self.view.exists(selected[0]):
             self.view.selection_set(selected[0])
 
@@ -270,8 +271,8 @@ class SourcesSettingsPanel:
             return
         spec = CONNECTORS[selection[0]]
         config = load_source_config(self.app.db, spec.key)
-        ttk.Label(self.form, text=spec.label, font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, sticky='w')
-        ttk.Label(self.form, text=spec.summary, wraplength=430, justify='left').grid(
+        self.form.configure(text=spec.label)
+        ttk.Label(self.form, text=spec.summary, wraplength=760, justify='left').grid(
             row=1, column=0, columnspan=2, sticky='w', pady=(2, 8))
         self.enabled = tk.BooleanVar(value=bool(config.get('enabled')))
         label = ('Show a link to this source in category results' if spec.role == 'browser'
@@ -296,7 +297,7 @@ class SourcesSettingsPanel:
             ttk.Combobox(self.form, textvariable=self.access, state='readonly', width=12,
                          values=('auto', 'direct', 'jackett')).grid(row=row, column=1, sticky='w')
             row += 1
-            ttk.Label(self.form, wraplength=430, justify='left', foreground='gray', text=(
+            ttk.Label(self.form, wraplength=760, justify='left', foreground='gray', text=(
                 f'auto: the site directly, then your Jackett "{spec.jackett_indexer}" indexer if the site is '
                 'blocked or down. jackett: always through Jackett (Settings → Downloads).')).grid(
                 row=row, column=0, columnspan=3, sticky='w')

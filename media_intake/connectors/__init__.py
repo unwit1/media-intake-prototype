@@ -141,6 +141,16 @@ def connectors_for(category):
 _SESSION_SECRETS = {}
 
 
+def _db_identity(db):
+    """Session-only secrets belong to one data folder, never to another one opened later."""
+    if db is None:
+        return ''
+    try:
+        return next((row[2] for row in db.execute('PRAGMA database_list') if row[1] == 'main'), '') or ''
+    except Exception:
+        return ''
+
+
 def _secret_name(key, field):
     return 'src_' + ''.join(char if char.isalnum() else '_' for char in f'{key}_{field}')
 
@@ -158,7 +168,7 @@ def load_source_config(db, key, cache_dir=None):
     for field, _label, secret in fields:
         value = os.environ.get(_env_name(key, field), '')
         if not value and secret:
-            value = _SESSION_SECRETS.get((key, field), '')
+            value = _SESSION_SECRETS.get((_db_identity(db), key, field), '')
             if not value and db is not None:
                 try:
                     value = get_local_secret(db, _secret_name(key, field)) or ''
@@ -190,7 +200,7 @@ def save_source_config(db, key, values):
             continue
         value = str(values[field] or '').strip() if not secret else str(values[field] or '')
         if secret:
-            _SESSION_SECRETS[(key, field)] = value
+            _SESSION_SECRETS[(_db_identity(db), key, field)] = value
             try:
                 set_local_secret(db, _secret_name(key, field), value)
             except Exception:
@@ -215,6 +225,15 @@ def load_all_configs(db, cache_dir=None, jackett=None):
     if jackett:
         configs['jackett'] = dict(jackett)
     return configs
+
+
+def describe_missing(spec, missing):
+    labels = {field: label.split(' (')[0].removeprefix('or ').removeprefix('and ') for field, label, _secret
+              in spec.settings}
+    labels.update(base='site address' if spec.key != 'z-library' else 'personal domain', account='account sign-in')
+    def plain(text):  # "Username" reads as "username" mid-sentence; "OCLC API key" keeps its capitals
+        return text[0].lower() + text[1:] if len(text) > 1 and text[1].islower() else text
+    return ', '.join(plain(labels.get(field, field)) for field in missing)
 
 
 def missing_settings(spec, config):
@@ -318,7 +337,7 @@ def search_sources(query, category, options=None, keys=None, pages=None, opener=
             approvals[spec.key] = approval
         missing = missing_settings(spec, config)
         if missing and not (spec.role == 'torrent' and config.get('access') == 'jackett'):
-            skipped[spec.key] = 'needs ' + ', '.join(missing).replace('_', ' ') + ' in Settings → Sources'
+            skipped[spec.key] = 'needs ' + describe_missing(spec, missing) + ' in Settings → Sources'
             continue
         runnable.append(spec)
     result = {'rows': [], 'errors': [], 'skipped': skipped, 'next_pages': {}, 'notices': [],

@@ -365,10 +365,13 @@ class MediaIntakeApp:
         return [dict(profile) for profile in profiles
                 if isinstance(profile, dict) and profile.get('id') and profile.get('name')]
 
-    def _scrollable_frame(self, parent, padding=0):
+    def _scrollable_frame(self, parent, padding=0, height=None):
         """Return a frame whose contents can scroll vertically in a small window."""
         outer = ttk.Frame(parent)
         canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+        if height:
+            # Inside another scrolling page a canvas does not stretch, so it would stay at Tk's ~7 cm default.
+            canvas.configure(height=height)
         scrollbar = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = ttk.Frame(canvas, padding=padding)
@@ -643,22 +646,25 @@ class MediaIntakeApp:
                    command=self.send_selected_to_kindle).pack(side='left', padx=6)
         self.library_view.bind('<Button-3>', self._library_context_menu)
 
+    SETTINGS_PAGE_HEIGHT = 640
+
     def _build_settings(self, parent):
         pages = ttk.Notebook(parent)
         pages.pack(fill='both', expand=True)
-        priority_page, priority_content = self._scrollable_frame(pages, padding=8)
-        irc_page, irc_content = self._scrollable_frame(pages, padding=8)
-        metadata_page, metadata_content = self._scrollable_frame(pages, padding=8)
-        kindle_page, kindle_content = self._scrollable_frame(pages, padding=8)
-        profiles_page, profiles_content = self._scrollable_frame(pages, padding=8)
+        height = self.SETTINGS_PAGE_HEIGHT
+        priority_page, priority_content = self._scrollable_frame(pages, padding=8, height=height)
+        irc_page, irc_content = self._scrollable_frame(pages, padding=8, height=height)
+        metadata_page, metadata_content = self._scrollable_frame(pages, padding=8, height=height)
+        kindle_page, kindle_content = self._scrollable_frame(pages, padding=8, height=height)
+        profiles_page, profiles_content = self._scrollable_frame(pages, padding=8, height=height)
         pages.add(priority_page, text='Download priority')
         pages.add(irc_page, text='IRC sources')
         pages.add(metadata_page, text='Metadata APIs')
         pages.add(kindle_page, text='Kindle')
         pages.add(profiles_page, text='Profiles')
-        external_page, external_content = self._scrollable_frame(pages, padding=8)
+        external_page, external_content = self._scrollable_frame(pages, padding=8, height=height)
         pages.add(external_page, text='Downloads')
-        sources_page, sources_content = self._scrollable_frame(pages, padding=8)
+        sources_page, sources_content = self._scrollable_frame(pages, padding=8, height=height)
         pages.add(sources_page, text='Sources')
         self.sources_panel = SourcesSettingsPanel(self, sources_content)
         self._build_external_download_settings(external_content)

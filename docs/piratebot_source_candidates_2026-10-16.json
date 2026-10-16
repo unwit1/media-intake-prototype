@@ -1,0 +1,416 @@
+{
+  "schema_version": 1,
+  "batch": "piratebot-coverage-candidates-2026-10-16",
+  "source_repo": "unwit1/pirateBot",
+  "source_path": "data/sites.jsonl",
+  "destination_repo": "unwit1/media-intake-prototype",
+  "catalog_is_research_not_endpoint_registry": true,
+  "selection_basis": "Editorial incremental-coverage hypotheses across media types and protocols, deduplicated against individual native Media Intake connectors; not a traffic ranking, live accessibility audit, demonstrated search benefit, or permission statement.",
+  "verified_functioning_search_connectors_added": 0,
+  "enabled_media_downloads_added": 0,
+  "candidate_count": 15,
+  "notes": [
+    "Historical domains are evidence only and must not be used as live request targets without separate review.",
+    "Jackett is already an existing generic Torznab integration; these site names are not preconfigured indexers.",
+    "Source-specific and work-specific rights remain separate, and no source receives automatic download approval.",
+    "Media Intake lacks a Music category; cross-media coverage must not pretend that music is directly supported."
+  ],
+  "candidates": [
+    {
+      "rank": 1,
+      "piratebot_id": "aio-search",
+      "name": "AIO Search",
+      "site_type": "discovery_directory",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Books",
+        "Comics",
+        "Manga",
+        "Anime",
+        "Videos",
+        "Games",
+        "Software"
+      ],
+      "documented_domains_not_live_verified": [
+        "aiosearch.com"
+      ],
+      "source_ids": [
+        "original-directory",
+        "aiosearch-firstparty-2026"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "The historical directory and 2026 self-described interface reference the same aiosearch.com root domain, but shared domain spelling does not establish unchanged operators, working search-provider integrations, or continuity over intervening years.",
+      "coverage_hypothesis": "Cross-category metasearch is a high-potential discovery complement, but the operator's listed provider categories are not proof of functioning connectors.",
+      "integration_hint": "manual_review_only",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 2,
+      "piratebot_id": "1337x",
+      "name": "1337x",
+      "site_type": "torrent_index",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Videos",
+        "Games",
+        "Software",
+        "Books",
+        "Anime"
+      ],
+      "documented_domains_not_live_verified": [],
+      "source_ids": [
+        "tf26"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Broad-category torrent index candidate; assess overlap with user-configured Jackett indexers before adding a separate adapter.",
+      "integration_hint": "jackett_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 3,
+      "piratebot_id": "the-pirate-bay",
+      "name": "The Pirate Bay",
+      "site_type": "torrent_index",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Videos",
+        "Games",
+        "Software",
+        "Books"
+      ],
+      "documented_domains_not_live_verified": [
+        "thepiratebay.org"
+      ],
+      "source_ids": [
+        "tf26",
+        "tfus25"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Broad-category torrent index candidate that could duplicate existing Torznab/Jackett results; measure only source-disjoint incremental hits.",
+      "integration_hint": "jackett_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 4,
+      "piratebot_id": "rutracker",
+      "name": "RuTracker",
+      "site_type": "torrent_index",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Videos",
+        "Games",
+        "Software",
+        "Books"
+      ],
+      "documented_domains_not_live_verified": [
+        "rutracker.org"
+      ],
+      "source_ids": [
+        "tf25",
+        "tfus25"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Regional and potentially distinctive media catalog hypothesis; media-intake currently has no standalone Music category.",
+      "integration_hint": "jackett_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 5,
+      "piratebot_id": "nyaa",
+      "name": "Nyaa",
+      "site_type": "torrent_index",
+      "piratebot_media_categories": [
+        "anime"
+      ],
+      "proposed_media_intake_categories": [
+        "Anime",
+        "Manga"
+      ],
+      "documented_domains_not_live_verified": [
+        "nyaa.si"
+      ],
+      "source_ids": [
+        "tf26",
+        "tf25",
+        "nyaa-history"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Nyaa.si is treated separately from the earlier pre-2017 NyaaTorrents service. Similar branding and reused data do not establish common operators.",
+      "coverage_hypothesis": "Anime-oriented index candidate; measure incremental catalog matches beyond existing AniList, MangaDex and Anime Tosho.",
+      "integration_hint": "jackett_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 6,
+      "piratebot_id": "yts",
+      "name": "YTS",
+      "site_type": "torrent_index",
+      "piratebot_media_categories": [
+        "film"
+      ],
+      "proposed_media_intake_categories": [
+        "Videos"
+      ],
+      "documented_domains_not_live_verified": [
+        "yts.mx",
+        "yts.bz"
+      ],
+      "source_ids": [
+        "tf25",
+        "tf26"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Domains shown are from separate dated 2025 and 2026 reports; neither is asserted to be the current entry point. The original YIFY/YTS group is a distinct historical identity.",
+      "coverage_hypothesis": "Film-focused torrent index candidate; dated domains are not current entry points.",
+      "integration_hint": "jackett_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 7,
+      "piratebot_id": "eztvx",
+      "name": "EZTVx",
+      "site_type": "torrent_index",
+      "piratebot_media_categories": [
+        "tv"
+      ],
+      "proposed_media_intake_categories": [
+        "Videos"
+      ],
+      "documented_domains_not_live_verified": [
+        "eztvx.to"
+      ],
+      "source_ids": [
+        "tf26"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "TV-focused index candidate for episode-level metadata; separate it from the original historical EZTV identity.",
+      "integration_hint": "jackett_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 8,
+      "piratebot_id": "nzbgeek",
+      "name": "NZBGeek",
+      "site_type": "usenet_indexer",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Videos",
+        "Books",
+        "Games",
+        "Software"
+      ],
+      "documented_domains_not_live_verified": [
+        "nzbgeek.info"
+      ],
+      "source_ids": [
+        "lunasea",
+        "usenetalmanac"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Newznab/Usenet discovery candidate, which differs structurally from existing HTTP and Torznab searches.",
+      "integration_hint": "newznab_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 9,
+      "piratebot_id": "drunkenslug",
+      "name": "DrunkenSlug",
+      "site_type": "usenet_indexer",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Videos",
+        "Books",
+        "Games"
+      ],
+      "documented_domains_not_live_verified": [
+        "drunkenslug.com"
+      ],
+      "source_ids": [
+        "lunasea",
+        "usenetalmanac"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Second Usenet catalog candidate to measure distinct search coverage without assuming API entitlement or active access.",
+      "integration_hint": "newznab_candidate",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 10,
+      "piratebot_id": "z-library",
+      "name": "Z-Library",
+      "site_type": "library_index",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Books",
+        "Light novels"
+      ],
+      "documented_domains_not_live_verified": [],
+      "source_ids": [
+        "anna"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Book-index discovery hypothesis; record catalog metadata only unless source- and work-specific permissions are separately established.",
+      "integration_hint": "metadata_review",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 11,
+      "piratebot_id": "vimm-s-lair",
+      "name": "Vimm's Lair",
+      "site_type": "rom_archive",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Games"
+      ],
+      "documented_domains_not_live_verified": [],
+      "source_ids": [
+        "games"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Retro-game and emulation archive category gap; neither abandonware labeling nor listing implies distribution rights.",
+      "integration_hint": "metadata_review",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 12,
+      "piratebot_id": "fitgirl-repacks",
+      "name": "FitGirl Repacks",
+      "site_type": "game_release_site",
+      "piratebot_media_categories": [
+        "games"
+      ],
+      "proposed_media_intake_categories": [
+        "Games"
+      ],
+      "documented_domains_not_live_verified": [
+        "fitgirl-repacks.site"
+      ],
+      "source_ids": [
+        "tf26",
+        "games"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Game-release catalog candidate distinct from existing abandonware connectors; no file links or automatic acquisitions.",
+      "integration_hint": "metadata_review",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 13,
+      "piratebot_id": "anidb",
+      "name": "AniDB",
+      "site_type": "release_metadata",
+      "piratebot_media_categories": [
+        "anime"
+      ],
+      "proposed_media_intake_categories": [
+        "Anime"
+      ],
+      "documented_domains_not_live_verified": [
+        "anidb.net"
+      ],
+      "source_ids": [
+        "anidb-about"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Historical or reported service identity is not evidence of common ownership or operator continuity with similarly named sites.",
+      "coverage_hypothesis": "Anime/file-hash metadata complement; metadata coverage is distinct from downloadable files.",
+      "integration_hint": "metadata_review",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 14,
+      "piratebot_id": "worldcat",
+      "name": "WorldCat",
+      "site_type": "library_index",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Books"
+      ],
+      "documented_domains_not_live_verified": [
+        "worldcat.org"
+      ],
+      "source_ids": [
+        "anna",
+        "worldcat-about"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Bibliographic holdings discovery that can improve match/edition identification; not a general file download site.",
+      "integration_hint": "metadata_review",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    },
+    {
+      "rank": 15,
+      "piratebot_id": "magzdb",
+      "name": "MagzDB",
+      "site_type": "library_index",
+      "piratebot_media_categories": [],
+      "proposed_media_intake_categories": [
+        "Books"
+      ],
+      "documented_domains_not_live_verified": [],
+      "source_ids": [
+        "anna"
+      ],
+      "observational_state": "named_in_source_not_live_checked",
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed.",
+      "coverage_hypothesis": "Periodical and magazine discovery gap hypothesis; category applicability and live operation need independent verification.",
+      "integration_hint": "metadata_review",
+      "review_state": "research_only",
+      "live_search_implemented": false,
+      "direct_download_implemented": false,
+      "default_approved_for_download": false
+    }
+  ]
+}

@@ -198,6 +198,10 @@ def network_error(source, exc):
     if 'certificate' in text or 'ssl' in text:
         return SourceError(source, 'the site\'s secure connection could not be verified.', 'unreachable',
                            'The address may be an impostor or intercepted. Check it in Settings → Sources.')
+    if 'tunnel connection failed' in text or 'proxy' in text:
+        return SourceError(source, 'a proxy on your network refused the connection to this site.', 'blocked',
+                           'Your network or VPN filters it. Allow the site in the proxy, use another network, '
+                           'or route the source through Jackett.')
     if 'refused' in text:
         return SourceError(source, 'the connection was refused.', 'unreachable',
                            'If this is a program on your computer (Jackett, SABnzbd), make sure it is running.')

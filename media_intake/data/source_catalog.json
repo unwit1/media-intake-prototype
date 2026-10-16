@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "note": "Fixture routing identifiers for source recognition. Domains are not statements about current availability, and an entry is not permission to acquire any work. Reference records come from the PirateBot catalog (data/sites.jsonl).",
+  "sources": [
+    {
+      "id": "yts", "name": "YTS", "source_key": "yts", "site_type": "torrent_index",
+      "coverage": "Film", "categories": ["Videos"],
+      "domains": ["yts.mx", "yts.bz"], "aliases": [],
+      "distinct_identities": ["yify"],
+      "identity_caveat": "yts.mx and yts.bz come from separate dated reports; neither is asserted to be the current entry point, so both resolve to this one record. The original YIFY/YTS group is a distinct historical identity.",
+      "adapters": {},
+      "limitation": "Identity only. Media Intake has no search or detail parser for this source; magnet and .torrent items attributed to it use the existing torrent and external download manager queue."
+    },
+    {
+      "id": "the-pirate-bay", "name": "The Pirate Bay", "source_key": "the-pirate-bay", "site_type": "torrent_index",
+      "coverage": "General index", "categories": [],
+      "domains": ["thepiratebay.org"], "aliases": [],
+      "distinct_identities": [],
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed, so only the listed domain resolves here.",
+      "adapters": {},
+      "limitation": "Identity only. No search or detail parser; torrent items attributed to it use the existing torrent and external download manager queue."
+    },
+    {
+      "id": "nyaa", "name": "Nyaa", "source_key": "nyaa", "site_type": "torrent_index",
+      "coverage": "Anime", "categories": ["Anime"],
+      "domains": ["nyaa.si"], "aliases": [],
+      "distinct_identities": ["nyaatorrents"],
+      "identity_caveat": "Nyaa.si is treated separately from the earlier pre-2017 NyaaTorrents service. Similar branding and reused data do not establish common operators.",
+      "adapters": {},
+      "limitation": "Identity only. No search or detail parser; torrent items attributed to it use the existing torrent and external download manager queue."
+    },
+    {
+      "id": "fitgirl-repacks", "name": "FitGirl Repacks", "source_key": "fitgirl-repacks", "site_type": "game_release_site",
+      "coverage": "Games", "categories": ["Games"],
+      "domains": ["fitgirl-repacks.site"], "aliases": [],
+      "distinct_identities": [],
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed, so only the listed domain resolves here.",
+      "adapters": {},
+      "limitation": "Identity only. No search or detail parser; items attributed to it use the existing queue."
+    },
+    {
+      "id": "rutracker", "name": "RuTracker", "source_key": "rutracker", "site_type": "torrent_index",
+      "coverage": "Mixed media", "categories": [],
+      "domains": ["rutracker.org"], "aliases": [],
+      "distinct_identities": [],
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed, so only the listed domain resolves here.",
+      "adapters": {},
+      "limitation": "Identity only. No search or detail parser; torrent items attributed to it use the existing torrent and external download manager queue."
+    },
+    {
+      "id": "mangadex", "name": "MangaDex", "source_key": "mangadex", "site_type": "library_index",
+      "coverage": "Manga / comics", "categories": ["Manga", "Comics"],
+      "domains": ["mangadex.org"], "aliases": [],
+      "distinct_identities": [],
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed, so only the listed domain resolves here.",
+      "adapters": {"search": "media_intake.comics.search_mangadex", "chapters": "media_intake.comics.list_mangadex_chapters"},
+      "limitation": null
+    },
+    {
+      "id": "pixeldrain", "name": "Pixeldrain", "source_key": "pixeldrain", "site_type": "file_host",
+      "coverage": "File hosting", "categories": [],
+      "domains": ["pixeldrain.com"], "aliases": [],
+      "distinct_identities": [],
+      "identity_caveat": "Names and domains may be reused by unrelated operators; equivalence is not assumed, so only the listed domain resolves here.",
+      "adapters": {"file_host": "pixeldrain"},
+      "limitation": null
+    }
+  ]
+}

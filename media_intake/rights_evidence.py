@@ -220,12 +220,16 @@ def source_is_approved(path, source):
 
 
 def source_key_for_item(item):
+    from . import source_catalog
     explicit = str(item.get('source_key') or '').strip().casefold()
     if explicit:
         # Old queued catalog rows sometimes carry a metadata provider as their
         # source. A real file reached through one of those rows is governed by
         # the generic direct-file approval, never by metadata-repository rights.
-        return 'direct_file_url' if explicit in METADATA_ONLY_SOURCES else explicit
+        if explicit in METADATA_ONLY_SOURCES:
+            return 'direct_file_url'
+        # Older rows may name a catalog source by an alias or one of its domains.
+        return source_catalog.source_key(explicit) or explicit
     url = urllib.parse.urlsplit(str(item.get('url') or ''))
     scheme = url.scheme.casefold()
     if scheme == 'irc+xdcc':
@@ -235,6 +239,9 @@ def source_key_for_item(item):
     if scheme.startswith('serial+'):
         return item.get('source_key') or 'webfiction_rss_atom'
     host = (url.hostname or '').casefold()
+    known = source_catalog.find_by_host(host)
+    if known:
+        return known['source_key']
     if host in {'sourceforge.net', 'downloads.sourceforge.net'}:
         return 'sourceforge.net'
     if host == 'github.com' or host.endswith('.githubusercontent.com'):
@@ -267,6 +274,12 @@ def source_key_for_item(item):
         return 'lnori.com'
     if host == 'novelarchive.cc':
         return 'novelarchive.cc'
+    # Magnet links and files on a mirror carry no useful host; the page or site
+    # the item was found through still identifies the source.
+    for hint in ('source', 'site', 'provider'):
+        found = source_catalog.source_key(item.get(hint))
+        if found:
+            return found
     return 'direct_file_url'
 
 

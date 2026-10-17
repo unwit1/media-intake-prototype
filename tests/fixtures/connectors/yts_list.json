@@ -1,0 +1,4 @@
+{"status":"ok","status_message":"Query was successful","data":{"movie_count":23,"limit":20,"page_number":1,"movies":[
+{"id":101,"url":"https://yts.mx/movies/night-of-the-living-dead-1968","imdb_code":"tt0063350","title":"Night of the Living Dead","title_long":"Night of the Living Dead (1968)","year":1968,"rating":7.8,"runtime":96,"genres":["Horror"],"language":"en",
+"torrents":[{"url":"https://yts.mx/torrent/download/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","quality":"1080p","type":"bluray","video_codec":"x264","seeds":77,"peers":5,"size":"1.50 GB","size_bytes":1610612736,"date_uploaded_unix":1700000000},
+{"url":"https://yts.mx/torrent/download/FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF","hash":"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF","quality":"720p","type":"bluray","video_codec":"x264","seeds":40,"peers":2,"size":"800 MB","size_bytes":838860800,"date_uploaded_unix":1700000000}]}]}}

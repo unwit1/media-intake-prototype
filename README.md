@@ -62,6 +62,10 @@ Every data folder contains `rights-evidence.json`, the app's single local yes/no
 
 On Windows, use `py` in place of `python` if needed. Put `--root "C:\\Media Intake"` before the subcommand to choose where data lives. `search-openlibrary` uses Open Library's search API and Internet Archive's item metadata to find actual EPUB/PDF links; results are not added to the queue until selected. The live search and download were tested with *Alice's Adventures in Wonderland* from Internet Archive. Some item records will lack accessible ebook files.
 
+## Torrent, Usenet, library and catalogue sources
+
+The Pirate Bay, 1337x, RuTracker, Nyaa, YTS, EZTVx and FitGirl Repacks (torrents), NZBGeek and DrunkenSlug (Usenet, through SABnzbd or NZBGet), Z-Library, MagzDB and Vimm's Lair (direct files), AniDB and WorldCat (metadata) and AIO Search (browser launcher) are built-in sources. Set them up in **Settings → Sources**; file sources start as NO in `rights-evidence.json` like every other download connector. Category searches group their releases under each work, **Choose release…** picks one by quality, size and seeders, and **Load more results** pages through sources that have more. See [docs/SOURCES.md](docs/SOURCES.md) for setup, the verification table and what was tested against fixtures rather than live sites.
+
 ## Website sources
 
 The prototype supports these discovery paths:

@@ -2019,6 +2019,10 @@ def _is_match(candidate, watch):
     return True
 
 
+from .rights_evidence import DOWNLOAD_SOURCES as _RIGHTS_SOURCES
+_CONNECTOR_KEYS = frozenset(_RIGHTS_SOURCES[_RIGHTS_SOURCES.index('thepiratebay'):])
+
+
 def _approved_source_record(options, source_key, watch=None, db=None):
     """Read the one local yes/no record; a work-specific NO wins over a site YES."""
     if '_resolved_approvals' in options:
@@ -2034,7 +2038,7 @@ def _approved_source_record(options, source_key, watch=None, db=None):
                 'noobsubs.com', 'chauthanh.info', 'sourceforge.net',
                 'github_foss', 'mediafiretrend.com', 'xdcc.eu',
                 'warezomen.com', 'myabandonware.com', 'oldgamesdownload.com',
-                'abandonwaregames.net', 'gog-rev.com', 'ankergames.net'}:
+                'abandonwaregames.net', 'gog-rev.com', 'ankergames.net'} or source_key in _CONNECTOR_KEYS:
             return None
         return {'approved_for_download': True, 'status': 'test_or_library_caller'}
     document = load_rights_evidence(path)

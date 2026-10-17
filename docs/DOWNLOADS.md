@@ -115,6 +115,20 @@ ratio, peers, upload speed and time left. *Stop seeding* on the Queue tab ends i
 and keeps the files. Seeding state (`.seed-<queue id>.fastresume`) survives restarts,
 so unfinished seeding continues when the app opens again.
 
+## Usenet (NZB) releases (`media_intake/connectors/usenet.py`)
+
+NZBGeek and DrunkenSlug results queue as NZB links. When one starts, the app fetches the NZB (an
+indexer error such as a used-up daily limit is shown as such), sends it to SABnzbd or NZBGet
+(Settings → Sources) and follows the job there: progress and time left in the queue, *Pause* and
+*Cancel* pause or delete the job in the newsreader, and resuming continues the same job instead of
+sending it twice. A failed repair or unpack fails the queue item with the newsreader's reason. The
+finished files stay in the newsreader's completed folder, which the queue item points to. Without a
+newsreader, *Without a program: save* keeps the `.nzb` file in the library for another program.
+
+Links from Z-Library, MagzDB and Vimm's Lair are asked for when the download starts (they expire or
+need a referring page), then downloaded by the engine above with resume and validation. 1337x and
+RuTracker magnets are read at the same point.
+
 ## Video streams saved to a file (`media_intake/streams.py`)
 
 HLS streams are saved as an ordinary file. Nothing is played. A queued `.m3u8` link,

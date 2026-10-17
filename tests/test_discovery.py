@@ -76,7 +76,8 @@ class CategoryDiscoveryTest(unittest.TestCase):
                 if category == 'Software':
                     self.assertEqual(DOWNLOAD_CONNECTORS[category],
                                      ('IRC', 'GitHub (FOSS)', 'SourceForge', 'MediaFireTrend',
-                                      'XDCC.eu', 'WarezOmen'))
+                                      'XDCC.eu', 'WarezOmen', 'The Pirate Bay', '1337x', 'RuTracker',
+                                      'NZBGeek', 'DrunkenSlug'))
                     continue
                 self.assertEqual(DOWNLOAD_CONNECTORS[category][0], 'IRC')
                 self.assertIn('Internet Archive', DOWNLOAD_CONNECTORS[category])

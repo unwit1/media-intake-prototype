@@ -87,8 +87,8 @@ class GuiSmokeTest(unittest.TestCase):
     def run_all(self, select=False):
         targets = [(self.app, name) for name in actions()]
         self.assertGreater(len(targets), 50)
-        # The Webcomics and Podcasts tabs are panels with their own actions.
-        for panel in (self.app.webcomics_panel, self.app.podcasts_panel):
+        # The Webcomics and Podcasts tabs and Settings → Sources are panels with their own actions.
+        for panel in (self.app.webcomics_panel, self.app.podcasts_panel, self.app.sources_panel):
             targets += [(panel, name) for name in actions(type(panel))]
         for owner, name in targets:
             if select:

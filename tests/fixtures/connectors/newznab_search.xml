@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel><title>indexer</title><newznab:response offset="0" total="101"/>
+<item><title>Night.of.the.Living.Dead.1968.1080p.BluRay.x264-PUBLICDOMAIN</title><guid isPermaLink="true">https://indexer.example/details/abc123</guid>
+<link>https://indexer.example/api?t=get&amp;id=abc123&amp;apikey=KEY</link><comments>https://indexer.example/details/abc123#comments</comments><pubDate>Tue, 14 Nov 2023 10:00:00 +0000</pubDate><category>Movies &gt; HD</category>
+<enclosure url="https://indexer.example/api?t=get&amp;id=abc123&amp;apikey=KEY" length="1610612736" type="application/x-nzb"/>
+<newznab:attr name="category" value="2000"/><newznab:attr name="category" value="2040"/><newznab:attr name="size" value="1610612736"/><newznab:attr name="guid" value="abc123"/><newznab:attr name="grabs" value="321"/><newznab:attr name="imdb" value="0063350"/></item>
+<item><title>Night.of.the.Living.Dead.1968.720p.WEB.h264-OLDIES</title><guid isPermaLink="true">https://indexer.example/details/def456</guid>
+<link>https://indexer.example/api?t=get&amp;id=def456&amp;apikey=KEY</link><pubDate>Tue, 14 Nov 2023 11:00:00 +0000</pubDate>
+<enclosure url="https://indexer.example/api?t=get&amp;id=def456&amp;apikey=KEY" length="800000000" type="application/x-nzb"/>
+<newznab:attr name="size" value="800000000"/><newznab:attr name="guid" value="def456"/><newznab:attr name="grabs" value="12"/></item>
+</channel></rss>

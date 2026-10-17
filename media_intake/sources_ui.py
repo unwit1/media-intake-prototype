@@ -90,7 +90,7 @@ def queue_rows(app, rows):
     from .torrents import available
     torrents = [row for row in rows if row.get('format') == '.torrent']
     if torrents and not available():
-        app._send_to_downloader(torrents)
+        hand_off_torrents(app, torrents)
         rows = [row for row in rows if row.get('format') != '.torrent']
         if not rows:
             return
@@ -110,6 +110,38 @@ def queue_rows(app, rows):
         app._done(f'Queued {len(items)} release(s); ' + ('they start automatically' if automatic else
                                                        'start them from the Queue tab'))
     app._worker('Adding to queue…', action, queued)
+
+
+def hand_off_torrents(app, rows):
+    """Send torrents to the external manager with a real magnet or .torrent link.
+
+    1337x and RuTracker rows point at the release page until their magnet is read, and
+    Jackett links need their key back; a download manager given the page would save HTML.
+    """
+    from .connectors import link_with_secret, resolve_download
+    configs = load_all_configs(app.db, app.data_root / 'cache', dict(getattr(app, 'external_dl_settings', {}) or {}))
+
+    def action():
+        ready, failed = [], []
+        for row in rows:
+            try:
+                row = resolve_download(row, configs) if row.get('resolve_connector') else dict(row)
+                url = link_with_secret(row, configs)
+                ready.append(dict(row, url=url, handoff_url=url, magnet=url if url.startswith('magnet:') else
+                                  row.get('magnet')))
+            except Exception as exc:
+                failed.append(f"{row.get('title') or 'Untitled'}: {exc}")
+        return ready, failed
+
+    def done(result):
+        ready, failed = result
+        if failed:
+            messagebox.showwarning('Send to download manager', '\n'.join(failed))
+        if ready:
+            app._send_to_downloader(ready)
+        else:
+            app._done('Nothing could be sent to the download manager')
+    app._worker('Reading magnet links…', action, done)
 
 
 class ReleasePicker:
@@ -328,6 +360,10 @@ class SourcesSettingsPanel:
 
     def test(self, spec):
         self.save(spec)
+        if spec.file_capable and approval_text(self.app.rights_evidence_path, spec.key) != 'YES':
+            self.status.set(f'{spec.label} is NO in rights-evidence.json, so it is not contacted. Set its '
+                            'approved_for_download to true (Open rights file) to test it.')
+            return
         query = self.test_query.get().strip() or 'test'
         category = 'Videos' if 'Videos' in spec.categories else sorted(spec.categories)[0]
         configs = load_all_configs(self.app.db, self.app.data_root / 'cache',

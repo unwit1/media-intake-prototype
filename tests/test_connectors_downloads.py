@@ -296,8 +296,15 @@ class UsenetDownloadTest(DownloadCase):
 
     def row(self, indexer, nzb_reply=None):
         search = fixture('newznab_search.xml').replace(b'https://indexer.example', indexer.base.encode())
-        indexer.route('GET', '/api', Reply(search, content_type='application/rss+xml'))
-        indexer.route('GET', r'/getnzb/.*', nzb_reply or Reply(fixture('sample.nzb'), content_type='application/x-nzb'))
+        grab = nzb_reply or Reply(fixture('sample.nzb'), content_type='application/x-nzb')
+
+        def api(request):
+            if request['query'].get('t') == ['get']:
+                self.assertEqual(request['query'].get('apikey'), ['KEY'])  # key added back only to fetch
+                return grab
+            return Reply(search, content_type='application/rss+xml')
+        indexer.route('GET', '/api', api)
+        save_source_config(self.db, 'nzbgeek', {'base': indexer.base, 'api_key': 'KEY'})
         page = search_one('nzbgeek', 'night of the living dead', 'Videos', 1,
                           {'nzbgeek': {'base': indexer.base, 'api_key': 'KEY'}})
         return page.rows[0]
@@ -316,7 +323,11 @@ class UsenetDownloadTest(DownloadCase):
                 download(self.db, item_id, self.root)
         item = self.item(item_id)
         self.assertEqual(item['state'], 'downloaded')
-        self.assertEqual(item['file_path'], str(Path('/srv/usenet/complete/Night of the Living Dead')))
+        # The newsreader's folder is not on this machine: recorded in the message, not as a file.
+        self.assertIsNone(item['file_path'])
+        self.assertIn('/srv/usenet/complete/Night of the Living Dead', item['progress_message'])
+        stored = json.dumps([dict(row) for row in self.db.execute('SELECT * FROM items')])
+        self.assertNotIn('KEY', stored)
         self.assertIn(('addfile', None, None), sab.calls)
         self.assertTrue(any('SABnzbd: Downloading' in str(message) for _done, _total, message in messages))
         self.assertTrue(any(done and total and done < total for done, total, _message in messages))
@@ -397,8 +408,35 @@ class UsenetDownloadTest(DownloadCase):
             item_id = self.queue(self.row(indexer))
             download(self.db, item_id, self.root)
         item = self.item(item_id)
-        self.assertEqual((item['state'], item['file_path']), ('downloaded', str(Path('/data/notld'))))
+        self.assertEqual(item['state'], 'downloaded')
+        self.assertIn('/data/notld', item['progress_message'])
         self.assertEqual(polls[0], 'append')
+
+    def test_a_completed_job_in_a_local_folder_records_its_main_file(self):
+        from media_intake.core import _usenet_result
+        folder = self.root / 'complete' / 'Release'
+        folder.mkdir(parents=True)
+        (folder / 'sample.mkv').write_bytes(b's' * 10)
+        (folder / 'release.mkv').write_bytes(b'm' * 1000)
+        path, checksum, note = _usenet_result(str(folder))
+        self.assertEqual(Path(path).name, 'release.mkv')
+        self.assertEqual(checksum, hashlib.sha256(b'm' * 1000).hexdigest())
+        self.assertEqual(_usenet_result(None)[0], None)
+
+    def test_pause_stands_even_when_the_newsreader_cannot_be_reached(self):
+        with FakeSite() as indexer, FakeSite() as sab_site:
+            sab = FakeSabnzbd(sab_site, finish_after=1000)
+            self.client(sab_site)
+            item_id = self.queue(self.row(indexer))
+            worker = self._background(item_id)
+            self._wait(lambda: sab.jobs)
+            sab_site.route('*', '/api', lambda request: Reply(b'down', 503)
+                           if request['query'].get('name') == ['pause'] else None)
+            transfer.request_pause(('item', item_id))
+            worker.join(10)
+        item = self.item(item_id)
+        self.assertEqual(item['state'], 'paused')
+        self.assertIn('could not be told to pause', item['error'])
 
     def test_without_a_newsreader_the_nzb_can_be_saved_for_later(self):
         save_source_config(self.db, 'usenet_client', {'url': '', 'nzb_mode': 'save'})

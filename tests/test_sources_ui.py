@@ -107,6 +107,37 @@ class SourcesGuiTest(unittest.TestCase):
             'Videos', {'source_configs': {'nzbgeek': config}}))
         self.assertIn('Off', panel.view.item('nzbgeek', 'values')[2])
 
+    def test_test_search_does_not_contact_an_unapproved_source(self):
+        panel = self.app.sources_panel
+        panel.view.selection_set('thepiratebay')
+        self.flush()
+        with patch('media_intake.sources_ui.search_one') as searcher:
+            panel.test(CONNECTORS['thepiratebay'])
+        searcher.assert_not_called()
+        self.assertIn('NO in rights-evidence.json', panel.status.get())
+
+    def test_handing_off_a_1337x_release_sends_its_magnet_not_the_page(self):
+        from media_intake.sources_ui import hand_off_torrents
+        with FakeSite() as site:
+            site.route('GET', r'/torrent/1/.*', Reply('<a href="magnet:?xt=urn:btih:' + 'b' * 40 + '">m</a>'))
+            from media_intake.connectors import save_source_config
+            save_source_config(self.app.db, '1337x', {'base': site.base})
+            row = {'title': 'Sintel', 'format': '.torrent', 'url': site.base + '/torrent/1/sintel/',
+                   'details_url': site.base + '/torrent/1/sintel/', 'resolve_connector': '1337x',
+                   'source_key': '1337x', 'external_download': True}
+            with patch.object(self.app, '_send_to_downloader') as send:
+                hand_off_torrents(self.app, [row])
+        sent = send.call_args.args[0][0]
+        self.assertTrue(sent['handoff_url'].startswith('magnet:?xt=urn:btih:bbbb'))
+
+    def test_a_malformed_rights_file_is_reported_not_raised(self):
+        Path(self.app.rights_evidence_path).write_text('{not json', encoding='utf-8')
+        self.app.query.set('x')
+        self.app.source.set('The Pirate Bay (torrent)')
+        with patch('tkinter.messagebox.showerror') as error:
+            self.app.search()
+        self.assertIn('could not be read', error.call_args.args[1])
+
     def test_torrent_sources_offer_jackett_routing(self):
         panel = self.app.sources_panel
         panel.view.selection_set('1337x')

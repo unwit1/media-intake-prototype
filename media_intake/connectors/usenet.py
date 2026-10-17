@@ -80,15 +80,17 @@ def search_newznab(spec, query, category, page=1, config=None, opener=None):
         guid = (attrs.get('guid') or [item.findtext('guid') or link])[0]
         info = parse_release(name)
         grabs = _int((attrs.get('grabs') or [None])[0])
+        from . import strip_secret
+        link, secret_params = strip_secret(link.strip(), api_key)
         row = {
             'title': info['title'], 'release_title': name, 'author': 'Unknown', 'category': category,
-            'kind': CATEGORY_KINDS.get(category, 'video'), 'url': link.strip(), 'format': '.nzb',
-            'nzb_url': link.strip(), 'nzb_guid': guid, 'size': size, 'grabs': grabs,
+            'kind': CATEGORY_KINDS.get(category, 'video'), 'url': link, 'format': '.nzb',
+            'secret_params': secret_params, 'secret_source': spec.key, 'nzb_guid': guid, 'size': size, 'grabs': grabs,
             'published': (item.findtext('pubDate') or '').strip(),
             'details_url': (item.findtext('comments') or '').split('#')[0].strip(),
             'source': spec.label, 'source_key': spec.key, 'provider': spec.label,
             'source_role': 'download', 'downloadable': True, 'transfer': 'usenet',
-            'quality': quality_label(info), 'source_id': guid, 'secret_url': True,
+            'quality': quality_label(info), 'source_id': guid,
             'display_source': ' · '.join(part for part in (
                 'Usenet', spec.label, f'{grabs} grabs' if grabs is not None else '', human_size(size)) if part),
         }
@@ -109,13 +111,6 @@ def search_newznab(spec, query, category, page=1, config=None, opener=None):
     has_more = (total is not None and (offset or 0) + len(rows) < total) if total is not None else \
         len(rows) >= PAGE_SIZE
     return SearchPage(rows, page, has_more, 'direct')
-
-
-def redact_nzb_url(url):
-    parts = urllib.parse.urlsplit(str(url or ''))
-    query = [(key, '***' if key.casefold() in ('apikey', 'r', 'i') else value)
-             for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)]
-    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query, safe='*')))
 
 
 def fetch_nzb(source, url, opener=None):
@@ -300,11 +295,15 @@ def follow_job(config, job_id, *, control, progress, poll=None, opener=None, sta
     while True:
         try:
             control.check()
-        except TransferPaused:
-            control_job(config, job_id, 'pause', opener)
-            raise
-        except TransferCancelled:
-            control_job(config, job_id, 'delete', opener)
+        except (TransferPaused, TransferCancelled) as stop:
+            action = 'pause' if isinstance(stop, TransferPaused) else 'delete'
+            try:
+                control_job(config, job_id, action, opener)
+            except Exception as exc:  # the user's pause/cancel still stands in the queue
+                import logging
+                logging.getLogger(__name__).warning('Could not %s %s job %s: %s', action,
+                                                    _client_label(config), job_id, exc)
+                stop.newsreader_note = f'{_client_label(config)} could not be told to {action} the job ({exc})'
             raise
         status = job_status(config, job_id, opener)
         state = status['state']

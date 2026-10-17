@@ -79,7 +79,7 @@ live site still answers that way.
 | YTS | Done: `list_movies.json`, one row per quality, paging by movie count | Parse, paging, non-video category returns nothing | Torrent | Shares the torrent engine | As above | Live unverified; default `yts.mx` address may be out of date (set a mirror) |
 | EZTVx | Done: name search page; IMDb ID search through `get-torrents` API with paging | Both paths, season/episode parsing | Torrent | Shares the torrent engine | As above | Live unverified; the name-search page parser assumes the long-standing EZTV layout |
 | FitGirl Repacks | Done: WordPress REST search with paging, magnet, repack and original size, genres | Parse, skipping non-release posts, paging header, past-last-page 400 | Torrent (magnet) | Shares the torrent engine | As above | Live unverified. Direct-download mirrors in posts are not used, only the magnet |
-| NZBGeek | Done: Newznab search, categories, offset paging, API key hidden from labels | Parse, totals, error codes (bad key, limits), missing key makes no request | NZB to SABnzbd/NZBGet, or save the .nzb | Fake SABnzbd: send, progress, completion, pause → resume (same job), cancel → deleted there, failed repair, indexer limit, no newsreader; fake NZBGet JSON-RPC to completion; saved .nzb | As above, plus newsreader settings and test | Live unverified; needs a paid membership to try. Completed Usenet jobs stay in the newsreader's folder (not moved into the library) |
+| NZBGeek | Done: Newznab search, categories, offset paging, API key hidden from labels | Parse, totals, error codes (bad key, limits), missing key makes no request | NZB to SABnzbd/NZBGet, or save the .nzb | Fake SABnzbd: send, progress, completion, pause → resume (same job), cancel → deleted there, failed repair, indexer limit, no newsreader; fake NZBGet JSON-RPC to completion; saved .nzb | As above, plus newsreader settings and test | Live unverified; needs a paid membership to try. Completed jobs stay in the newsreader's folder; the queue records its largest file when that folder is on this computer, otherwise the folder path in the status |
 | DrunkenSlug | Done: same Newznab client | Error-code handling | Same as NZBGeek | Same code path as NZBGeek | As above | Live unverified; invite-only |
 | Z-Library | Done: eAPI sign-in or saved user ID/key, search with paging, supported formats only | Sign-in, cookies, format filtering, paging, missing-domain message | Direct file; link asked for at download time | Local server: complete and SHA-256 validated EPUB; interrupted transfer resumed with a fresh link and a byte range; HTML page instead of a book rejected; daily limit and unsupported format explained; no approval → no request; same result queued twice → one item | As above | Live unverified. The eAPI is unofficial and changes; domains are personal and short-lived |
 | MagzDB | Done: title search → magazine page → issue rows | Parse | Direct file (issue page → file link) | PDF downloaded and validated; issue with no file explained | As above | Live unverified, and the `/makelist`, `/j/`, `/num/` paths are from the site's historical layout. The site has had long outages |
@@ -97,14 +97,15 @@ live site still answers that way.
 - Duplicates: the same torrent on several sites (same info hash) is one release listing every site;
   releases group under the work with its catalogue metadata (the 1968 film and the 1990 remake stay apart).
 - Paging: Load more adds the next page to the existing groups.
-- Settings persistence, secrets never written as plain settings, environment-variable secrets.
+- Settings persistence, secrets never written as plain settings, environment-variable secrets, and indexer
+  and Jackett API keys removed from queued links (added back only when the link is fetched).
 - GUI: Settings → Sources list and save, Jackett routing, single-source search refused until approved,
   grouped results, release picker queueing a magnet, category info line, and every new action in the
   app-wide smoke test.
 
-Test files: `tests/test_connectors_search.py` (29), `tests/test_connectors_integration.py` (16),
-`tests/test_connectors_downloads.py` (15, torrent cases skip without libtorrent),
-`tests/test_sources_ui.py` (7), `tests/test_source_candidate_audit.py` (5). Fixtures are in
+Test files: `tests/test_connectors_search.py` (31), `tests/test_connectors_integration.py` (16),
+`tests/test_connectors_downloads.py` (17, torrent cases skip without libtorrent),
+`tests/test_sources_ui.py` (10), `tests/test_source_candidate_audit.py` (5). Fixtures are in
 `tests/fixtures/connectors/`; `tests/connector_site.py` is the local stand-in site.
 
 To check a source against the live site yourself, enter its settings and use **Test search** in
@@ -122,7 +123,7 @@ Settings → Sources, then queue a release of a work you are entitled to downloa
   `rights_evidence.DOWNLOAD_SOURCES`, `watched._approved_source_record` (fail closed), `gui.py` search,
   result columns, queueing, Load more and the Settings notebook.
 - **Not done:** live verification of every source; automatic downloads from these sources for Watched
-  items (they are searched and queued by hand); moving finished Usenet jobs into the library folder;
+  items (they are searched and queued by hand); moving finished Usenet jobs into the library folder (a local job's main file is recorded);
   FitGirl direct-download mirrors.
 - **Next steps:** run Test search for each source on a normal connection and record the outcome here;
   adjust any parser whose live page differs from its fixture (add the live page as a new fixture).

@@ -7,6 +7,7 @@ WorldCat Search API v2, AniDB's title dump and HTTP API) or a saved page layout
 separately in docs/SOURCES.md.
 """
 import gzip
+import json
 from pathlib import Path
 import tempfile
 import time
@@ -95,7 +96,26 @@ class TorrentSiteSearchTest(unittest.TestCase):
         self.assertEqual(page.via, 'jackett')
         self.assertIn('used Jackett', page.notice)
         self.assertEqual(page.rows[0]['provider'], '1337x (via Jackett)')
+        self.assertEqual(page.rows[0]['url'][:8], 'magnet:?')
         self.assertEqual(page.rows[0]['source_key'], '1337x')
+
+    def test_jackett_torrent_links_are_stored_without_the_api_key(self):
+        from media_intake.connectors import link_with_secret
+        torznab = (b'<?xml version="1.0"?><rss xmlns:torznab="http://torznab.com/schemas/2015/feed"><channel>'
+                   b'<item><title>Sintel 2010 1080p</title><link>http://127.0.0.1:9117/dl/1337x/?jackett_apikey='
+                   b'JKEY&amp;path=abc&amp;file=Sintel</link><torznab:attr name="seeders" value="5"/></item>'
+                   b'</channel></rss>')
+        with FakeSite() as jackett:
+            jackett.route('GET', r'/api/v2.0/indexers/1337x/results/torznab/api',
+                          Reply(torznab, content_type='application/rss+xml'))
+            options = {'1337x': {'access': 'jackett'},
+                       'jackett': {'jackett_url': jackett.base, 'jackett_api_key': 'JKEY'}}
+            row = search_one('1337x', 'sintel', 'Videos', 1, options).rows[0]
+        self.assertNotIn('JKEY', json.dumps(row))
+        self.assertEqual(row['secret_source'], 'jackett')
+        self.assertIn('jackett_apikey=JKEY', link_with_secret(row, options))
+        with self.assertRaises(SourceError):
+            link_with_secret(row, {})
 
     def test_rutracker_signs_in_reads_cp1251_and_filters_forums_by_category(self):
         def login(request):
@@ -232,7 +252,9 @@ class UsenetSearchTest(unittest.TestCase):
         self.assertEqual((row['format'], row['grabs'], row['size']), ('.nzb', 321, 1610612736))
         self.assertEqual(row['imdb_id'], 'tt0063350')
         self.assertEqual(row['nzb_guid'], 'abc123')
-        self.assertNotIn('KEY', row['source'] + row['display_source'])
+        self.assertNotIn('KEY', json.dumps(row))  # the NZB link is stored without its API key
+        self.assertEqual(row['url'], 'https://indexer.example/api?t=get&id=abc123')
+        self.assertEqual(row['secret_params'], ['apikey'])
         self.assertEqual(row['details_url'], 'https://indexer.example/details/abc123')
 
     def test_newznab_error_codes_become_actionable_messages(self):

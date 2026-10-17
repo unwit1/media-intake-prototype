@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import logging
 import os
 import time
+import urllib.parse
 
 from .base import ConnectorSpec, SearchPage, SourceError, clean_base
 from . import catalogs, libraries, torrent_sites, usenet
@@ -275,6 +276,12 @@ def _search_via_jackett(spec, query, category, configs):
         row['via'] = 'jackett'
         from ..jackett import redact
         row['source'] = redact(row['source'])
+        if not row['magnet'] and row['torrent_url']:
+            # Jackett's proxied .torrent link carries its API key; keep it out of the queue database.
+            clean, names = strip_secret(row['torrent_url'], jackett['jackett_api_key'])
+            row.update(url=clean, torrent_url=clean, secret_params=names, secret_source='jackett')
+        elif row['torrent_url']:
+            row['torrent_url'] = strip_secret(row['torrent_url'], jackett['jackett_api_key'])[0]
         rows.append(row)
     return SearchPage(rows, 1, False, 'jackett')
 
@@ -393,6 +400,46 @@ def search_sources(query, category, options=None, keys=None, pages=None, opener=
     others = [row for row in result['rows'] if row.get('transfer') != 'torrent']
     result['rows'] = dedupe_releases(torrents) + others
     return result
+
+
+# --------------------------------------------------------------------------- secrets in links
+def strip_secret(url, secret):
+    """Remove query parameters carrying an API key, so links can be stored and shown safely.
+
+    Returns (link without the key, names of the removed parameters).
+    """
+    secret = str(secret or '')
+    parts = urllib.parse.urlsplit(str(url or ''))
+    if not secret or not parts.query:
+        return str(url or ''), []
+    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    removed = [key for key, value in pairs if value == secret]
+    kept = [(key, value) for key, value in pairs if value != secret]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(kept))), removed
+
+
+def secret_value(item, configs):
+    source = item.get('secret_source')
+    if source == 'jackett':
+        return ((configs or {}).get('jackett') or {}).get('jackett_api_key') or ''
+    return ((configs or {}).get(source) or {}).get('api_key') or ''
+
+
+def link_with_secret(item, configs, url=None):
+    """Put the API key back into a stored link just before it is fetched (never saved)."""
+    url = url or item.get('resolved_url') or item['url']
+    names = item.get('secret_params') or []
+    if not names:
+        return url
+    key = secret_value(item, configs)
+    if not key:
+        label = 'Jackett' if item.get('secret_source') == 'jackett' else \
+            getattr(CONNECTORS.get(item.get('secret_source')), 'label', 'the source')
+        raise SourceError(label, 'the API key needed to fetch this release is no longer saved.', 'config',
+                          'Enter it again in Settings, then retry.')
+    parts = urllib.parse.urlsplit(url)
+    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True) + [(name, key) for name in names]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(pairs)))
 
 
 # --------------------------------------------------------------------------- downloads

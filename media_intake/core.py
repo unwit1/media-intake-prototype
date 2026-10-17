@@ -653,6 +653,15 @@ def _download(db, item_id, root, max_bytes=MAX_FILE_BYTES, destination=None):
         return _download_usenet(db, item_id, item, root, destination)
     from .torrents import is_torrent_item
     if is_torrent_item(item):
+        if item.get('secret_params'):
+            from .connectors import link_with_secret
+            try:
+                # In memory only: the queue row keeps the link without its API key.
+                item = dict(item, resolved_url=link_with_secret(item, _connector_configs(db, root)))
+            except Exception as exc:
+                db.execute("UPDATE items SET state='failed', error=?, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc), item_id))
+                db.commit()
+                raise
         return _download_torrent(db, item_id, item, root, destination)
     from .streams import is_stream_item
     if is_stream_item(item):
@@ -760,7 +769,14 @@ def _opener_with_headers(headers):
 
 def _connector_configs(db, root):
     from .connectors import load_all_configs
-    return load_all_configs(db, cache_dir=Path(root) / 'cache')
+    from .kindle import get_local_secret
+    from .watched import get_setting
+    try:
+        jackett_key = get_local_secret(db, 'jackett_api_key') or ''
+    except Exception:
+        jackett_key = ''
+    return load_all_configs(db, cache_dir=Path(root) / 'cache', jackett={
+        'jackett_url': get_setting(db, 'external_dl_jackett_url', '') or '', 'jackett_api_key': jackett_key})
 
 
 def _resolve_connector_item(db, item_id, item, root):
@@ -790,9 +806,10 @@ def _download_usenet(db, item_id, item, root, destination):
     control = transfer.claim_control(key)
     if control is None:
         raise ValueError('This item is already downloading')
-    client = _connector_configs(db, root).get('usenet_client') or {}
     source = item.get('provider') or 'Usenet indexer'
     try:
+        configs = _connector_configs(db, root)
+        client = configs.get('usenet_client') or {}
         job_id = item.get('usenet_job_id')
         if job_id and client.get('url'):
             status = usenet.job_status(client, job_id)
@@ -800,7 +817,8 @@ def _download_usenet(db, item_id, item, root, destination):
                 job_id = None  # removed or failed in the newsreader: send the NZB again
         if not job_id:
             update_download_progress(db, item_id, None, None, f'Fetching NZB from {source}')
-            nzb = usenet.fetch_nzb(source, item.get('resolved_url') or item['url'])
+            from .connectors import link_with_secret
+            nzb = usenet.fetch_nzb(source, link_with_secret(item, configs))
             if not client.get('url'):
                 if client.get('nzb_mode') != 'save':
                     raise ValueError('Usenet downloads need SABnzbd or NZBGet. Add one in Settings → Sources, '
@@ -825,18 +843,21 @@ def _download_usenet(db, item_id, item, root, destination):
         status = usenet.follow_job(
             client, job_id, control=control,
             progress=lambda done, total, message: update_download_progress(db, item_id, done, total, message))
-        path = Path(status.get('path') or folder)
-        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=NULL, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                   (str(path), 'Completed in the newsreader', item_id))
+        path, checksum, note = _usenet_result(status.get('path'))
+        db.execute("UPDATE items SET state='downloaded', file_path=?, sha256=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (path, checksum, note, item_id))
         db.commit()
-    except transfer.TransferPaused:
-        db.execute("UPDATE items SET state='paused', error=NULL, progress_message='Paused in the newsreader — resume to continue', updated_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+    except transfer.TransferPaused as stop:
+        note = getattr(stop, 'newsreader_note', None)
+        db.execute("UPDATE items SET state='paused', error=?, progress_message=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (note, 'Paused — resume to continue' if note else 'Paused in the newsreader — resume to continue', item_id))
         db.commit()
         raise
-    except transfer.TransferCancelled:
+    except transfer.TransferCancelled as stop:
         item.pop('usenet_job_id', None)
-        db.execute("UPDATE items SET state='cancelled', metadata=?, error=NULL, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                   (json.dumps(item, ensure_ascii=False), item_id))
+        note = getattr(stop, 'newsreader_note', None)
+        db.execute("UPDATE items SET state='cancelled', metadata=?, error=?, progress_bytes=NULL, progress_total=NULL, progress_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (json.dumps(item, ensure_ascii=False), note and note + '; remove it there by hand', item_id))
         db.commit()
         raise
     except Exception as exc:
@@ -847,6 +868,27 @@ def _download_usenet(db, item_id, item, root, destination):
     finally:
         transfer.release_control(key)
     return None
+
+
+def _usenet_result(path):
+    """Where a finished Usenet job is, as the queue should record it.
+
+    The newsreader may run on another machine, so only a folder this computer can see is
+    recorded; the largest file in it stands for the release (the rest are samples and NFOs).
+    """
+    if not path:
+        return None, None, 'Completed in the newsreader'
+    folder = Path(path)
+    files = [file for file in folder.rglob('*') if file.is_file()] if folder.is_dir() else \
+        ([folder] if folder.is_file() else [])
+    if not files:
+        return None, None, f'Completed in the newsreader: {path}'
+    main = max(files, key=lambda file: file.stat().st_size)
+    digest = hashlib.sha256()
+    with open(main, 'rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return str(main.resolve()), digest.hexdigest(), 'Completed in the newsreader'
 
 
 def _item_folder(root, destination, item):

@@ -3315,7 +3315,13 @@ class MediaIntakeApp:
         if category == 'Auto-detect' or category not in spec.categories:
             category = 'Videos' if 'Videos' in spec.categories else sorted(spec.categories)[0]
         if spec.file_capable:
-            approval = source_download_rights(load_rights_evidence(self.rights_evidence_path), spec.key)
+            try:
+                approval = source_download_rights(load_rights_evidence(self.rights_evidence_path), spec.key)
+            except Exception as exc:
+                self.logger.warning('Could not read the rights file: %s', exc)
+                messagebox.showerror('Media Intake', f'The local rights-evidence.json file could not be read: '
+                                     f'{exc}\n\nFix it with Settings → Sources → Open rights file.')
+                return
             if not approval:
                 messagebox.showinfo('Media Intake', (
                     f'{spec.label} is NO in the local rights-evidence.json file, so it is not searched or '
@@ -3364,7 +3370,9 @@ class MediaIntakeApp:
                          lambda found: self._more_search_shown(found, append=True))
             return
         from .discovery import search_more_connector_results
-        existing = list(self.results)
+        # Merged on a worker thread: work on copies, not the rows the results list is showing.
+        existing = [dict(row, download_variants=list(row.get('download_variants') or []))
+                    for row in self.results]
 
         def loaded(response):
             self.show_results(response['results'])
